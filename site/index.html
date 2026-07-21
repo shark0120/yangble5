@@ -529,7 +529,7 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
 <!-- ══════════════════════════════ HERO ══════════════════════════════ -->
 <section class="hero">
   <div class="wrap">
-    <p class="eyebrow">開源 · MIT · 每一個數字都可以自己重現</p>
+    <p class="eyebrow">開源 · MIT · 每一個數字都標了證據等級</p>
     <h1>讓每個人都用得起 1M 上下文。</h1>
     <p class="lede">
       yangble5 是一組<strong>開源的 AI 閘道設定、相容層與量測工具</strong>。它把 Gemini / Grok / GPT 這些第三方模型，整理成一個給 Claude Code 和 Codex 用的端點，並且處理掉一個會讓 prompt cache 幾乎全滅的設定陷阱。<br>這是<strong>存取的自由</strong> —— 不是我們訓練了一個模型。
@@ -568,6 +568,10 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
         </div>
         <p class="copy-status" id="copyStatus" role="status" aria-live="polite"></p>
         <p class="cmd-foot">
+          <strong>貼給 agent 之前先知道這件事：安裝腳本預設<em>不會</em>把 API key 印到畫面上。</strong>
+          它寫進 <code>~/.yangble5/credentials</code>（權限 <code>0600</code>），印出來的只有那個路徑。
+          因為在這個情境下 stdout 就是你的 agent 的對話紀錄，密鑰印在那裡等於已經外洩。
+          真的要看得加 <code>--show-key</code>（Windows 是 <code>-ShowKey</code>）。<br>
           管線安裝要求你信任這個網域。所以我們把腳本做的每一件事都<a href="#installer">逐條列在下面</a>，原始碼在
           <a href="https://github.com/shark0120/yangble5">GitHub</a> 公開，校驗方式在 <a href="verify.html">verify.html</a>。不想管線？先下載、讀完、再執行 —— 我們反而希望你這樣做。
         </p>
@@ -1026,31 +1030,81 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
     </div>
 
     <ol class="steps">
-      <li><b>偵測平台與既有設定。</b>判斷 macOS / Linux / Windows，決定要建立的隔離目錄位置
-        （<code>~/.yangble5/claude</code>、<code>~/.yangble5/codex</code>）。
-        <strong>它不會讀取或修改你的 shell profile</strong>（<code>.bashrc</code>／<code>.zshrc</code>／
-        <code>.profile</code>）， 也不會改你的 <code>PATH</code>；需要調整時它只會把指令印出來讓你自己決定。</li>
-      <li><b>向你要一把 API key（或帶你去註冊）。</b>金鑰只寫進你自己的設定檔，<strong>不會</strong>當成命令列參數傳遞 —— <code>argv</code> 在多數系統上其他使用者讀得到，而且會進 shell 歷史紀錄。</li>
-      <li><b>產生一支啟動器,由它設定環境變數。</b>變數只存在於啟動器啟動的那個行程裡,
-        不會寫進你的 shell。完整清單是<strong>七個 export 加一個 unset</strong>,沒有別的：
-        <code>CLAUDE_CONFIG_DIR</code>、<code>ANTHROPIC_BASE_URL</code>、
-        <code>ANTHROPIC_AUTH_TOKEN</code>、<code>ANTHROPIC_MODEL</code>、
-        <code>CLAUDE_CODE_MAX_CONTEXT_TOKENS</code>、<code>CLAUDE_CODE_MAX_OUTPUT_TOKENS</code>、
-        <code>API_TIMEOUT_MS</code>,以及 <code>unset ANTHROPIC_API_KEY</code>
-        （避免你既有的金鑰被誤送到這個端點）。對照 <code>install.sh</code> 第 1104–1121 行。</li>
-      <li><b>寫入 Codex 的 <code>config.toml</code> 區塊。</b>設定
-        <code>model_provider</code>、<code>base_url</code>、
-        <code>model_context_window = 1000000</code>，金鑰用 <code>env_key</code> 間接引用。</li>
-      <li><b>修改前先備份。</b>任何被改到的檔案都會留下一份帶時間戳的備份，並印出還原指令。</li>
-      <li><b>做一次連線測試，然後印出它改了哪些檔案。</b>結束前把完整的變更清單列給你看。</li>
+      <li><b>建立一組隔離目錄，完全不碰你現有的設定。</b>
+        它建立的是 <code>~/.yangble5/</code> 和底下的 <code>claude/</code>、<code>codex/</code>、
+        <code>bin/</code>（權限都是 <code>700</code>），另外在 <code>~/.local/bin</code> 放四個指向
+        <code>~/.yangble5/bin</code> 的 symlink（<code>--no-bin-link</code> 可以關掉；那裡如果已經有同名的
+        <em>非</em> symlink 檔案，它會保留原檔並警告，不會覆蓋）。除了這兩個位置，它不寫任何地方。<br>
+        <strong>它不會尋找、讀取或修改你的 shell profile</strong>（<code>.bashrc</code>／<code>.zshrc</code>／
+        <code>.profile</code>）—— 腳本裡根本沒有一行去找那些檔案，也不會改你的 <code>PATH</code>。
+        <code>~/.local/bin</code> 不在 <code>PATH</code> 上時，它只會把該加的那一行<strong>印出來</strong>讓你自己決定
+        （<code>install.sh</code> 的 <code>link_launchers()</code>）。Windows 版預設一樣不動 PATH，
+        只有你明確傳 <code>-AddToPath</code> 才會追加到<strong>使用者</strong> PATH，系統 PATH 永遠不碰。</li>
+
+      <li><b>取得一把 API key，而且預設不把它印出來。</b>
+        金鑰寫進 <code>~/.yangble5/credentials</code>（權限 <code>0600</code>），螢幕上印的是<strong>那個檔案的路徑，不是金鑰本身</strong>。
+        理由就是這一段開頭那句話：這行指令是要貼給 AI agent 執行的，stdout 就是它的對話紀錄，
+        印出去的密鑰等於已經外洩。真的想看，加 <code>--show-key</code>（Windows 是 <code>-ShowKey</code>），
+        它會連同「你剛剛把密鑰放進了誰的 transcript」一起警告你；或者自己讀
+        <code>grep '^YANGBLE5_API_KEY=' ~/.yangble5/credentials</code>。<br>
+        金鑰也<strong>不會</strong>出現在命令列參數裡 —— <code>argv</code> 同一台機器上的其他使用者用
+        <code>ps</code> 就看得到。curl 是從一個 <code>0600</code> 的暫存設定檔把它讀進去的。</li>
+
+      <li><b>寫一支啟動器，由它設定環境變數。</b>變數只存在於啟動器啟動的那個行程裡，不會寫進你的 shell。
+        macOS／Linux 上的 <code>~/.yangble5/env.sh</code> 一共
+        <strong>export 十一個變數，外加一個 unset</strong>，沒有別的：三個 <code>YANGBLE5_*</code>
+        （端點、金鑰、模型別名）、四個給 Claude Code（<code>CLAUDE_CONFIG_DIR</code> 與三個
+        <code>ANTHROPIC_*</code>）、三個數值上限、一個 <code>CODEX_HOME</code>；unset 掉的是
+        <code>ANTHROPIC_API_KEY</code>，因為它的優先序高於 <code>ANTHROPIC_AUTH_TOKEN</code>，
+        留著會把你真正的 Anthropic 金鑰送到這個代理。Windows 是同一組名稱，拆在兩支 <code>.cmd</code>
+        啟動器裡，用 <code>setlocal</code> 隔離。<br>
+        <strong>完整逐字清單在 <a href="verify.html#env">verify.html：啟動器到底設了哪些環境變數</a></strong>
+        —— 十一行原文、每一行的來源行號都在那裡。這裡不放縮短版，因為少列幾個的清單比不列還糟。</li>
+
+      <li><b>寫的是它自己的 Codex 設定，不是你的那一份。</b>
+        它建立 <code>~/.yangble5/codex/config.toml</code>（設定 <code>model_provider</code>、
+        <code>base_url</code>、context 與 output 上限，金鑰用 <code>env_key</code> 間接引用），
+        再用 <code>CODEX_HOME</code> 指過去。<strong>它不會開啟、不會讀取、也不會修改
+        <code>~/.codex/config.toml</code></strong>。同樣地，Claude Code 走的是獨立的
+        <code>CLAUDE_CONFIG_DIR=~/.yangble5/claude</code>，所以你直接打 <code>claude</code>
+        還是你原本的登入、原本的訂閱、原本的設定，一個位元組都沒動到。<br>
+        <strong>這是特色，不是妥協。</strong>一個安裝腳本沒有資格改寫你每天在用的工具設定；
+        而且這樣一來，移除它的方式就只是刪掉一個資料夾。</li>
+
+      <li><b>覆蓋既有檔案前先備份，結束時逐行印出還原指令。</b>
+        要寫的檔案已經存在、而且內容不同時，先 <code>cp -p</code> 成
+        <code>&lt;檔名&gt;.bak-&lt;時間戳&gt;</code>；內容相同就印 <code>unchanged</code> 跳過，
+        不製造一堆沒意義的備份。跑完它會把每一份備份的完整路徑，連同<strong>可以直接貼回終端機的還原指令</strong>
+        （<code>cp -p "…bak-…" "…"</code>，Windows 是 <code>Copy-Item</code>）一起印出來。
+        一份都沒有的時候，它印的是「沒有覆蓋任何既有檔案，所以沒有備份」，而不是沉默。<br>
+        <strong>一個刻意的例外：</strong><code>~/.yangble5/INSTALL_INFO</code> 每次執行都會重寫、
+        而且完全由安裝腳本自己擁有，所以不備份 —— 腳本會在同一段輸出裡把這個例外講明。
+        除此之外沒有別的例外（<code>~/.yangble5/machine-id</code> 只在不存在時建立一次，
+        之後永遠不會被覆蓋，所以它從來就不是備份的候選）。</li>
+
+      <li><b>做一次真的呼叫，然後照實報告。</b>
+        <code>GET /health</code>（免認證）→ <code>GET /v1/models</code>（認證，不花錢）→
+        <code>POST /v1/messages</code>（一次 16 token 的真實補完）。成功就印狀態碼與耗時，
+        並且明講<strong>這一次是冷啟動請求、快取命中率 0%</strong>；失敗就印狀態碼與排查步驟，
+        <strong>而且不會把它叫成成功</strong>（離開碼 8）。伺服器回傳的任何文字都會先被剝掉
+        ANSI 與控制字元、壓成一行、截斷，加上 <code>server says&gt;</code> 前綴才顯示 ——
+        因為這段輸出多半正落在一個有 shell 權限的 agent 的上下文裡。</li>
     </ol>
 
     <div class="never">
       <h3>腳本不會做的事</h3>
       <ul>
-        <li>不需要、也不會要求 <code>sudo</code> / 系統管理員權限。</li>
-        <li>不安裝背景服務、不設開機自動啟動、不裝任何常駐程式。</li>
-        <li>不會把你的金鑰、prompt、程式碼或任何檔案內容送到 yangble5.com 或任何地方。</li>
+        <li>不需要、也不會要求 <code>sudo</code>／系統管理員權限。<strong>以 root 執行或帶著
+          <code>SUDO_USER</code> 執行時，它會直接拒絕並退出</strong>（離開碼 2），而不是照做。</li>
+        <li>不編輯 <code>.bashrc</code>／<code>.zshrc</code>／<code>.profile</code>，不改 <code>PATH</code>
+          （Windows 要你明確傳 <code>-AddToPath</code> 才會改使用者 PATH）。</li>
+        <li>不碰你的 <code>~/.claude</code> 與 <code>~/.codex</code>。它替自己另外開一份，兩邊互不相干。</li>
+        <li>不安裝背景服務、不設開機自動啟動、不裝任何常駐程式 —— 腳本裡沒有 systemd、launchd 或 cron 的任何一行。</li>
+        <li>不下載、也不執行任何額外程式碼。唯一的網路流量是往你指定端點的 JSON；伺服器回的東西一律當資料，
+          沒有 <code>eval</code>，<code>credentials</code> 是被<strong>解析</strong>而不是被 <code>source</code>。</li>
+        <li>不會把你的 prompt、程式碼或任何檔案內容送到任何地方。註冊時送出的欄位只有機器指紋、
+          一個由該指紋前 32 個字元組成的標籤，以及你自己選擇傳入的 e-mail 或邀請碼。金鑰當然會送到
+          <strong>你設定的那個端點</strong>（它就是拿來認證的），但不會送去別的地方。</li>
         <li>不會動你 <code>~/.ssh</code>、瀏覽器資料、鑰匙圈或憑證管理員裡的任何東西。</li>
         <li>不會安裝遙測或分析。這個網站本身也沒有：沒有 cookie、沒有第三方請求。</li>
       </ul>

@@ -206,7 +206,8 @@ function Test-Yb5UInt {
     param([string]$Value, [int]$Min, [int]$Max)
     if ([string]::IsNullOrEmpty($Value))              { return $false }
     if ($Value.Length -gt 9)                          { return $false }
-    if (-not [regex]::IsMatch($Value, '\A[0-9]+\z'))  { return $false }
+    # TOML forbids leading zeros in integers; these go verbatim into config.toml.
+    if (-not [regex]::IsMatch($Value, '\A(0|[1-9][0-9]*)\z')) { return $false }
     $n = [int]$Value
     if ($n -lt $Min) { return $false }
     if ($n -gt $Max) { return $false }

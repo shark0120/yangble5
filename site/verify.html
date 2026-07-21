@@ -346,12 +346,121 @@ notepad .\install.ps1
   <h2>這個校驗能證明什麼、不能證明什麼</h2>
   <ul class="plain">
     <li><strong>能證明：</strong>你手上這份檔案，和我們公告雜湊時的那份檔案，位元組完全一致。傳輸過程沒有被改、沒有下載到一半壞掉。</li>
-    <li><strong>不能證明腳本本身是善意的。</strong>雜湊只保證「一致」，不保證「安全」。如果我們發佈了一份惡意腳本並公告它的雜湊，校驗一樣會過。這就是為什麼首頁把腳本做的每一件事都<a href="/#installer">逐條列出來</a>，而且原始碼公開 —— 校驗和公開原始碼要一起看，單獨任何一個都不夠。</li>
+    <li><strong>不能證明腳本本身是善意的。</strong>雜湊只保證「一致」，不保證「安全」。如果我們發佈了一份惡意腳本並公告它的雜湊，校驗一樣會過。這就是為什麼首頁把腳本做的每一件事都<a href="/#installer">逐條列出來</a>，而且原始碼公開 —— 校驗和公開原始碼要一起看，單獨任何一個都不夠。也是為什麼下面把它設的<a href="#env">每一個環境變數</a>和寫的<a href="#files">每一個檔案</a>逐字列在這裡。</li>
     <li><strong>不能防護網域本身被攻陷。</strong>如果 yangble5.com 被入侵，攻擊者可以同時換掉腳本和校驗檔。要防這種情況，請直接從
       <a href="https://github.com/shark0120/yangble5">GitHub repo</a> 取得腳本並核對 commit 歷史。</li>
     <li><strong>HTTPS 是前提。</strong>如果你是用 <code>http://</code> 讀這一頁的，上面的雜湊值本身就可能已經被竄改了。請確認網址列是
       <code>https://yangble5.com</code>。</li>
   </ul>
+
+  <!-- ── verbatim: the environment the launchers set ──────────────── -->
+  <h2 id="env">啟動器到底設了哪些環境變數</h2>
+  <p>
+    首頁寫的是「<strong>export 十一個變數，外加一個 unset</strong>」。下面是那十一行的<strong>逐字原文</strong>，
+    出自 <code>install.sh</code> 的 <code>write_config()</code>（第 1098–1124 行，寫出
+    <code>~/.yangble5/env.sh</code>）。沒有省略任何一項；如果你自己數出來不是十一個，那是我們寫錯了，
+    請開 issue 告訴我們。
+  </p>
+  <pre class="block" tabindex="0" role="region" aria-label="env.sh 逐字內容，可左右捲動"><span class="c"># ~/.yangble5/env.sh —— 只被 ~/.yangble5/bin/yangble5-* 這幾支啟動器 source。</span>
+<span class="c"># 這些值只存在於啟動器啟動的那個行程裡,不會寫進你的 shell。</span>
+
+<span class="c"># 1-3　先把 ~/.yangble5/credentials「解析」成 KEY=VALUE（不是 source）,再 export</span>
+export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL
+
+<span class="c"># 4　Claude Code 的設定與登入目錄。你原本的 ~/.claude 不受影響,靠的就是這一行。</span>
+export CLAUDE_CONFIG_DIR="${HOME}/.yangble5/claude"
+
+<span class="c"># 5-7　把 Claude Code 指向這個端點</span>
+export ANTHROPIC_BASE_URL="${YANGBLE5_API}"
+export ANTHROPIC_AUTH_TOKEN="${YANGBLE5_API_KEY}"
+export ANTHROPIC_MODEL="${YANGBLE5_MODEL}"
+
+<span class="c"># 8-10　三個數值上限。下面是預設值,可以用環境變數覆寫,但一律要先通過數字範圍檢查。</span>
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536
+export API_TIMEOUT_MS=600000
+
+<span class="c"># ＋一個 unset。ANTHROPIC_API_KEY 的優先序高於 ANTHROPIC_AUTH_TOKEN,</span>
+<span class="c">#   留著它會把你真正的 Anthropic 金鑰送到這個代理。移出啟動器環境。</span>
+unset ANTHROPIC_API_KEY
+
+<span class="c"># 11　Codex 的家目錄,指向下面那份隔離設定</span>
+export CODEX_HOME="${HOME}/.yangble5/codex"</pre>
+
+  <div class="note">
+    <p style="margin:0 0 var(--s-3)">
+      <strong>兩個容易被略過、但很重要的細節。</strong>
+    </p>
+    <p style="margin:0 0 var(--s-3)">
+      <code>env.sh</code> 讀 <code>credentials</code> 的方式是<strong>逐行拆成 KEY=VALUE</strong>，
+      而不是 <code>.</code>（source）。憑證檔是資料；source 它就等於把裡面每一個值變成可執行的 shell 程式碼。
+      解析器讀不動它讀到的東西。讀完之後，其中三個（端點、模型別名、金鑰）還會再被同一組允許字元
+      檢查一次，不合格就直接退出（離開碼 6）—— 因為安裝腳本的檢查只管得住<em>它自己寫進去</em>的內容，
+      管不住之後誰去編輯那個檔案。
+    </p>
+    <p style="margin:0">
+      <code>YANGBLE5_KEY_ID</code> 也會在解析時被賦值，但<strong>沒有</strong>被 export，
+      所以它不算在十一個裡面，也不會出現在啟動的行程環境中。
+      Windows 版是同一組名稱，拆在 <code>yangble5-claude.cmd</code> 與
+      <code>yangble5-codex.cmd</code> 兩支啟動器裡，用 <code>setlocal</code> 隔離，
+      <code>ANTHROPIC_API_KEY</code> 則是被設成空值。
+    </p>
+  </div>
+
+  <!-- ── verbatim: what lands on disk ─────────────────────────────── -->
+  <h2 id="files">它在你的磁碟上寫了哪些東西</h2>
+  <p>
+    完整清單。除了下面這些路徑，安裝腳本不寫任何地方 —— 特別是不寫
+    <code>~/.claude</code>、<code>~/.codex</code>、<code>.bashrc</code>、<code>.zshrc</code>、
+    <code>.profile</code>，也不改 <code>PATH</code>。
+  </p>
+  <ul class="plain">
+    <li><code>~/.yangble5/</code>（目錄，權限 <code>700</code>）連同底下的
+      <code>claude/</code>、<code>codex/</code>、<code>bin/</code>。</li>
+    <li><code>~/.yangble5/machine-id</code>（<code>0600</code>）—— 本機產生的 32 bytes 隨機鹽。
+      <strong>只在不存在時建立一次，永遠不會被覆寫，也永遠不會離開這台機器。</strong>
+      機器指紋是它跟 hostname／os／arch 一起做 sha256 的結果。</li>
+    <li><code>~/.yangble5/credentials</code>（<code>0600</code>）—— 端點、API key、key_id、模型別名。
+      <strong>金鑰在這裡，不在你的畫面上。</strong></li>
+    <li><code>~/.yangble5/env.sh</code>（<code>0600</code>）—— 上面那十一行。</li>
+    <li><code>~/.yangble5/INSTALL_INFO</code>（<code>0600</code>）—— 版本、安裝時間、端點、模型、模式、平台。
+      每次執行都重寫，也是<strong>唯一刻意不做備份</strong>的檔案。</li>
+    <li><code>~/.yangble5/uninstall.sh</code>（<code>0700</code>）—— 解除安裝腳本本體。</li>
+    <li><code>~/.yangble5/claude/README.txt</code>（<code>0600</code>）—— 說明這個目錄是隔離的
+      <code>CLAUDE_CONFIG_DIR</code>。</li>
+    <li><code>~/.yangble5/codex/config.toml</code>（<code>0600</code>）——
+      <strong>隔離的 Codex 設定，不是你的 <code>~/.codex/config.toml</code>。</strong>
+      你原本那份不會被開啟、讀取或修改。</li>
+    <li><code>~/.yangble5/bin/</code> 底下四支啟動器（都是 <code>0700</code>）：
+      <code>yangble5-claude</code>、<code>yangble5-codex</code>、
+      <code>yangble5-env</code>（印出上面的環境，金鑰只印前 24 個字元後接
+      <code>...redacted</code>）、<code>yangble5-uninstall</code>。</li>
+    <li><code>~/.local/bin/</code> 底下四個指向上面那四支的 symlink。加
+      <code>--no-bin-link</code> 就不會建立；那裡若已經有同名的<em>非</em> symlink 檔案，
+      它保留原檔並警告，不覆蓋。</li>
+  </ul>
+
+  <h3 id="backup">被覆蓋的檔案，以及怎麼還原</h3>
+  <p>
+    要寫的檔案已經存在、而且內容不同時，安裝腳本先 <code>cp -p</code> 出一份
+    <code>&lt;檔名&gt;.bak-&lt;時間戳&gt;</code> 再覆蓋；內容一樣就印 <code>unchanged</code> 並跳過。
+    跑完它會把<strong>每一份</strong>備份的完整路徑，連同可以直接貼回終端機的還原指令一起印出來。
+    輸出的格式是這樣（時間戳由 <code>date +%Y%m%d-%H%M%S</code> 產生，路徑是絕對路徑；
+    下面是版型，不是某一次執行的紀錄）：
+  </p>
+  <pre class="block" tabindex="0" role="region" aria-label="備份還原輸出的版型，可左右捲動"><span class="c">  Files replaced this run — each was copied first</span>
+
+      &lt;絕對路徑&gt;/env.sh.bak-&lt;時間戳&gt;
+        restore with:  cp -p "&lt;絕對路徑&gt;/env.sh.bak-&lt;時間戳&gt;" "&lt;絕對路徑&gt;/env.sh"
+
+      Exempt on purpose: ~/.yangble5/INSTALL_INFO is rewritten every run
+      and is owned entirely by the installer, so it is not backed up.
+      Nothing else is exempt.</pre>
+  <p class="fine">
+    一份備份都沒有的時候，它印的是
+    <code>no existing file was overwritten, so nothing was backed up</code>，而不是沉默。
+    Windows 版印的是 <code>Copy-Item -LiteralPath … -Destination … -Force</code>，行為一致。
+  </p>
 
   <h2>最保險的做法</h2>
   <p>不用管線，直接從版本控制拿：</p>

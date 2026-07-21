@@ -55,7 +55,7 @@ usage: sh uninstall.sh [options]
   --dry-run     print exactly what would be deleted, then stop
   -h, --help    this text
 USAGE
-    exit 0
+    exit "${1:-0}"
 }
 
 while [ $# -gt 0 ]; do
@@ -63,7 +63,7 @@ while [ $# -gt 0 ]; do
         -y|--yes)  ASSUME_YES=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage ;;
-        *)         printf 'unknown option: %s\n' "$1" >&2; usage ;;
+        *)         printf 'unknown option: %s\n' "$1" >&2; usage "$EX_USAGE" ;;
     esac
 done
 

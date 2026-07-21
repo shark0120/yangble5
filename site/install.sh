@@ -240,7 +240,10 @@ is_valid_uint() {
     [ -n "${1:-}" ]    || return 1
     [ "${#1}" -le 9 ]  || return 1
     single_line "$1"   || return 1
-    printf '%s' "$1" | grep -Eq '^[0-9]+$' || return 1
+    # TOML forbids leading zeros in integers, and these values are written
+    # verbatim into codex/config.toml. Accepting "0065536" here produced a
+    # config Codex cannot parse while the installer still exited 0.
+    printf '%s' "$1" | grep -Eq '^(0|[1-9][0-9]*)$' || return 1
     [ "$1" -ge "$2" ] || return 1
     [ "$1" -le "$3" ] || return 1
 }
@@ -360,7 +363,8 @@ before a single file is written.
 environment: YANGBLE5_API, YANGBLE5_API_KEY (bring your own key),
              YANGBLE5_EMAIL, YANGBLE5_INVITE, YANGBLE5_MODEL, NO_COLOR
 USAGE
-    exit "$EX_OK"
+    # exit code is a parameter: -h/--help is success, a bad flag is not.
+    exit "${1:-$EX_OK}"
 }
 
 while [ $# -gt 0 ]; do
@@ -377,7 +381,7 @@ while [ $# -gt 0 ]; do
         --show-key)       PRINT_KEY=1; shift ;;
         --no-print-key)   PRINT_KEY=0; shift ;;
         -h|--help)        usage ;;
-        *)                printf 'unknown option: %s\n' "$(sanitize_remote "$1" 80)" >&2; usage ;;
+        *)                printf 'unknown option: %s\n' "$(sanitize_remote "$1" 80)" >&2; usage "$EX_USAGE" ;;
     esac
 done
 
