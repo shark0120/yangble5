@@ -244,6 +244,13 @@ class Settings:
     trust_proxy_headers: bool
     trusted_proxy_hops: int
 
+    # --- metering ------------------------------------------------------------
+    # Charged when a SUCCESSFUL response carried no usage report we could parse.
+    # 0 restores the old behaviour, in which such a request was free and never
+    # advanced any budget — which is a hole, not a feature. See
+    # `startup_warnings()` and gateway/app.py::_record.
+    unparsed_usage_token_floor: int
+
     # --- misc ----------------------------------------------------------------
     log_level: str
     prices: dict[str, ModelPrice] = field(default_factory=lambda: dict(DEFAULT_PRICES))
@@ -419,6 +426,16 @@ class Settings:
         if trusted_proxy_hops < 1:
             raise ConfigError("TRUSTED_PROXY_HOPS must be >= 1")
 
+        # A successful response whose usage report we could not parse used real
+        # upstream capacity. Charging it zero makes it invisible to every budget,
+        # so a client that can reliably provoke an unparseable response gets an
+        # unmetered channel. The floor is the conservative answer: bill SOMETHING
+        # so the budget still moves. Negative is rejected rather than clamped —
+        # a negative charge would run budgets backwards.
+        unparsed_usage_token_floor = _int(env, "UNPARSED_USAGE_TOKEN_FLOOR", 1000)
+        if unparsed_usage_token_floor < 0:
+            raise ConfigError("UNPARSED_USAGE_TOKEN_FLOOR must be >= 0 (0 disables the floor)")
+
         prices, placeholder = _load_price_table(env)
 
         default_db = str(Path(__file__).resolve().parent / "data" / "gateway.db")
@@ -466,6 +483,7 @@ class Settings:
             max_usage_parse_bytes=_int(env, "MAX_USAGE_PARSE_BYTES", 2 * 1024 * 1024),
             trust_proxy_headers=_bool(env, "TRUST_PROXY_HEADERS", False),
             trusted_proxy_hops=trusted_proxy_hops,
+            unparsed_usage_token_floor=unparsed_usage_token_floor,
             log_level=_str(env, "LOG_LEVEL", "INFO").upper(),
             prices=prices,
             prices_are_placeholder=placeholder,
@@ -511,7 +529,15 @@ class Settings:
         if self.trust_proxy_headers:
             warnings.append(
                 "TRUST_PROXY_HEADERS is on. Only enable this behind a reverse proxy "
-                "that overwrites X-Forwarded-For, otherwise clients can spoof IP limits."
+                "that sets X-Real-IP itself (deploy/Caddyfile does), otherwise clients "
+                "can spoof per-IP limits by sending their own X-Real-IP."
+            )
+        if self.unparsed_usage_token_floor <= 0:
+            warnings.append(
+                "UNPARSED_USAGE_TOKEN_FLOOR is 0, so a successful request whose usage "
+                "report could not be parsed is billed nothing and advances no budget. "
+                "That is an unmetered path. Set it to a small positive number unless "
+                "you have a specific reason not to."
             )
         host = self.engine_url.split("://", 1)[1].split("/", 1)[0].split(":")[0]
         if host not in ("127.0.0.1", "localhost", "::1") and self.engine_url.startswith("http://"):

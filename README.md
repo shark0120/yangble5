@@ -90,9 +90,9 @@ Read the footnotes before quoting anything.
 | Largest prompt processed with no truncation | **748,918 tokens** | same run - round 1 prints the prompt size |
 | Cold-round hit rate (first request of any session) | **0%** | same run - round 1 |
 | Total round-trip time, cold round vs fastest warm round | **21.4 s -> 10.8 s** | same run - round 1 vs round 2 |
-| Total round-trip time, warm rounds 3 and 4 | **23.4 s / 22.3 s** | same run - cache hits did **not** consistently reduce latency |
+| Total round-trip time, warm rounds 3 and 4 | **23.5 s / 22.4 s** | same run - cache hits did **not** consistently reduce latency |
 | `nextModelPoolOffset` present in the shipped 7.1.23 binary | yes | `strings cli-proxy-api.exe \| grep -E 'nextModelPoolOffset\|conductor\.go'` |
-| Claude Code working end to end through the stack | 3 of 3 attempts | manual, no repro script - an operational observation, not a benchmark |
+| Claude Code working end to end through the stack | 3 of 3 attempts | raw record: [`docs/evidence/claude-code-e2e.md`](docs/evidence/claude-code-e2e.md). A smoke test, never a benchmark - it shows the path works, and measures nothing |
 | Time to first token (TTFT) | **not measured** | the harness sends `stream: false`; every latency above is a whole round trip |
 | Hit rate at any other prefix size | **not measured** | only the 748,918-token run is in the released evidence set |
 | Hit rate of the broken pool config (the "before" number) | **not measured** | no pool-vs-direct A/B was ever run |
@@ -130,7 +130,7 @@ Warm token-weighted hit rate = `(745,438 + 745,430 + 745,422) / (748,933 + 748,9
    prefix size, because a roughly constant tail is a smaller fraction of a bigger prompt
    (direction observed; the magnitude at other prefix sizes is not in the released evidence
    set). Do not quote 99.53% as a number your workload will see.
-3. **Latency is not a clean win, and it is not TTFT.** The harness sends `stream: false`, so
+3. **Latency did not improve predictably, and it is not TTFT.** The harness sends `stream: false`, so
    every millisecond above is a **complete non-streaming round trip**, not time-to-first-token -
    we never measured TTFT. Round 2 was 2x faster than the cold round; rounds 3 and 4 were
    *slower* than the cold round. Single run, no repetitions, shared upstream, no control over
@@ -296,9 +296,10 @@ Expected shape of a passing run:
 
 ```
 cache_bench: model=yangble5 prefix~600000 tok rounds=4 session='cache-bench-fixed-session'
-  round 1: prompt=748918 cached=0      ratio=0.00%  lat=21293ms
-  round 2: prompt=748933 cached=745438 ratio=99.53% lat=10693ms
-  ...
+  round 1: prompt=748918 cached=0      ratio=0.00%  lat=21410ms
+  round 2: prompt=748933 cached=745438 ratio=99.53% lat=10753ms
+  round 3: prompt=748948 cached=745430 ratio=99.53% lat=23457ms
+  round 4: prompt=748963 cached=745422 ratio=99.53% lat=22381ms
   eligible hit rate (rounds 2..4, token-weighted): 99.53%  target 99% -> PASS
 ```
 
@@ -480,21 +481,34 @@ yangble5/
 │  ├─ engine/config.example.yaml the routing + direct-alias fix, commented, no secrets
 │  └─ .env.example               every operator setting, YANGBLE5_-prefixed, placeholders only
 ├─ tests/                        offline unit tests; no network, no credentials
+├─ scripts/
+│  └─ make_history.sh            builds the reviewable initial commit history; never talks to
+│                                a remote, never rewrites, refuses to act without --apply
 ├─ assets/
 │  ├─ social-preview.svg         1280x640 card, self-authored, system fonts, no external refs
 │  └─ README.md                  how to convert it to PNG for GitHub's social-preview field
 └─ docs/
    ├─ FINDINGS.md                all six contributions, with evidence and repro steps
-   ├─ BENCHMARK.md               methodology precise enough to refute us
-   ├─ OPERATING_A_PUBLIC_SERVICE.md
-   └─ diagrams/
-      ├─ architecture.md         request path, where the cache lives, the bug vs the fix
-      └─ cache-lifecycle.md      cold round 1 -> warm rounds 2..N, with the measured numbers
+   ├─ BENCHMARK.md               methodology precise enough to refute us, incl. every confound
+   ├─ OPERATING_A_PUBLIC_SERVICE.md   spend caps, provider terms, pre-launch checklist
+   ├─ UPGRADING_ENGINE.md        moving to a newer CLIProxyAPI, and dropping the shim
+   ├─ REPO_METADATA.md           description, topics, social-preview copy
+   ├─ evidence/
+   │  └─ claude-code-e2e.md      the raw record behind the "Claude Code 3 of 3" line
+   ├─ diagrams/
+   │  ├─ architecture.md         request path, where the cache lives, the bug vs the fix
+   │  └─ cache-lifecycle.md      cold round 1 -> warm rounds 2..N, with the measured numbers
+   └─ launch/                    draft launch copy (HN, Reddit, X, PTT), a comparison table,
+                                 and prepared answers to the hardest questions. Drafts, not
+                                 published claims - the repo is the authority.
 ```
 
-`site/` and `byok/` are the two directories that make the "not a hosted service" line above need
-its qualifier: `byok/` points the stack at *your own* upstream account and touches no server,
-while `site/` + `gateway/` are what somebody stands up when they decide to serve other people.
+`site/`, `gateway/` and `byok/` are the three directories that decide which side of the
+"hosted service" line you are on. `byok/` points the stack at *your own* upstream account and
+touches no server. `site/` + `gateway/` are what somebody stands up when they decide to serve
+other people - the landing page, the installer clients download, and the edge that issues keys.
+Cloning this repository gives you neither; running `deploy/` gives you the second one, along
+with the bill.
 
 Configuration and secrets: every tool reads `YANGBLE5_API_KEY`, `YANGBLE5_MGMT_KEY`,
 `YANGBLE5_BASE_URL` (or `--flags`) from the environment. There is no hardcoded key, account

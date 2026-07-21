@@ -15,9 +15,11 @@
 - [ ] No vote solicitation anywhere, including Threads/LINE/Discord. HN detects it and it is fatal.
 - [ ] Decide before posting: are we comfortable that every number below is one we can defend at
       2am against someone who has read the source? If not, cut the number, not the qualifier.
-- [ ] **Unresolved:** the "Claude Code 3/3 successful end-to-end" observation is not captured in
-      any artifact in the repo. Either capture a log before posting or do not say it. It is
-      currently omitted from the post body for that reason.
+- [ ] The "Claude Code 3/3 successful end-to-end" observation is backed by a raw record at
+      [`docs/evidence/claude-code-e2e.md`](../evidence/claude-code-e2e.md). If you mention it,
+      link that file in the same breath and call it a **smoke test, not a benchmark** - three
+      manual runs of one prompt show the path works and measure nothing else. Never let it sit
+      next to 99.53% as though both were measurements of the same kind.
 
 ---
 
@@ -104,13 +106,17 @@ reason (one of its two members was never registered by the provider, so it 502'd
 a known-broken config to benchmark it wasn't worth the upstream spend. What is measured is the
 *after* state only.
 
-**99.53% is warm-only and prefix-size dependent.** Round 1 is a cold write and is 0% by
-construction; every session pays exactly one. Fold it in and this run is 74.6% — a number that is
-really a function of how many rounds I chose to run. At a ~91K prefix the same tool measures
-94.00%. The tool's default (30K) will not reach 99%. Do not quote 99.53% as a universal number.
+**99.53% is warm-only, prefix-size dependent, and an upper bound.** Round 1 is a cold write and
+is 0% by construction; every session pays exactly one. Fold it in and this run is 74.6% — a
+number that is really a function of how many rounds I chose to run. The harness's conversation
+tail grows by exactly 15 tokens per round, which is the most cache-favourable shape possible; a
+real agent turn appends far more, so expect lower. Hit rate also rises with prefix size
+(direction observed; I'm not publishing a magnitude, because the released evidence set is one
+run at 748,918 tokens), and the tool's 30K default will not reach 99%. Do not quote 99.53% as a
+universal number.
 
 **One machine, one run, one afternoon.** Windows 11, no repetitions, no error bars, no
-cross-provider comparison. **Latency is not a clean win** — round 2 was 2x faster than cold, and
+cross-provider comparison. **Latency did not improve predictably — no speed claim is made anywhere** — round 2 was 2x faster than cold, and
 rounds 3 and 4 were *slower* than cold while reading 99.5% of their prompt from cache. Caching
 reduces cost predictably; on this evidence it does not reduce wall-clock predictably.
 
@@ -150,8 +156,10 @@ the rest of the repo.
 ### 2. "99.53% is cherry-picked. You dropped the cold round and picked the prefix size that flatters you."
 
 Both true, both stated in the post, and here is the arithmetic to check me with. Including the
-cold round this run is 2,236,290 / 2,995,762 = 74.6%. At a ~91K prefix it's 94.00%. At the tool's
-30K default it does not reach 99%.
+cold round this run is 2,236,290 / 2,995,762 = 74.6%. At the tool's 30K default it does not reach
+99%. I'm deliberately not quoting a figure for any intermediate prefix: the released evidence set
+is a single run at 748,918 tokens, and a number I won't show you the raw rounds for isn't worth
+anything.
 
 The reason the warm number is the headline is that the uncached remainder is roughly *constant*
 (~3.5K tokens at a 749K prefix) rather than proportional — it's the conversation growth since the

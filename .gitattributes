@@ -1,0 +1,25 @@
+# Line endings for the files whose exact bytes are load-bearing.
+#
+# Two things break if these are ever checked out with CRLF:
+#
+#   1. A shell script with CRLF line endings fails on Linux with a
+#      "bad interpreter: /bin/sh^M" that nobody can read.
+#   2. site/*.sha256 pins the digest of the file a user downloads and is told
+#      to verify before piping into a shell. If a contributor on Windows
+#      checks the script out as CRLF, re-uploads it, and the download page
+#      still quotes the LF digest, the one user who bothered to check gets a
+#      mismatch -- and learns that checking is not worth doing.
+#
+# Git on Windows defaults to core.autocrlf=true, so without this file the
+# second case is not hypothetical.
+
+*.sh        text eol=lf
+*.ps1       text eol=lf
+*.sha256    text eol=lf
+
+# The installer payloads again, by name, so that renaming the pattern above
+# can never quietly stop covering the files the digests are computed over.
+site/install.sh     text eol=lf
+site/install.ps1    text eol=lf
+site/uninstall.sh   text eol=lf
+site/uninstall.ps1  text eol=lf

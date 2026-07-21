@@ -11,9 +11,14 @@
 #   6. optional      restrict 80/443 to Cloudflare's ranges (--cloudflare-only)
 #
 # WHAT IT WILL NOT DO
-#   It will not disable password authentication until it has found at least one
-#   usable public key in an authorized_keys file. If it finds none it aborts
-#   with instructions instead of locking you out of your own machine.
+#   It will not disable password authentication unless BOTH are true:
+#     * at least one usable public key exists in an authorized_keys file, and
+#     * the session running this script was itself authenticated by publickey.
+#   The second test is the one that matters. A stale key belonging to a former
+#   contractor satisfies the first while you are sitting on a password login,
+#   and the next thing you see is your provider's rescue console. If the check
+#   cannot be made (no SSH session, unreadable logs) it aborts and tells you to
+#   pass --i-have-key-access, which is a decision rather than an accident.
 #
 # USAGE
 #   sudo bash deploy/harden.sh                       # typical
@@ -21,6 +26,7 @@
 #   sudo bash deploy/harden.sh --cloudflare-only     # + drop non-CF traffic on 80/443
 #   sudo bash deploy/harden.sh --dry-run             # print, change nothing
 #   sudo bash deploy/harden.sh --skip-ssh            # everything except sshd
+#   sudo bash deploy/harden.sh --i-have-key-access   # override the lockout guard
 #
 # TESTED ON: Debian 12 and Ubuntu 22.04/24.04 (apt + systemd + ufw).
 #
@@ -40,6 +46,7 @@ CLOUDFLARE_ONLY=0
 UNDO_CLOUDFLARE_ONLY=0
 AUTO_REBOOT=""
 ASSUME_YES=0
+I_HAVE_KEY_ACCESS=0
 
 # ── output helpers ─────────────────────────────────────────────────────────
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -86,8 +93,11 @@ write_file() {
     ok "wrote $path"
 }
 
+# Prints the header comment block: from line 2 up to the first line that is not
+# a comment. A fixed line range was fine until the header grew by four lines and
+# started printing `set -euo pipefail` at the reader.
 usage() {
-    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^#\{1,2\} \{0,1\}//'
+    sed -n '2,/^[^#]/{s/^#\{1,2\} \{0,1\}//p;}' "${BASH_SOURCE[0]}"
     exit 0
 }
 
@@ -103,6 +113,7 @@ while [ $# -gt 0 ]; do
         --behind-cloudflare)  BEHIND_CLOUDFLARE=1; shift ;;
         --cloudflare-only)    BEHIND_CLOUDFLARE=1; CLOUDFLARE_ONLY=1; shift ;;
         --no-cloudflare-only) UNDO_CLOUDFLARE_ONLY=1; shift ;;
+        --i-have-key-access)  I_HAVE_KEY_ACCESS=1; shift ;;
         --yes|-y)             ASSUME_YES=1; shift ;;
         -h|--help)            usage ;;
         *)                    die "unknown option: $1 (try --help)" ;;
@@ -474,9 +485,167 @@ AUTOUP
 }
 
 # ── 5. SSH ─────────────────────────────────────────────────────────────────
+#
+# THE LOCKOUT GUARD, IN TWO PARTS.
+#
+# Part one counts public keys. It is necessary and it is NOT sufficient, and the
+# gap between those two words is somebody's server. "A key exists somewhere on
+# this host" is also true of a key a hosting provider injected at build time, a
+# key a colleague added in 2023, or a key in the home directory of a user nobody
+# has ever logged in as. None of those is YOUR key.
+#
+# Part two asks the question that actually predicts whether you can get back in:
+# was THIS session authenticated by publickey? If it was, the credential you are
+# holding right now still works after passwords are switched off, by definition.
+# If it was a password login, disabling passwords may well lock you out no matter
+# how many keys are lying around, so the script stops and makes you say so.
+
+# The client address:port of the session running this script, or nothing.
+#
+# $SSH_CONNECTION is the obvious source and it is usually GONE by the time this
+# runs, because sudo's env_reset drops it. It is still in the environment of the
+# shell that sudo was launched from, and we are root, so we can read it back out
+# of an ancestor's /proc entry — where it never went anywhere.
+session_ssh_connection() {
+    if [ -n "${SSH_CONNECTION:-}" ]; then
+        printf '%s' "$SSH_CONNECTION"
+        return 0
+    fi
+    local pid="$$" depth=0 value=""
+    while [ "${pid:-0}" -gt 1 ] && [ "$depth" -lt 16 ]; do
+        if [ -r "/proc/$pid/environ" ]; then
+            value="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+                     | sed -n 's/^SSH_CONNECTION=//p' | head -1)"
+            if [ -n "$value" ]; then
+                printf '%s' "$value"
+                return 0
+            fi
+        fi
+        # /proc/PID/status, not /proc/PID/stat: the comm field in stat can
+        # contain spaces and parentheses, so positional parsing of it is a trap.
+        # `|| true`: sed exits non-zero on a process that has already gone away,
+        # and `set -e` would turn walking off the end of the tree into an abort.
+        pid="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null || true)"
+        depth=$((depth + 1))
+    done
+    return 1
+}
+
+# Prints exactly one of: publickey | password | unknown
+#
+# sshd logs "Accepted <method> for <user> from <ip> port <port> ssh2..." for
+# every successful login. The client PORT makes the match specific to THIS
+# session rather than to any session that address ever opened, which matters on
+# a host where the same operator has both kinds of login in the log.
+current_session_auth_method() {
+    local conn ip port needle hay="" f
+    conn="$(session_ssh_connection || true)"
+    if [ -z "$conn" ]; then
+        printf 'unknown'
+        return 0
+    fi
+    # SSH_CONNECTION = "<client ip> <client port> <server ip> <server port>"
+    ip="$(printf '%s' "$conn" | awk '{print $1}')"
+    port="$(printf '%s' "$conn" | awk '{print $2}')"
+    if [ -z "$ip" ] || [ -z "$port" ]; then
+        printf 'unknown'
+        return 0
+    fi
+
+    needle="from ${ip} port ${port}"
+    if command -v journalctl >/dev/null 2>&1; then
+        hay="$(journalctl -u ssh -u sshd --since '-7 days' --no-pager 2>/dev/null \
+               | grep -F -- "$needle" || true)"
+    fi
+    if [ -z "$hay" ]; then
+        for f in /var/log/auth.log /var/log/secure; do
+            [ -r "$f" ] || continue
+            hay="${hay}$(grep -F -- "$needle" "$f" 2>/dev/null || true)"
+        done
+    fi
+    if [ -z "$hay" ]; then
+        printf 'unknown'
+        return 0
+    fi
+
+    if printf '%s\n' "$hay" | grep -q 'Accepted publickey'; then
+        printf 'publickey'
+    elif printf '%s\n' "$hay" | grep -qE 'Accepted (password|keyboard-interactive)'; then
+        printf 'password'
+    else
+        printf 'unknown'
+    fi
+}
+
+# Aborts unless it is safe — or you have explicitly taken responsibility.
+require_proven_key_access() {
+    local method
+    method="$(current_session_auth_method)"
+
+    case "$method" in
+        publickey)
+            ok "this session authenticated with a public key — turning passwords off cannot lock it out"
+            return 0
+            ;;
+        password)
+            if [ "$I_HAVE_KEY_ACCESS" -eq 1 ]; then
+                warn "THIS SESSION LOGGED IN WITH A PASSWORD, and you passed --i-have-key-access."
+                warn "Proceeding on your word. Confirm a key login works in a second terminal NOW."
+                return 0
+            fi
+            die "$(cat <<'PWLOGIN'
+This session authenticated with a PASSWORD, not a public key.
+
+Disabling password authentication would take away the only credential this
+session is known to have. Public keys do exist on this host, but a key existing
+somewhere is not evidence that YOU hold it — it may belong to your provider's
+image, or to somebody who used to work here.
+
+Do this instead, from your LOCAL machine:
+
+    ssh-copy-id -i ~/.ssh/id_ed25519.pub user@this-host
+    ssh user@this-host          # confirm it does NOT ask for a password
+
+Then re-run this script from THAT session. Keep this one open until you have.
+
+If you are certain you have working key access by another route, say so
+explicitly and this check will step aside:
+
+    sudo bash deploy/harden.sh --i-have-key-access
+
+Or skip sshd entirely: sudo bash deploy/harden.sh --skip-ssh
+PWLOGIN
+)"
+            ;;
+    esac
+
+    # unknown
+    if [ "$I_HAVE_KEY_ACCESS" -eq 1 ]; then
+        warn "could not verify how this session authenticated; --i-have-key-access given, continuing"
+        return 0
+    fi
+    die "$(cat <<'UNKNOWN'
+Could not determine how this session authenticated.
+
+That happens on a serial/rescue console, when sshd's logs have already rotated,
+or when this script is run from cron or a provisioning tool. This script will
+not disable password authentication on a guess: the failure mode is losing
+access to the machine.
+
+Pick one:
+
+    sudo bash deploy/harden.sh --i-have-key-access   # a key login is confirmed working
+    sudo bash deploy/harden.sh --skip-ssh            # leave sshd alone entirely
+
+Before choosing the first, actually confirm it — open a second terminal and run
+    ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no user@this-host
+UNKNOWN
+)"
+}
+
 # Counts real public keys (non-empty, non-comment lines) across every
-# plausible authorized_keys file. This is the guard that stands between the
-# operator and a locked door.
+# plausible authorized_keys file. Part one of the guard: necessary, not
+# sufficient. See require_proven_key_access for part two.
 count_authorized_keys() {
     local total=0 f n
     local candidates=("/root/.ssh/authorized_keys")
@@ -500,6 +669,69 @@ count_authorized_keys() {
         fi
     done
     printf '%s' "$total"
+}
+
+# Assert what sshd will ACTUALLY do, not what we wrote down.
+#
+# `sshd -t` only says the file parses. `sshd -T` prints the effective merged
+# configuration — Include files, drop-in ordering, first-value-wins and all — and
+# is the only thing that can tell you a drop-in was silently overridden. Writing
+# a config and declaring victory is how a host ends up with a hardening report
+# saying "key-only" and an sshd still accepting passwords.
+#
+# Keys are lowercase and unquoted in sshd -T output.
+verify_effective_sshd() {
+    local effective="" want key value actual failures=""
+
+    if ! effective="$(sshd -T 2>/dev/null)" || [ -z "$effective" ]; then
+        warn "could not read the effective configuration (\`sshd -T\` failed)"
+        warn "the hardening MAY have been overridden by another drop-in; verify by hand:"
+        warn "    sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin|permitemptypasswords|pubkeyauthentication) '"
+        return 0
+    fi
+
+    # ChallengeResponseAuthentication is deliberately not asserted: it is a
+    # deprecated alias for KbdInteractiveAuthentication and newer OpenSSH does
+    # not emit it at all, so requiring it would fail on correct hosts.
+    for want in \
+        "passwordauthentication no" \
+        "kbdinteractiveauthentication no" \
+        "permitemptypasswords no" \
+        "pubkeyauthentication yes" \
+        "permitrootlogin prohibit-password"
+    do
+        key="${want%% *}"
+        value="${want#* }"
+        actual="$(printf '%s\n' "$effective" | awk -v k="$key" '$1 == k {print $2; exit}')"
+        if [ "$actual" != "$value" ]; then
+            failures="${failures}    ${key}: want ${value}, sshd reports '${actual:-<unset>}'\n"
+        fi
+    done
+
+    if [ -n "$failures" ]; then
+        printf '%b' "$failures" >&2
+        die "$(cat <<'OVERRIDDEN'
+The hardening was written and reloaded, but sshd is NOT using it.
+
+In OpenSSH the FIRST occurrence of a keyword wins, and sshd_config.d/*.conf is
+read in lexical order. Something earlier in that order is claiming these
+keywords first. On Ubuntu cloud images the usual culprit is:
+
+    /etc/ssh/sshd_config.d/50-cloud-init.conf     (PasswordAuthentication yes)
+
+but a hosting provider's own drop-in, or an early line in /etc/ssh/sshd_config
+itself, will do the same thing. Find it:
+
+    sudo grep -rniE 'passwordauthentication|permitrootlogin' \
+         /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+
+Then either delete the offending line or rename our file so it sorts first.
+Nothing has been rolled back: your current session is unaffected and password
+logins still work, which is the safe state to debug this from.
+OVERRIDDEN
+)"
+    fi
+    ok "sshd -T: password auth off, keyboard-interactive off, keys on, root password-less"
 }
 
 harden_ssh() {
@@ -538,7 +770,13 @@ If you do not want SSH touched at all, re-run with --skip-ssh.
 NOKEYS
 )"
     fi
-    ok "found ${nkeys} public key(s) — safe to disable password authentication"
+    ok "found ${nkeys} public key(s) on this host"
+
+    # Part two. Deliberately AFTER the count: "no keys at all" is a different
+    # and simpler problem, and it deserves its own message rather than being
+    # folded into this one.
+    log check "verifying that THIS session is publickey-authenticated"
+    require_proven_key_access
 
     # Prefer a drop-in: it survives an OpenSSH package upgrade rewriting the
     # main file, and it is trivially reversible (delete one file).
@@ -552,9 +790,18 @@ NOKEYS
     hardening="$(cat <<'SSHD'
 # Installed by yangble5 harden.sh. Managed file — re-run the script to update.
 #
-# NOTE ON PRECEDENCE: in OpenSSH the FIRST occurrence of a keyword wins, and
-# the Include of this directory sits near the top of sshd_config, so these
-# values override whatever appears later in the main file.
+# NOTE ON PRECEDENCE, AND WHY THIS FILE IS NAMED 00-.
+#
+# In OpenSSH the FIRST occurrence of a keyword wins — the opposite of sysctl.d,
+# udev and most other drop-in directories, which is exactly why this gets
+# written the wrong way round so often. sshd_config.d/*.conf is read in LEXICAL
+# order, so on Ubuntu 22.04/24.04 the cloud image's 50-cloud-init.conf, which
+# contains `PasswordAuthentication yes`, is read BEFORE anything named 99-.
+#
+# A 99- drop-in therefore parses cleanly, passes `sshd -t`, appears in the
+# directory listing, and changes nothing at all. The only way to know is to ask
+# for the EFFECTIVE configuration with `sshd -T`, which this script now does
+# after reloading.
 
 # Keys only. Every one of these must be off: leaving KbdInteractive on is the
 # usual way a "password authentication disabled" host still accepts passwords
@@ -591,7 +838,16 @@ SSHD
 
     if [ "$use_dropin" -eq 1 ]; then
         run mkdir -p "$dropin_dir"
-        write_file "${dropin_dir}/99-yangble5.conf" "$hardening"
+        # 00-, so we are read before 50-cloud-init.conf and win on first-value.
+        write_file "${dropin_dir}/00-yangble5.conf" "$hardening"
+        # An earlier version of this script wrote 99-yangble5.conf, which loses
+        # to 50-cloud-init.conf. Remove it: leaving both would mean two managed
+        # files claiming the same keywords, and the ineffective one is the one
+        # an operator is most likely to read and believe.
+        if [ -f "${dropin_dir}/99-yangble5.conf" ]; then
+            warn "removing superseded ${dropin_dir}/99-yangble5.conf (99- loses to 50-cloud-init.conf)"
+            run rm -f "${dropin_dir}/99-yangble5.conf"
+        fi
     else
         warn "$sshd_config has no Include for sshd_config.d/*.conf"
         warn "appending to the main file instead (backed up first)"
@@ -623,6 +879,8 @@ SSHD
         systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service' && unit=sshd
         run systemctl reload "$unit" || run systemctl restart "$unit"
         ok "reloaded ${unit}.service"
+
+        verify_effective_sshd
     fi
 
     printf '\n  %sBEFORE YOU CLOSE THIS SESSION:%s open a second terminal and run\n' "$C_BLD" "$C_OFF"
@@ -786,9 +1044,9 @@ summary() {
     cat <<SUM
   UFW              deny incoming; ${SSH_PORT}/tcp (rate-limited), 80/tcp, 443/tcp+udp
   fail2ban         sshd jail + yangble5-auth jail (verify with fail2ban-regex)
-  sysctl           /etc/sysctl.d/99-yangble5.conf
+  sysctl           /etc/sysctl.d/99-yangble5.conf  (99- is correct HERE: sysctl.d is last-wins)
   unattended       security origins only; reboot: ${AUTO_REBOOT:-off}
-  sshd             $( [ "$SKIP_SSH" -eq 1 ] && echo "SKIPPED (--skip-ssh)" || echo "key-only, no root password, validated with sshd -t" )
+  sshd             $( [ "$SKIP_SSH" -eq 1 ] && echo "SKIPPED (--skip-ssh)" || echo "key-only via sshd_config.d/00-yangble5.conf, asserted with sshd -T" )
   cloudflare-only  $( [ "$CLOUDFLARE_ONLY" -eq 1 ] && echo "ACTIVE on $(detect_public_iface)" || echo "not enabled" )
 
   What this does NOT do:

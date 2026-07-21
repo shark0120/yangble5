@@ -1,0 +1,673 @@
+# yangble5 — nginx server-block snippet for an EXISTING vhost
+# =============================================================================
+# WHAT THIS IS
+#
+#   The nginx equivalent of deploy/Caddyfile, for the case where you already
+#   run nginx on 80/443 and cannot hand those ports to Caddy. Pair it with
+#   deploy/docker-compose.behind-proxy.yml, which publishes the gateway on
+#   127.0.0.1 only and starts no Caddy at all.
+#
+#   internet ──443──▶ THIS nginx ──127.0.0.1:8081──▶ gateway ──▶ engine ──▶ upstream
+#
+# WHAT THIS IS NOT
+#
+#   Not a complete nginx config. There is no `listen`, no `ssl_certificate`,
+#   no `server_name` here on purpose: you already have those, they already
+#   work, and rewriting them is how a working vhost stops working. Copy the
+#   marked blocks INTO your existing `server { ... }`.
+#
+#   For aaPanel / BT panel — where the panel owns the vhost file and will
+#   rewrite it — read AAPANEL.md first. It tells you which file to put this
+#   in so a panel update does not delete it.
+#
+# HONEST STATUS
+#
+#   This file has never been loaded by nginx. It was checked for balanced
+#   braces and terminating semicolons by a script, and every directive was
+#   chosen against gateway/app.py and deploy/docker-compose.behind-proxy.yml.
+#   `nginx -t` is YOUR step and it is not optional — see AAPANEL.md §5.
+#
+# THE FIVE THINGS THAT SILENTLY BREAK STREAMING
+#
+#   Naive nginx defaults do not error. They make the agent look frozen for
+#   thirty seconds and then dump the whole answer at once, or cut the stream
+#   at sixty seconds with a truncated reply. All five are fixed below and each
+#   one is commented where it appears:
+#
+#     1. proxy_buffering on           (default)  — collects the whole SSE
+#                                                  stream before sending a byte
+#     2. proxy_read_timeout 60s       (default)  — kills any generation that
+#                                                  thinks for longer than a minute
+#     3. proxy_http_version 1.0       (default)  — no chunked upstream request,
+#                                                  and Connection: close per call
+#     4. Connection header passed through        — upgrade/close tokens leak to
+#                                                  the gateway
+#     5. gzip over text/event-stream             — buffers a compression window
+#                                                  before flushing anything
+# =============================================================================
+
+
+# =============================================================================
+# PART 0 — http { } CONTEXT (OPTIONAL, AND OFTEN NOT AVAILABLE)
+# =============================================================================
+#
+# These two directives are the ONLY ones in this file that cannot live inside
+# a server block. On a panel-managed host you usually cannot edit the http
+# context safely, so BOTH are optional and everything below works without
+# them. Skip this whole part unless you own /www/server/nginx/conf/nginx.conf.
+#
+# --- 0a. Upstream keepalive (a real, measurable saving) ----------------------
+#
+# Without an `upstream` block nginx opens a NEW TCP connection to the gateway
+# for every single request. On loopback that costs little, but it also means
+# `proxy_http_version 1.1` and the cleared Connection header below buy you no
+# connection reuse — they are still required (see PART 2) for chunked request
+# bodies and for not leaking hop-by-hop tokens, but keepalive itself needs this:
+#
+#   upstream yangble5_gateway {
+#       server 127.0.0.1:8081;      # must equal GATEWAY_PORT in deploy/.env
+#       keepalive 32;               # idle connections kept per worker
+#       keepalive_timeout 120s;
+#       keepalive_requests 1000;
+#   }
+#
+# Then change every `proxy_pass http://127.0.0.1:8081` below to
+# `proxy_pass http://yangble5_gateway`.
+#
+# --- 0b. Rate limiting (limit_req_zone is http-context ONLY) -----------------
+#
+# There is no server-level equivalent. If you cannot add these, say so out
+# loud in your own notes: in reverse-proxy mode the gateway's own limits
+# (YANGBLE5_AUTH_RPM_PER_IP, YANGBLE5_RATE_LIMIT_RPM) and Cloudflare are the
+# ONLY request-rate defences you have. The Caddyfile's rate_limit zones do not
+# exist in this deployment.
+#
+#   limit_req_zone $binary_remote_addr zone=yb5_auth:10m rate=10r/m;
+#   limit_req_zone $binary_remote_addr zone=yb5_api:10m  rate=120r/m;
+#   limit_req_status 429;
+#
+# $binary_remote_addr is correct ONLY if the real_ip block in PART 1 is in
+# place. Without it every request is keyed on the Cloudflare edge that
+# forwarded it, so one abusive client throttles thousands of innocent ones.
+#
+# Where to apply them is marked `# limit_req zone=...` in PART 3.
+
+
+# =============================================================================
+# EVERYTHING BELOW GOES INSIDE YOUR EXISTING  server { ... }  BLOCK
+# =============================================================================
+
+
+    # =========================================================================
+    # PART 1 — WHO IS THE CLIENT
+    # =========================================================================
+    #
+    # gateway/app.py::client_ip decides per-IP rate limits, the auth-failure
+    # lockout and the "one key seen from N addresses" abuse signal. Get this
+    # wrong and all three fire on the wrong address — usually a Cloudflare
+    # edge, which means one bad actor gets thousands of strangers locked out.
+    #
+    # --- 1a. Cloudflare: recover the visitor's address ----------------------
+    #
+    # With a proxied (orange-cloud) record, $remote_addr is a Cloudflare edge
+    # server. ngx_http_realip_module rewrites $remote_addr to the address in
+    # CF-Connecting-IP, but ONLY for connections that came from one of the
+    # set_real_ip_from ranges. That restriction is the entire security
+    # property: without it, anyone who reaches your origin directly can set
+    # CF-Connecting-IP to whatever they like and become any IP they want.
+    #
+    # Confirm the module is compiled in before relying on this:
+    #     nginx -V 2>&1 | tr ' ' '\n' | grep -- --with-http_realip_module
+    #
+    # DELETE THIS ENTIRE SUB-BLOCK IF YOU ARE NOT BEHIND CLOUDFLARE.
+    # $remote_addr is then already the real client and nothing else changes.
+    #
+    # ⚠ THIS LIST GOES STALE. Cloudflare adds ranges. A missing range does not
+    # error — it silently leaves $remote_addr as the edge address for the
+    # clients arriving through it. Regenerate it yourself, on your own host,
+    # and re-check quarterly:
+    #
+    #     { curl -fsS https://www.cloudflare.com/ips-v4;
+    #       curl -fsS https://www.cloudflare.com/ips-v6; } \
+    #     | sed 's|^|set_real_ip_from |; s|$|;|' \
+    #     > /www/server/panel/vhost/nginx/cloudflare_real_ip.conf
+    #
+    # ...then replace the literal list below with:
+    #     include /www/server/panel/vhost/nginx/cloudflare_real_ip.conf;
+    #
+    # The literal copy below is a STARTING POINT transcribed from Cloudflare's
+    # published list. It was not fetched or verified from this machine. Treat
+    # the curl output as authoritative, not this file.
+
+    set_real_ip_from 173.245.48.0/20;
+    set_real_ip_from 103.21.244.0/22;
+    set_real_ip_from 103.22.200.0/22;
+    set_real_ip_from 103.31.4.0/22;
+    set_real_ip_from 141.101.64.0/18;
+    set_real_ip_from 108.162.192.0/18;
+    set_real_ip_from 190.93.240.0/20;
+    set_real_ip_from 188.114.96.0/20;
+    set_real_ip_from 197.234.240.0/22;
+    set_real_ip_from 198.41.128.0/17;
+    set_real_ip_from 162.158.0.0/15;
+    set_real_ip_from 104.16.0.0/13;
+    set_real_ip_from 104.24.0.0/14;
+    set_real_ip_from 172.64.0.0/13;
+    set_real_ip_from 131.0.72.0/22;
+    set_real_ip_from 2400:cb00::/32;
+    set_real_ip_from 2606:4700::/32;
+    set_real_ip_from 2803:f800::/32;
+    set_real_ip_from 2405:b500::/32;
+    set_real_ip_from 2405:8100::/32;
+    set_real_ip_from 2a06:98c0::/29;
+    set_real_ip_from 2c0f:f248::/32;
+
+    # CF-Connecting-IP holds exactly one address and Cloudflare overwrites it
+    # on every request, so it cannot be forged through the edge. Prefer it to
+    # X-Forwarded-For, which the visitor can prepend entries to.
+    real_ip_header CF-Connecting-IP;
+
+    # off = trust the header as a single value from the immediate peer.
+    # `on` walks X-Forwarded-For right-to-left and is only correct when
+    # real_ip_header is X-Forwarded-For. With CF-Connecting-IP it is wrong.
+    real_ip_recursive off;
+
+    # --- 1b. What the gateway is told ---------------------------------------
+    # (the proxy_set_header directives themselves live in PART 2)
+    #
+    # We OVERWRITE X-Forwarded-For with $remote_addr rather than appending
+    # with $proxy_add_x_forwarded_for. After PART 1a, $remote_addr is already
+    # the true visitor, so the header the gateway receives has exactly ONE
+    # entry and nothing a client sent can survive into it.
+    #
+    # This is what makes YANGBLE5_TRUSTED_PROXY_HOPS=1 correct. client_ip()
+    # reads the entry HOPS-from-the-END of the list:
+    #
+    #   nginx sets X-Forwarded-For to        | header the gateway sees        | HOPS
+    #   -------------------------------------+--------------------------------+-----
+    #   $remote_addr        (THIS FILE)      | visitor                        | 1
+    #   $proxy_add_x_forwarded_for, no CF    | visitor                        | 1
+    #   $proxy_add_x_forwarded_for, behind   | visitor, cf-edge               | 2
+    #     CF, realip NOT configured          |                                |
+    #   $proxy_add_x_forwarded_for, behind   | forged, visitor, cf-edge       | 2
+    #     CF, client sent a forged XFF       |   (still resolves to visitor)  |
+    #
+    # A wrong HOPS value fails silently and in the dangerous direction: the
+    # gateway rate-limits a Cloudflare edge address instead of the abuser.
+    # Set YANGBLE5_TRUSTED_PROXY_HOPS=1 in deploy/.env to match this file.
+    #
+    # If ngx_http_realip_module is NOT available, the fallback is
+    #     proxy_set_header X-Forwarded-For $http_cf_connecting_ip;
+    # which is spoofable by anyone who can reach the origin directly. Only do
+    # that with the origin firewalled to Cloudflare's ranges
+    # (`harden.sh --cloudflare-only`), and never on a grey-cloud record.
+
+
+    # =========================================================================
+    # PART 2 — SERVER-LEVEL PROXY BEHAVIOUR  (the streaming-critical part)
+    # =========================================================================
+    #
+    # WHY THESE ARE AT SERVER LEVEL, NOT REPEATED PER LOCATION
+    #
+    #   Every proxy_* directive here is inherited by each `location` that has
+    #   a proxy_pass, and inert everywhere else. One declaration site means
+    #   the API paths in PART 3 cannot drift apart — a real failure mode, and
+    #   an ugly one, because the surviving symptom is "streaming works on
+    #   /v1/messages but not on /api/v1/messages".
+    #
+    #   ⚠ INHERITANCE IS ALL-OR-NOTHING FOR proxy_set_header. If you ever add
+    #   ONE proxy_set_header inside a location, that location loses ALL FOUR
+    #   set below, and the gateway starts seeing 127.0.0.1 as every client.
+    #   Add headers here, not there.
+    #
+    #   ⚠ These also apply to any OTHER proxy_pass in this vhost. That is fine
+    #   for a vhost dedicated to yangble5 and wrong if you share it. If you
+    #   share it, move PART 2 into each yangble5 location instead and accept
+    #   the duplication.
+
+    # --- 2a. Identity and scheme --------------------------------------------
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $remote_addr;   # overwrite, see 1b
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # --- 2b. HTTP/1.1 to the gateway, and a cleared Connection header -------
+    #
+    # NOT related to the HTTP/2 or HTTP/3 you serve to browsers. This is the
+    # loopback hop only, and nginx's default there is HTTP/1.0.
+    #
+    # 1.0 has no chunked transfer encoding, so with proxy_request_buffering
+    # off (2d) nginx must buffer the whole request body to compute a
+    # Content-Length — which is precisely the multi-megabyte prompt upload
+    # we are trying not to spool to disk.
+    #
+    # The empty Connection value is required for two separate reasons:
+    #   * it stops the client's Connection header (`close`, `Upgrade`) from
+    #     being forwarded as a hop-by-hop directive to the gateway;
+    #   * it is the prerequisite for upstream keepalive if you add the
+    #     `upstream` block from PART 0a.
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+
+    # --- 2c. THE ONE THAT BREAKS SSE ----------------------------------------
+    #
+    # Default is `on`: nginx reads the whole upstream response into memory or
+    # a temp file before sending anything downstream. For a token stream that
+    # converts "words appearing as they are generated" into "nothing for 40
+    # seconds, then everything at once". The agent looks hung; users report a
+    # crash that never happened.
+    #
+    # gateway/app.py already sets `X-Accel-Buffering: no` on every
+    # text/event-stream response and nginx honours it per-response — but only
+    # for responses it recognises as streams. Turning buffering off outright
+    # also covers long non-SSE responses and any future content type.
+    proxy_buffering off;
+
+    # --- 2d. Request-side buffering -----------------------------------------
+    #
+    # Default `on` spools the entire request body before contacting the
+    # gateway. Our measured prompt is ~749K tokens ≈ several MB of JSON; with
+    # buffering on, every one of those requests is written to
+    # /var/lib/nginx/body first, adding disk I/O and latency to the largest
+    # requests you have. Off streams it straight through.
+    #
+    # Trade-off, stated plainly: with request buffering off nginx cannot
+    # retry the request against another upstream, because the body is already
+    # consumed. There is exactly one upstream here, so there is nothing to
+    # retry against.
+    proxy_request_buffering off;
+
+    # --- 2e. Timeouts -------------------------------------------------------
+    #
+    # nginx's default proxy_read_timeout is 60s and it is measured BETWEEN
+    # successive reads, not over the whole response — so a stream that emits
+    # a token every second survives it, and a long "thinking" pause before
+    # the first token does not.
+    #
+    # Measured on this project (docs/BENCHMARK.md, one Windows 11 machine,
+    # one run per configuration, ~749K-token prompt), end-to-end round times:
+    #   round 1 (cold) 21,410 ms · round 2 10,753 ms · round 3 23,457 ms
+    #   · round 4 22,381 ms.
+    # Two of the three warm rounds were SLOWER than the cold round; nothing
+    # here claims a latency improvement. What it does establish is that a
+    # single legitimate request can take ~25 s of wall clock, which is why
+    # 60 s is not enough headroom and 600 s is not paranoid.
+    proxy_connect_timeout 10s;      # loopback: if this is slow, it is down
+    proxy_send_timeout    600s;     # uploading a multi-MB prompt body
+    proxy_read_timeout    600s;     # between reads, incl. time to first token
+
+    # Downstream counterpart. Default 60s: nginx would abandon a slow CLIENT
+    # mid-stream even though the gateway is still producing tokens happily.
+    send_timeout 600s;
+
+    # ⚠ CLOUDFLARE CAPS THIS ABOVE YOU. On Free/Pro/Business plans the edge
+    # gives up ~100 s after the request and returns 524, regardless of the
+    # 600 s here. It applies to time-to-FIRST-BYTE, so streaming responses
+    # are safe once the first SSE event is out. A non-streaming call that
+    # thinks for two minutes is NOT — it will 524 no matter what this file
+    # says. deploy/cloudflare.md §4 has the options (grey-cloud the API
+    # hostname, or require stream=true).
+
+    # --- 2f. Keep the buffers sane if someone re-enables buffering ----------
+    # Inert while proxy_buffering is off. Present so that turning buffering
+    # back on for debugging does not also introduce a 4K buffer that stalls
+    # on large SSE headers.
+    proxy_buffer_size       16k;
+    proxy_buffers        8  16k;
+    proxy_busy_buffers_size 32k;
+
+    # --- 2g. Never cache an inference response ------------------------------
+    # Responses contain user data and are not idempotent. If a cache is
+    # configured at http level, this opts this vhost out of it.
+    proxy_cache off;
+    proxy_no_cache 1;
+    proxy_cache_bypass 1;
+
+    # --- 2h. Body size ------------------------------------------------------
+    # Must be >= YANGBLE5_MAX_REQUEST_BYTES (33554432 = 32m). If nginx's limit
+    # is the smaller of the two, the client gets a bare nginx 413 HTML page
+    # instead of the gateway's JSON error and no usage is recorded.
+    # Cloudflare's own Free-plan upload cap is 100 MB, so this is the binding
+    # limit, not CF.
+    client_max_body_size 32m;
+    client_body_timeout  120s;
+
+    # --- 2i. Do not advertise the stack -------------------------------------
+    server_tokens off;
+    proxy_hide_header X-Powered-By;
+
+    # --- 2j. Response headers ------------------------------------------------
+    #
+    # ⚠ NGINX GOTCHA, AND IT IS THE ONE PEOPLE GET WRONG: add_header does NOT
+    # merge across levels. A location containing a single add_header of its
+    # own silently drops EVERY add_header declared here. That is how sites
+    # lose HSTS on exactly the paths that matter.
+    #
+    # So: all of them are declared once, here, and the API locations in
+    # PART 3 declare none. Where a value must differ per location, it is a
+    # variable set with `set` (which DOES override cleanly per location).
+    #
+    # `always` makes them apply to error responses too — a 429 or a 502 needs
+    # HSTS and nosniff exactly as much as a 200 does.
+
+    # Cache policy. Default is the static-site value; API locations override
+    # it to no-store via `set $yb5_cc`.
+    set $yb5_cc "public, max-age=300";
+
+    add_header Cache-Control $yb5_cc always;
+
+    # `no-transform` (set on the API paths) is the standards-based way to
+    # tell Cloudflare — an intermediary you do not control — not to re-encode
+    # or buffer the body. Without it a proxied zone may transform a
+    # text/event-stream response and the agent sits there looking frozen.
+
+    # Advisory for any FURTHER proxy in front of this one. Note that nginx
+    # hides the gateway's own X-Accel-Buffering header by default (it is in
+    # the built-in proxy_hide_header list, because nginx consumes it), so
+    # this re-adds the signal for an outer hop. Cloudflare does not act on
+    # it; `proxy_buffering off` in 2c is what actually does the work here.
+    add_header X-Accel-Buffering "no" always;
+
+    # 1 year. `preload` deliberately NOT set: submitting to the preload list
+    # is effectively irreversible for the domain AND every subdomain, and
+    # this box serves other sites.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
+
+    # Scoped to the static pages in site/. They use inline <style> (allowed)
+    # and exactly ONE inline <script> each, pinned below by sha256. The two
+    # hashes are site/index.html's and site/verify.html's script blocks, in
+    # that order; they change whenever either <script> is edited, and
+    # site/README.md carries the recompute snippet. If you edit a page and
+    # forget this line, the page still renders — copy buttons, OS detection
+    # and the live pool status simply stop working, silently.
+    #
+    # Do not "fix" a CSP violation by adding 'unsafe-inline' to script-src on
+    # a page whose entire job is convincing a visitor it is safe to paste a
+    # command into a shell.
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" always;
+
+
+    # =========================================================================
+    # PART 3 — ROUTING
+    # =========================================================================
+    #
+    # ⚠ WHY EVERY BLOCK BELOW USES `^~` OR `=` AND NEVER A REGEX
+    #
+    # Panel-generated vhosts routinely contain a line like
+    #
+    #     location ~ .*\.(js|css)?$ { expires 12h; }
+    #
+    # The `?` makes the extension OPTIONAL, so that regex matches EVERY URI,
+    # including /v1/messages. Regex locations are tried in file order and beat
+    # ordinary prefix locations, so if that block sits above yours, your API
+    # is served from the webroot and every client gets 404 — with no error at
+    # reload time and nothing in the log to explain it.
+    #
+    # `^~` and `=` outrank ALL regex locations regardless of order. That
+    # immunity is the reason for the notation; do not "tidy" it away.
+
+    # --- 3a. HARD BLOCK: the engine's management surface --------------------
+    #
+    # CLIProxyAPI's /v0/management/* can list, mint and export upstream
+    # credentials, read the usage queue and rewrite config. It must never be
+    # reachable from the internet. This is the outermost of three locks; the
+    # others are (1) the engine has no published port in
+    # docker-compose.behind-proxy.yml and (2) it still demands a management
+    # key. deploy/smoke_test.sh asserts this returns 404 from outside.
+    #
+    # 404, not 403: a 403 confirms to a scanner that the path exists.
+    #
+    # `^~ /v0` also matches /v0anything. That over-match is deliberate — the
+    # gateway has no route starting with /v0, so nothing legitimate is lost.
+    location ^~ /v0 {
+        return 404;
+    }
+
+    # Probes for the engine's debug/admin surfaces, and for the two files
+    # that leak everything if they are ever copied into a webroot.
+    location ^~ /management {
+        return 404;
+    }
+    location ^~ /debug/ {
+        return 404;
+    }
+    location = /metrics {
+        return 404;
+    }
+
+    # Dotfiles. The negative lookahead keeps /.well-known/acme-challenge/
+    # working, which your existing certificate renewal depends on.
+    # This one is a regex because it must not swallow .well-known; it is
+    # placed before the static handler and matches nothing the API uses.
+    location ~ ^/\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+
+    # --- 3b. The gateway's own admin API ------------------------------------
+    #
+    # /admin/* mints invite codes, lists keys and flips account status. It is
+    # authenticated (YANGBLE5_ADMIN_API_KEY) and it already 404s an
+    # unauthenticated caller, but there is no reason for it to be on the
+    # public internet at all: you are the only user and you have SSH.
+    #
+    # From the VPS:  curl -H "Authorization: Bearer $ADMIN_KEY" \
+    #                     http://127.0.0.1:8081/admin/keys
+    #
+    # If you genuinely need it remotely, replace `return 404` with the
+    # proxy_pass line and an allow/deny list — and remember `allow` is
+    # matched against $remote_addr, which PART 1a has already rewritten to
+    # the real visitor, so your office IP works as written:
+    #
+    #     allow 203.0.113.7;
+    #     deny all;
+    #     set $yb5_cc "no-store, no-transform";
+    #     proxy_pass http://127.0.0.1:8081;
+    location ^~ /admin {
+        return 404;
+    }
+
+    # ⚠ AND THE SAME PATH THROUGH THE /api/ ALIAS.
+    #
+    # This block is not redundant, and leaving it out is a real hole. The
+    # `location ^~ /api/` block in 3c strips its own prefix before proxying,
+    # so WITHOUT this, `/api/admin/keys` arrives at the gateway as
+    # `/admin/keys` — the admin surface, published to the internet, past a
+    # `location ^~ /admin { return 404; }` that looks like it covers it.
+    #
+    # nginx picks the LONGEST matching `^~` prefix, so /api/admin wins over
+    # /api/ and the alias stays closed. If you ever add another blocked
+    # prefix above, add its /api/ twin here too.
+    #
+    # This was found by cross-checking every gateway route against the
+    # location table, not by reading the file. Do the same after you edit it.
+    location ^~ /api/admin {
+        return 404;
+    }
+
+    # Same reasoning, defence in depth: /api/v0/... would be forwarded to the
+    # GATEWAY as /v0/..., which 404s anyway because the gateway uses a route
+    # allowlist with no catch-all. Blocked here so the promise "no engine
+    # management path is reachable" holds at the edge, where it is auditable,
+    # rather than depending on a property of the application behind it.
+    location ^~ /api/v0 {
+        return 404;
+    }
+
+    # --- 3c. THE API ---------------------------------------------------------
+    #
+    # Each block is deliberately tiny: PART 2 already supplied the streaming
+    # settings, the headers and the timeouts. What is left per location is
+    # (1) turn gzip off, (2) mark the response uncacheable, (3) proxy_pass.
+    #
+    # `gzip off` is per-location because the static site in 3d SHOULD be
+    # compressed. Compressing a text/event-stream makes nginx hold a
+    # compression window's worth of tokens before flushing — the same frozen
+    # agent as proxy_buffering, from a different direction. Stock gzip_types
+    # does not list text/event-stream, but panel configs get edited, and a
+    # `gzip_types text/*` added six months from now would break streaming
+    # with no other trace.
+    #
+    # `proxy_pass http://127.0.0.1:8081` — the LITERAL IP, never `localhost`.
+    # docker-compose.behind-proxy.yml binds 127.0.0.1 only, not [::1]; on a
+    # dual-stack host the resolver may hand nginx ::1 and every request fails
+    # with "Connection refused" while `ss -ltnp` clearly shows the port open.
+    #
+    # ⚠ THE PORT MUST MATCH GATEWAY_PORT IN deploy/.env — and note that
+    # deploy/.env.example ships GATEWAY_PORT=8000 for the standalone stack,
+    # while docker-compose.behind-proxy.yml defaults to 8081. Pick one. If
+    # you keep 8000, change all four proxy_pass lines below. If you keep
+    # 8081, put GATEWAY_PORT=8081 in deploy/.env. A mismatch shows up as 502.
+
+    # SDK base URL. Anthropic/OpenAI-shaped clients are configured with
+    # https://yangble5.com/v1 and append /messages, /chat/completions,
+    # /responses, /models themselves. This is the streaming path.
+    location ^~ /v1/ {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        # limit_req zone=yb5_api burst=20 nodelay;   # needs PART 0b
+        proxy_pass http://127.0.0.1:8081;
+    }
+
+    # Registration and key management. Small JSON POSTs, but they share the
+    # streaming-safe settings because there is no reason for them not to.
+    # This is the credential-guessing surface: if you have PART 0b, the
+    # STRICT zone belongs here, not the API one.
+    location ^~ /auth/ {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        # limit_req zone=yb5_auth burst=5 nodelay;   # needs PART 0b
+        proxy_pass http://127.0.0.1:8081;
+    }
+
+    # The /api/* alias. site/index.html's status widget fetches /api/health
+    # first (then /health, then /healthz — first success wins), and this also
+    # gives you one prefix that reaches every gateway route without listing
+    # them: /api/usage, /api/byok, /api/pool/status, /api/v1/messages, ...
+    #
+    # The trailing slash on proxy_pass is what strips the /api/ prefix:
+    # /api/v1/messages is passed upstream as /v1/messages. Removing that
+    # slash would forward /api/v1/messages verbatim and the gateway, which
+    # uses an explicit route allowlist and no catch-all, would 404 it.
+    #
+    # Side effect of the URI form: nginx passes the NORMALISED, decoded URI.
+    # No yangble5 route carries percent-encoded path segments, so this is
+    # safe here — but it is why the /v1/ block above has no trailing slash.
+    location ^~ /api/ {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        # limit_req zone=yb5_api burst=20 nodelay;   # needs PART 0b
+        proxy_pass http://127.0.0.1:8081/;
+    }
+
+    # Root-level singles. These exist because deploy/smoke_test.sh and
+    # site/install.sh call them at the root, not under /api/. `=` is an exact
+    # match, so /healthy or /health/x are NOT matched and fall through to the
+    # static site as a 404 — which is what you want.
+    #
+    # /health is canonical. gateway/app.py stacks @app.get("/healthz") on the
+    # same handler, so the alias below is belt-and-braces rather than a
+    # rewrite the app depends on — it keeps working if that decorator is ever
+    # removed. site/index.html probes /api/health, then /health, then
+    # /healthz, first success wins; all three answer with this file in place.
+    location = /health {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        proxy_pass http://127.0.0.1:8081;
+    }
+    location = /healthz {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        proxy_pass http://127.0.0.1:8081/health;
+    }
+    location = /pool/status {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        proxy_pass http://127.0.0.1:8081;
+    }
+    location = /usage {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        proxy_pass http://127.0.0.1:8081;
+    }
+    location = /byok {
+        gzip off;
+        set $yb5_cc "no-store, no-transform";
+        proxy_pass http://127.0.0.1:8081;
+    }
+
+    # --- 3d. THE STATIC SITE -------------------------------------------------
+    #
+    # Everything not matched above is served from the webroot. Copy the
+    # contents of site/ there — index.html, verify.html, install.sh,
+    # install.ps1, uninstall.sh, uninstall.ps1 and the four .sha256 files.
+    #
+    # Set `root` in your existing server block if it is not already set; the
+    # line here is the aaPanel default for this domain and is commented out
+    # so it cannot conflict with the one the panel wrote.
+    location / {
+        # root /www/wwwroot/yangble5.com;
+        index index.html;
+        try_files $uri $uri/ =404;
+
+        # WHY default_type text/plain: nginx's mime.types has no entry for
+        # .sh, .ps1 or .sha256, so they fall through to `default_type`, which
+        # panel configs set to application/octet-stream at http level. That
+        # makes a browser DOWNLOAD install.sh instead of showing it. The
+        # landing page tells visitors to read the script before running it;
+        # they cannot read a download. `curl | sh` is unaffected either way.
+        #
+        # This is safe for this webroot because it holds only .html, .sh,
+        # .ps1 and .sha256. If you add images or fonts, delete these two
+        # lines — .png would otherwise be served as text/plain.
+        default_type text/plain;
+        charset utf-8;
+
+        # Inherits Cache-Control: public, max-age=300 from $yb5_cc in 2j.
+        # Deliberately short: install.sh and its .sha256 must never be served
+        # as a stale pair from a CDN edge. If you lengthen it, purge
+        # Cloudflare on every release.
+    }
+
+
+# =============================================================================
+# PART 4 — AFTER YOU PASTE THIS IN
+# =============================================================================
+#
+#   nginx -t                    # ALWAYS. See AAPANEL.md §5 for the reload
+#                               # that does not disturb your other sites.
+#
+# Then, from a machine that is NOT the VPS (bash deploy/smoke_test.sh does
+# all of this and more):
+#
+#   curl -sS  https://yangble5.com/health              # 200, {"status":"ok"}
+#   curl -sS  https://yangble5.com/api/health          # 200, same body
+#   curl -si  https://yangble5.com/v0/management/api-keys | head -1   # 404
+#   curl -si  https://yangble5.com/admin/keys | head -1               # 404
+#   curl -fsS https://yangble5.com/install.sh | head -3 # the real script
+#
+# And the one that matters, because it is the one naive configs fail —
+# events must arrive PROGRESSIVELY, not in a single burst at the end:
+#
+#   curl -N -sS https://yangble5.com/v1/messages \
+#     -H "Authorization: Bearer $YANGBLE5_API_KEY" \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"yangble5","max_tokens":64,"stream":true,
+#          "messages":[{"role":"user","content":"count slowly to twenty"}]}'
+#
+# If that dumps everything at once, work down this list in order:
+#   1. proxy_buffering off        — present, and not overridden in a location?
+#   2. gzip off                   — present in the /v1/ block?
+#   3. add_header in a location   — did you add one, and lose PART 2j?
+#   4. Cloudflare                 — retest with the record grey-clouded.
+#      cloudflare.md → "Response buffering".
+#
+# Rollback is in AAPANEL.md §6. It is two commands and it is tested before
+# you need it, not after.
+# =============================================================================

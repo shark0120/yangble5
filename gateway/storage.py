@@ -41,9 +41,11 @@ __all__ = [
     "MACHINE_ID_MIN_CHARS",
     "ApiKeyRecord",
     "DayUsage",
+    "EmailInUseError",
     "InviteError",
     "IssuedKey",
     "MachineBinding",
+    "RegistrationCapError",
     "Storage",
     "StoredByok",
     "hash_secret",
@@ -270,6 +272,31 @@ class DayUsage:
 
 class InviteError(Exception):
     """Invite code missing, expired, exhausted or revoked."""
+
+
+class RegistrationCapError(Exception):
+    """A per-IP registration ceiling was reached.
+
+    Raised from INSIDE the transaction that would have issued the key, which is
+    the only place the decision can be made safely: a check made before the
+    transaction is a check a concurrent request can slip past. `count` is what
+    the transaction actually saw, so the message quoted to the caller is the
+    number that stopped them rather than a number read a moment earlier.
+    """
+
+    def __init__(self, count: int, limit: int):
+        super().__init__(f"{count} key(s) already issued from this address today (limit {limit})")
+        self.count = count
+        self.limit = limit
+
+
+class EmailInUseError(Exception):
+    """The address already has an active key.
+
+    Same reasoning as RegistrationCapError: checked inside the issuing
+    transaction so that two simultaneous registrations for one address cannot
+    both observe "no existing key" and both proceed.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +557,8 @@ class Storage:
         is_operator: bool = False,
         machine_hash: str | None = None,
         registration_ip_hash: str | None = None,
+        max_keys_per_ip_per_day: int = 0,
+        enforce_unique_email: bool = False,
         moment: datetime | None = None,
     ) -> IssuedKey:
         """Create user (if needed) + key. The plaintext is returned once and is
@@ -539,12 +568,40 @@ class Storage:
         transaction as the key. A key that exists without its binding would be
         re-mintable from the same fingerprint, which is precisely the farming
         hole the binding is there to close.
+
+        The two CEILINGS are enforced in that same transaction, for the same
+        reason `consume_invite` claims a use with the precondition in its WHERE
+        clause. `max_keys_per_ip_per_day` and `enforce_unique_email` used to be
+        checked by the caller and acted on afterwards, with `await` points in
+        between; a burst of simultaneous registrations all read the same stale
+        count, all decided they were under the cap, and all got a key. Under
+        BEGIN IMMEDIATE only one writer holds the database at a time, so the
+        count each one reads already includes every key its predecessors wrote.
+
+        0 / False mean "no ceiling", matching the settings that feed them.
         """
         plaintext, key_id, secret = make_key_material()
         digest, salt, scheme_string = hash_secret(secret, scheme=scheme, pepper=pepper)
         moment = moment or utcnow()
         created = _iso(moment)
         with self._tx() as conn:
+            if max_keys_per_ip_per_day > 0 and registration_ip_hash is not None:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM key_registrations WHERE ip_hash = ? AND day = ?",
+                    (registration_ip_hash, day_key(moment)),
+                ).fetchone()
+                issued_here = int(row["n"]) if row else 0
+                if issued_here >= max_keys_per_ip_per_day:
+                    raise RegistrationCapError(issued_here, max_keys_per_ip_per_day)
+            if enforce_unique_email and email:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM api_keys k JOIN users u ON u.id = k.user_id"
+                    " WHERE u.email = ? COLLATE NOCASE AND k.status = 'active'",
+                    (email,),
+                ).fetchone()
+                if row and int(row["n"]) > 0:
+                    raise EmailInUseError(email)
+
             user_id: int | None = None
             if email:
                 row = conn.execute(
@@ -937,22 +994,54 @@ class Storage:
 
     # -- registration throttling ----------------------------------------------
     def bump_register_attempt(self, ip_hash: str, day: str | None = None) -> int:
-        day = day or day_key()
-        with self._tx() as conn:
-            conn.execute(
-                "INSERT INTO register_attempts(ip_hash, day, count) VALUES(?, ?, 1)"
-                " ON CONFLICT(ip_hash, day) DO UPDATE SET count = count + 1",
-                (ip_hash, day),
-            )
-            row = conn.execute(
-                "SELECT count FROM register_attempts WHERE ip_hash = ? AND day = ?",
-                (ip_hash, day),
-            ).fetchone()
-        return int(row["count"]) if row else 1
+        """Unconditional +1, returning the new count.
+
+        Delegates rather than duplicating the SQL: a second copy of "read the
+        count, then write it" is exactly how the ceiling got raced in the first
+        place, and a copy that no longer gates on anything is the copy a future
+        caller would reach for. Gate with `claim_register_attempt`.
+        """
+        _, count = self.claim_register_attempt(ip_hash, 0, day)
+        return count
 
     def register_attempts_today(self, ip_hash: str, day: str | None = None) -> int:
+        """Read-only. Fine for a cheap early reject; NOT the authoritative check —
+        use `claim_register_attempt` for anything that must hold under load."""
         row = self._one(
             "SELECT count FROM register_attempts WHERE ip_hash = ? AND day = ?",
             (ip_hash, day or day_key()),
         )
         return int(row["count"]) if row else 0
+
+    def claim_register_attempt(
+        self, ip_hash: str, max_per_day: int, day: str | None = None
+    ) -> tuple[bool, int]:
+        """Check the daily attempt ceiling and consume one, atomically.
+
+        Returns (claimed, count). When `claimed` is False the counter was NOT
+        incremented — being over the cap must not push you further over it, or a
+        client retrying in a loop would extend its own lockout indefinitely.
+
+        The check and the increment share one BEGIN IMMEDIATE, so N simultaneous
+        registrations from one address see N distinct counts rather than N copies
+        of the same stale one. That is the whole point: a read followed by a
+        write with an `await` between them is not a ceiling, it is a suggestion.
+
+        `max_per_day <= 0` means unlimited; the attempt is still counted, because
+        the counter is also what the operator reads to spot a farm.
+        """
+        day = day or day_key()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT count FROM register_attempts WHERE ip_hash = ? AND day = ?",
+                (ip_hash, day),
+            ).fetchone()
+            current = int(row["count"]) if row else 0
+            if max_per_day > 0 and current >= max_per_day:
+                return False, current
+            conn.execute(
+                "INSERT INTO register_attempts(ip_hash, day, count) VALUES(?, ?, 1)"
+                " ON CONFLICT(ip_hash, day) DO UPDATE SET count = count + 1",
+                (ip_hash, day),
+            )
+        return True, current + 1

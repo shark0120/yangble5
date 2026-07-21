@@ -49,7 +49,7 @@ production, yangble5's benchmark pointed at whatever they already run*.
 | **Observability / dashboards** | 🔴 A sidecar that writes `stats.json`. That's it. | 🟢 Dashboards, callbacks, logging integrations | 🟢 Hosted dashboard and usage UI | 🟡 Provider console |
 | **Enterprise features** (SSO, RBAC, audit, teams) | 🔴 **None.** | 🟢 Yes | 🟡 Org/team features | 🟡 Varies |
 | **Benchmark rigour of published claims** | 🔴 **n=1.** One machine, one run, one afternoon, no error bars, no cross-provider comparison. | ⚪ Not directly comparable | ⚪ Not directly comparable | ⚪ n/a |
-| **Hosted option** | 🔴 None. You run it. | 🟡 Self-host or their cloud | 🟢 Fully hosted | 🟢 Fully hosted |
+| **Hosted option** | 🔴 **None from us.** Nobody operates a yangble5 you can sign up for. The repo *ships* a gateway and a landing page so **you** can become the operator — with the bill, the abuse reports and the provider terms. | 🟡 Self-host or their cloud | 🟢 Fully hosted | 🟢 Fully hosted |
 | **Breadth of tested configurations** | 🔴 One OS (Windows 11), one engine version (7.1.23), one upstream channel. | 🟢 Broad | 🟢 Broad | 🟢 Broad |
 | **Failure modes you inherit** | 🔴 Ours **plus** CLIProxyAPI's — a third-party engine we don't control and didn't write. | 🟡 Theirs | 🟡 Theirs | 🟢 Fewest — one hop |
 | **Documentation breadth** | 🟡 Deep on a narrow topic; nonexistent outside it. | 🟢 Broad | 🟢 Broad | 🟢 Broad |

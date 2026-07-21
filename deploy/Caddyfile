@@ -99,11 +99,23 @@
 		Cross-Origin-Opener-Policy "same-origin"
 		Cross-Origin-Resource-Policy "same-origin"
 		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
-		# Scoped for the registration page the gateway serves. If your page
-		# uses inline <script>, do not add 'unsafe-inline' here — move the
-		# script to a file. Inline STYLE is allowed because most minimal
-		# templates need it.
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		# Scoped for the pages this host serves. Inline STYLE is allowed
+		# because most minimal templates need it.
+		#
+		# The two script-src hashes are site/index.html's and site/verify.html's
+		# inline <script> blocks. Without them `script-src 'self'` blocks both,
+		# and the landing page loses its copy buttons, OS detection and live
+		# status widget — silently, because a CSP violation is a console message,
+		# not an error anyone sees.
+		#
+		# 'unsafe-inline' is NOT the fix. These pages exist to persuade someone
+		# it is safe to pipe a script into their shell; weakening the policy on
+		# exactly that page would be the wrong trade.
+		#
+		# THESE HASHES CHANGE WHENEVER A <script> BLOCK IS EDITED — by one byte,
+		# including whitespace. site/README.md carries the recompute snippet and
+		# is the source of truth for the current values.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 		# Strip anything that advertises the stack.
 		-Server
 		-X-Powered-By
@@ -197,8 +209,32 @@
 		respond 404
 	}
 
-	# ── Health check (unauthenticated, unrated, unlogged) ────────────────
-	handle /healthz {
+	# ── Health check (unauthenticated, unrated) ──────────────────────────
+	# NOTHING IS REWRITTEN HERE. Both paths are registered by gateway/app.py on
+	# the same handler, so they reach the app spelled exactly as they arrived.
+	# That matters because this Caddyfile is not the only edge this gateway runs
+	# behind (deploy/docker-compose.behind-proxy.yml puts it behind whatever the
+	# host's panel manages), and a contract that depends on an edge rewrite is a
+	# contract that breaks the moment you change edges.
+	#
+	# This block used to forward /healthz to an app that only served /health. The
+	# app 404'd, the compose healthcheck probed the same wrong path, the gateway
+	# was permanently "unhealthy", and caddy — which waited on it — never started.
+	#
+	# Two paths need a NAMED matcher: an inline matcher token is a single path,
+	# so `handle /health /healthz` is a parse error, not a two-path route.
+	@health path /health /healthz
+	handle @health {
+		import to_gateway
+	}
+
+	# The landing page's status widget tries /api/health first (it falls back to
+	# /health, so this is a convenience, not a dependency). /api/* is a prefix an
+	# edge owns, so the mapping lives here rather than as a third route in the
+	# app. `rewrite` is internal: the client's URL is untouched.
+	@health_alias path /api/health /api/healthz
+	handle @health_alias {
+		rewrite * /health
 		import to_gateway
 	}
 
@@ -232,8 +268,18 @@
 	# disjoint means the strict auth limit applies to /v1/auth/* no matter how
 	# Caddy sorts the routes — the alternative is a rate limit that silently
 	# becomes 120/min on the credential-guessing surface after an upgrade.
+	#
+	# /api/* IS DELIBERATELY ABSENT. It used to be listed here and forwarded
+	# unmodified, which meant every /api/... path arrived at an app that serves
+	# none of them and 404'd — the widget's /api/health included. The tempting
+	# repair is to strip the prefix for the whole tree, and that is a security
+	# bug: /api/auth/register would strip to /auth/register and arrive having
+	# skipped the @auth block's 10/min credential-guessing limit, since the
+	# matcher is evaluated against the URL as RECEIVED. So the only /api/* paths
+	# that exist are the two health spellings handled above; anything else falls
+	# through to the catch-all and gets an honest 404 from the gateway.
 	@api {
-		path /v1/* /api/*
+		path /v1/*
 		not path /v1/auth/*
 	}
 	handle @api {

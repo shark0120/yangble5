@@ -56,18 +56,66 @@ deployment offers is paid for by *you*, out of *your* upstream billing, and any 
 publish is a promise only you can keep. We are not putting a number in this repository, and you
 should be equally careful about putting one on your landing page.
 
-Cap the spend **before** you open registration, not after the first surprise invoice. The
-gateway in `gateway/` is built for exactly this, and it fails fast rather than warning:
-a configuration with public registration enabled and no spend ceiling is refused at startup.
+Cap the spend **before** you open registration, not after the first surprise invoice.
 
-The controls, and the order to think about them:
+> **Read this before you trust the caps.** The startup check that refuses an uncapped
+> deployment fires **only when `REGISTRATION_MODE=open`**. In `invite` (the default) and in
+> `closed`, the gateway starts happily with **every global ceiling at its default of
+> `0`, which means unlimited**. An invite-only instance is *not* capped because you
+> installed it; it is capped when you set a number. Verify with `GET /admin/stats`, which
+> reports the ceilings actually in force.
 
-| Control | Setting | Why it exists |
-|---|---|---|
-| Global spend ceiling | `YANGBLE5_GLOBAL_BUDGET_TOKENS` | The only control that bounds your total exposure. Everything else is per-user. |
-| Per-user daily allowance | `YANGBLE5_USER_DAILY_TOKENS` | Bounds one bad actor, or one runaway agent loop. |
-| Registration mode | `YANGBLE5_REGISTRATION_OPEN` / invite / closed | Freeze signups when you are over budget **without** taking the service down for existing users. |
-| Rate + concurrency limits | `gateway/ratelimit.py` | Bounds burst damage and upstream 429s. Note: in-process, so per worker. Run one uvicorn worker, or divide the limits by the worker count. |
+Every name below is the canonical spelling accepted by `gateway/config.py`. Each one is read
+both bare and with the `YANGBLE5_` prefix (`_raw()` tries `NAME`, then `YANGBLE5_NAME`), so
+`GLOBAL_MONTHLY_USD_BUDGET` and `YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET` are the same setting.
+All of them are listed with their defaults in [`gateway/.env.example`](../gateway/.env.example);
+the operator-facing subset is in [`deploy/.env.example`](../deploy/.env.example).
+
+**Operator ceilings — these bound *your* total exposure. All four default to `0` = unlimited.**
+
+| Control | Setting | Default | Why it exists |
+|---|---|---|---|
+| Whole-pool monthly cap, in dollars | `GLOBAL_MONTHLY_USD_BUDGET` | `0` (unlimited) | The ceiling to set if your price table is real. |
+| Whole-pool monthly cap, in tokens | `GLOBAL_MONTHLY_TOKEN_BUDGET` | `0` (unlimited) | The honest ceiling when you have *not* calibrated prices. Legacy alias: `GLOBAL_BUDGET_TOKENS`. |
+| Whole-pool daily cap, in dollars | `GLOBAL_DAILY_USD_BUDGET` | `0` (unlimited) | Fails as "come back after 00:00 UTC" instead of "this instance is done until the 1st". |
+| Whole-pool daily cap, in tokens | `GLOBAL_DAILY_TOKEN_BUDGET` | `0` (unlimited) | Same, without needing prices. |
+| Warn threshold | `GLOBAL_BUDGET_WARN_RATIO` | `0.9` | Fraction of a ceiling at which the gateway starts warning. Lower it if you want earlier notice. |
+| Operator's reserved slice | `OPERATOR_RESERVE_FRACTION` | `0.25` | Bottom fraction of the pool only `is_operator` keys may spend, so public traffic cannot starve your own daily driver. |
+
+**Per-key ceilings — these bound one bad actor, not your bill.**
+
+| Control | Setting | Default | Why it exists |
+|---|---|---|---|
+| Per-key daily tokens | `DAILY_TOKEN_BUDGET` | `2000000` | Bounds one runaway agent loop. Legacy alias: `USER_DAILY_TOKENS`. |
+| Per-key daily dollars | `DAILY_COST_USD_BUDGET` | `2.0` | The same bound expressed in money. |
+| Keys per IP / IPs per key | `MAX_KEYS_PER_IP`, `MAX_IPS_PER_KEY` | see `.env.example` | Bounds farming and key sharing. |
+| Registrations per IP per day | `REGISTER_MAX_PER_IP_PER_DAY` | see `.env.example` | Bounds signup floods. |
+
+**Registration mode.**
+
+| Control | Setting | Default | Notes |
+|---|---|---|---|
+| Registration mode | `REGISTRATION_MODE` | `invite` | Exactly one of `invite`, `open`, `closed`. Anything else is fatal at startup. |
+| Legacy boolean | `REGISTRATION_OPEN` | unset | A **boolean** alias honoured only when `REGISTRATION_MODE` is unset: true -> `open`, false -> `closed`. It cannot express `invite`. Prefer `REGISTRATION_MODE`. |
+
+**Rate and concurrency:** `RATE_LIMIT_RPM`, `RATE_LIMIT_CONCURRENCY`, `AUTH_RPM_PER_IP`
+(limiter primitives in `gateway/ratelimit.py`, wired up in `gateway/app.py`). These bound burst damage and upstream 429s. They are
+**in-process**, so they are per uvicorn worker: run one worker, or divide the limits by the
+worker count.
+
+> **The dollar ceilings are only as honest as your price table.** With neither
+> `PRICE_TABLE_JSON` nor `PRICE_TABLE_FILE` set, the gateway falls back to a single placeholder
+> entry (`default`: $5.00 input / $0.50 cached input / $15.00 output per 1M tokens) and flags
+> itself as `prices_are_placeholder: true` in `/admin/stats` (and logs a warning at
+> startup). Those numbers are a
+> deliberately conservative stand-in, **not** your provider's prices. Until you supply a real
+> table, every `*_USD_BUDGET` is a cap on an *estimate*, and the token ceilings are the ones
+> that actually correspond to something you can verify against an invoice.
+
+What `REGISTRATION_MODE=open` does enforce at startup: at least one of the four global ceilings
+above must be > 0, **and** at least one of `DAILY_TOKEN_BUDGET` / `DAILY_COST_USD_BUDGET` must
+be > 0. The gateway raises `ConfigError` and refuses to boot otherwise. That is the whole of the
+automatic protection; every other mode trusts you.
 
 A single agent session in this repository's own benchmark moved **2,995,762 prompt tokens in
 four requests**. One user with a scripted loop and a 749K prefix can spend more in an hour than
@@ -77,7 +125,8 @@ treat "0 = unlimited" as a bug in your deployment rather than a default.
 Two more habits worth having:
 
 * **Alert on the trend, not the trip.** By the time the hard cap fires, the money is spent. Watch
-  daily burn against the cap and get told at 50%.
+  daily burn against the cap. `GLOBAL_BUDGET_WARN_RATIO` defaults to `0.9`, which is late
+  notice - set it to `0.5` if you want to hear about it while you can still act.
 * **Keep the kill switch trivial.** Freezing registration and dropping the global cap to a small
   number should be one command, and you should have done it once on purpose before you need it.
 
@@ -114,10 +163,20 @@ reference compose stack.
 
 - [ ] Every upstream credential is a paid key licensed for serving third parties. No personal
       OAuth account is in the pool.
-- [ ] `YANGBLE5_GLOBAL_BUDGET_TOKENS` is set to a number you can afford to lose entirely.
-- [ ] `YANGBLE5_USER_DAILY_TOKENS` is set. Per-user rate and concurrency limits are set, and you
-      have divided them by your worker count.
-- [ ] Registration is `invite` or `closed` for launch. Opening it is a decision, not a default.
+- [ ] At least one operator ceiling is a number you can afford to lose entirely:
+      `GLOBAL_MONTHLY_USD_BUDGET`, `GLOBAL_MONTHLY_TOKEN_BUDGET`, `GLOBAL_DAILY_USD_BUDGET` or
+      `GLOBAL_DAILY_TOKEN_BUDGET`. **They all default to `0` = unlimited, and nothing forces you
+      to set one unless `REGISTRATION_MODE=open`.** Confirm the live value in `/admin/stats`
+      rather than assuming your `.env` was read.
+- [ ] If any ceiling is expressed in dollars, `PRICE_TABLE_JSON` or `PRICE_TABLE_FILE` holds
+      *your provider's* prices. If `/admin/stats` still says `prices_are_placeholder: true`,
+      your USD cap is capping a guess.
+- [ ] `DAILY_TOKEN_BUDGET` and/or `DAILY_COST_USD_BUDGET` are set (they default to 2,000,000
+      tokens / $2.00 per key per day). `RATE_LIMIT_RPM` and `RATE_LIMIT_CONCURRENCY` are set,
+      and you have divided them by your uvicorn worker count.
+- [ ] `REGISTRATION_MODE` is `invite` (the default) or `closed` for launch. Opening it is a
+      decision, not a default. If you set the legacy `REGISTRATION_OPEN` boolean instead, know
+      that it cannot express `invite` and is ignored entirely when `REGISTRATION_MODE` is set.
 - [ ] The engine port is not reachable from the internet. Verified from off-host, not assumed.
 - [ ] `/v0/management/*` returns 404 from the internet. Verified.
 - [ ] Nothing logs prompts or completions. Grep your own config to confirm.

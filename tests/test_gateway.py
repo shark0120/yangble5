@@ -11,18 +11,24 @@ limits, invites, and information leakage.
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 import sqlite3
 import threading
 import time
 from datetime import datetime
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
+from starlette.requests import Request as StarletteRequest
 
-from gateway.app import create_app, extract_model
+from gateway.app import client_ip, create_app, extract_model
 from gateway.config import ConfigError, ModelPrice, Settings
 from gateway.ratelimit import TimedThrottle
 from gateway.storage import Storage, hash_secret, normalize_machine_id, parse_key, verify_secret
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 ENGINE_KEY = "sk-engine-test-only-not-a-real-key"
 ADMIN_KEY = "admin-test-only-not-a-real-key"
@@ -1665,3 +1671,531 @@ def test_billable_flag_defaults_to_true_for_direct_writes(build):
     gw.charge(parse_key(key)[0], tokens=500, cost=1.0)
     assert gw.storage.global_usage_for_month().total_tokens == 500
     assert gw.storage.usage_for_day(parse_key(key)[0], billable_only=True).total_tokens == 500
+
+
+# ---------------------------------------------------------------------------
+# 18. the health contract the infrastructure depends on
+#
+# The original defect was not subtle in effect and was invisible in review: the
+# compose healthcheck probed /healthz, the app served only /health, so the
+# gateway container was permanently "unhealthy" — and caddy, which waited on
+# `condition: service_healthy`, never started at all. No edge, no certificate,
+# no site. Nothing in the test suite could see it, because the mismatch lived
+# between two files that no test read.
+#
+# These tests read those files.
+# ---------------------------------------------------------------------------
+def _app_paths(app) -> set[str]:
+    return {route.path for route in app.routes if hasattr(route, "path")}
+
+
+def _compose_gateway_probe_paths(path: pathlib.Path) -> set[str]:
+    """URL paths the gateway's compose healthcheck actually requests.
+
+    Only the gateway service: the engine's healthcheck talks to CLIProxyAPI,
+    which is a different application with a different URL space, and asserting
+    its paths against our route table would be nonsense.
+    """
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    test = doc["services"]["gateway"]["healthcheck"]["test"]
+    blob = " ".join(test) if isinstance(test, list) else str(test)
+    # The probe is a Python one-liner, so the path is a quoted token inside it.
+    return set(re.findall(r"['\"](/[A-Za-z0-9_./-]*)['\"]", blob))
+
+
+def _caddyfile_health_targets(text: str) -> set[str]:
+    """What the edge's health routes ask the APP for, after any rewrite.
+
+    Named matchers are collected first because Caddy's inline matcher token is a
+    single path — multi-path routes have to be written as `@name path a b`, so
+    the paths and the handle block that uses them are two separate statements.
+    """
+    matchers = {
+        name: paths.split()
+        for name, paths in re.findall(r"^\s*@(\w+)\s+path\s+(.+)$", text, re.M)
+    }
+    targets: set[str] = set()
+    for name, body in re.findall(r"^\s*handle\s+@(\w+)\s*\{(.*?)^\s*\}", text, re.M | re.S):
+        if not name.startswith("health"):
+            continue
+        rewrite = re.search(r"^\s*rewrite\s+\*\s+(\S+)\s*$", body, re.M)
+        for declared in matchers.get(name, []):
+            targets.add(rewrite.group(1) if rewrite else declared)
+    return targets
+
+
+def test_health_and_healthz_are_the_same_endpoint(gw):
+    """Both spellings exist and agree. /healthz is not a stub that returns a
+    different, thinner payload — infrastructure would still call it healthy."""
+    canonical = gw.client.get("/health")
+    alias = gw.client.get("/healthz")
+    assert canonical.status_code == 200
+    assert alias.status_code == 200
+    assert alias.json() == canonical.json()
+    assert canonical.json()["service"] == "yangble5-gateway"
+
+
+def test_compose_healthcheck_probes_a_path_the_app_serves(gw):
+    """Reads the shipped compose files. This is the assertion that would have
+    caught /healthz-vs-/health before it took the whole edge down with it."""
+    served = _app_paths(gw.app)
+    checked = 0
+    for name in ("docker-compose.yml", "docker-compose.behind-proxy.yml"):
+        compose = REPO_ROOT / "deploy" / name
+        if not compose.exists():
+            continue
+        probes = _compose_gateway_probe_paths(compose)
+        assert probes, f"no probe path found in {name} — the parser or the file changed"
+        for probe in probes:
+            assert probe in served, (
+                f"{name} healthchecks {probe}, which gateway/app.py does not route. "
+                f"The container can never become healthy. Served: {sorted(served)}"
+            )
+        checked += 1
+    assert checked, "no compose file was checked — the deploy/ layout moved"
+
+
+def test_caddyfile_health_routes_reach_a_real_route(gw):
+    """Every health path the edge accepts must land on a path the app serves —
+    directly, or through the rewrite the Caddyfile declares."""
+    caddyfile = (REPO_ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    targets = _caddyfile_health_targets(caddyfile)
+    assert targets, "no health handle block found in the Caddyfile"
+
+    served = _app_paths(gw.app)
+    for target in targets:
+        assert target in served, (
+            f"the Caddyfile routes a health request to {target}, which the app "
+            f"does not serve. Served: {sorted(served)}"
+        )
+
+
+def test_caddyfile_does_not_forward_unstripped_api_paths(gw):
+    """/api/* used to be forwarded verbatim into an app that serves none of it.
+
+    The tempting repair — strip the prefix for the whole /api tree — is worse
+    than the bug: /api/auth/register would arrive at the app as /auth/register
+    having skipped the @auth block's strict credential-guessing rate limit,
+    because Caddy matches on the URL as RECEIVED. So the fix is that only the
+    health spellings exist under /api, and they are rewritten explicitly.
+    """
+    caddyfile = (REPO_ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    api_matcher = re.search(r"@api\s*\{(.*?)\}", caddyfile, re.S)
+    assert api_matcher, "the @api matcher disappeared"
+    assert "/api/*" not in api_matcher.group(1), (
+        "@api matches /api/* again. Those requests reach the app unstripped and "
+        "404; stripping them wholesale would bypass the @auth rate limit."
+    )
+    # No blanket prefix strip crept in either.
+    assert "handle_path /api" not in caddyfile
+    assert "strip_prefix /api" not in caddyfile
+
+
+def test_smoke_test_probes_a_path_the_app_serves(gw):
+    """The smoke test is what an operator runs at 3am. Its health path is part
+    of the same contract as the compose probe and drifts the same way."""
+    smoke = REPO_ROOT / "deploy" / "smoke_test.sh"
+    if not smoke.exists():
+        pytest.skip("smoke_test.sh not present")
+    text = smoke.read_text(encoding="utf-8")
+    probed = {
+        path for path in re.findall(r"\$\{BASE_URL\}(/[A-Za-z0-9_/-]*)", text)
+        if "health" in path
+    }
+    assert probed, "smoke_test.sh no longer probes a health path"
+    served = _app_paths(gw.app)
+    for path in probed:
+        assert path in served, f"smoke_test.sh probes {path}, which the app does not route"
+
+
+def test_caddyfile_csp_allows_the_landing_pages_inline_scripts():
+    """The shipped CSP said `script-src 'self'` with no hashes, which blocks
+    site/index.html's inline script — silently, because a CSP violation is a
+    console message. The hashes are recomputed here from the actual files, so
+    editing a <script> block by one byte fails this test instead of shipping a
+    page whose copy buttons and status widget quietly stop working."""
+    import base64
+    import hashlib
+
+    caddyfile = (REPO_ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    csp = re.search(r'Content-Security-Policy "([^"]+)"', caddyfile)
+    assert csp, "the CSP header disappeared from the security_headers snippet"
+    policy = csp.group(1)
+
+    script_src = policy.split("script-src")[1].split(";")[0]
+    assert "'unsafe-inline'" not in script_src, (
+        "script-src gained 'unsafe-inline'. Not on a page whose job is to "
+        "convince someone it is safe to pipe a script into their shell."
+    )
+
+    for filename in ("index.html", "verify.html"):
+        page = REPO_ROOT / "site" / filename
+        if not page.exists():
+            continue
+        html = page.read_text(encoding="utf-8")
+        for script in re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, re.S):
+            digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+            assert f"'sha256-{digest}'" in policy, (
+                f"site/{filename} has an inline <script> whose hash sha256-{digest} "
+                "is not in the Caddyfile CSP, so the browser will refuse to run it. "
+                "Recompute with the snippet in site/README.md."
+            )
+
+
+# ---------------------------------------------------------------------------
+# 19. which address a request is attributed to
+#
+# Behind Caddy — and behind Caddy behind Cloudflare — reading the wrong entry
+# does not fail loudly. Every request just gets attributed to a handful of edge
+# addresses, so per-IP registration caps, the auth throttle and the abuse
+# fan-out counter all collapse into one shared bucket that no real user can
+# exhaust and no attacker is ever caught by.
+# ---------------------------------------------------------------------------
+def _request_with(headers: dict[str, str], peer: str = "172.20.0.5"):
+    """A Request as the ASGI server would build it. `peer` is the TCP peer —
+    the Caddy container, in production."""
+    return StarletteRequest(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "scheme": "http",
+            "http_version": "1.1",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+            "client": (peer, 41234),
+            "server": ("gateway", 8000),
+        }
+    )
+
+
+def _settings_with(**overrides) -> Settings:
+    env = dict(BASE_ENV)
+    env.update({k: str(v) for k, v in overrides.items()})
+    return Settings.from_env(env)
+
+
+def test_x_real_ip_beats_x_forwarded_for():
+    """The exact production shape. Caddy sets X-Real-IP to its own verdict and
+    APPENDS its peer — a Cloudflare edge node — to X-Forwarded-For. Reading the
+    tail of XFF therefore names Cloudflare, not the user."""
+    settings = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=1)
+    request = _request_with(
+        {
+            "x-forwarded-for": "203.0.113.9, 172.68.44.7",  # client, then CF edge
+            "x-real-ip": "203.0.113.9",
+        }
+    )
+    assert client_ip(request, settings) == "203.0.113.9"
+
+
+def test_a_forged_x_forwarded_for_cannot_beat_x_real_ip():
+    """A client prepending its own XFF entries must not move the attribution:
+    X-Real-IP is set by the edge with `header_up`, which overwrites."""
+    settings = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=1)
+    request = _request_with(
+        {
+            "x-forwarded-for": "1.1.1.1, 2.2.2.2, 203.0.113.9, 172.68.44.7",
+            "x-real-ip": "203.0.113.9",
+        }
+    )
+    assert client_ip(request, settings) == "203.0.113.9"
+
+
+def test_forwarded_headers_are_ignored_entirely_when_not_trusted():
+    """With no proxy in front, both headers are just strings the caller chose.
+    Honouring either one would hand every per-IP limit an unlimited supply of
+    fresh buckets."""
+    settings = _settings_with(TRUST_PROXY_HEADERS=False)
+    request = _request_with(
+        {"x-forwarded-for": "9.9.9.9", "x-real-ip": "8.8.8.8"}, peer="198.51.100.4"
+    )
+    assert client_ip(request, settings) == "198.51.100.4"
+
+
+def test_trusted_hop_count_picks_the_entry_that_many_from_the_end():
+    """The X-Forwarded-For fallback, for an edge that does not set X-Real-IP.
+    Each proxy APPENDS, so with N of them the client is N entries from the end;
+    anything to the left of that is caller-supplied and worthless."""
+    forwarded = {"x-forwarded-for": "1.1.1.1, 203.0.113.9, 172.68.44.7"}
+
+    one_hop = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=1)
+    assert client_ip(_request_with(forwarded), one_hop) == "172.68.44.7"
+
+    two_hops = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=2)
+    assert client_ip(_request_with(forwarded), two_hops) == "203.0.113.9"
+
+    # More hops than entries clamps to the first rather than raising.
+    many = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=9)
+    assert client_ip(_request_with(forwarded), many) == "1.1.1.1"
+
+
+def test_non_addresses_in_forwarded_headers_are_discarded():
+    """Every per-IP limit buckets on this value. A caller that can put arbitrary
+    text here can mint unlimited distinct buckets, so anything that is not an IP
+    literal falls through to the next source."""
+    settings = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=1)
+
+    # Junk X-Real-IP falls back to XFF...
+    assert client_ip(
+        _request_with({"x-real-ip": "not-an-ip", "x-forwarded-for": "203.0.113.9"}), settings
+    ) == "203.0.113.9"
+    # ...and junk in both falls back to the real TCP peer.
+    assert client_ip(
+        _request_with(
+            {"x-real-ip": "<script>", "x-forwarded-for": "unknown, garbage"}, peer="10.1.2.3"
+        ),
+        settings,
+    ) == "10.1.2.3"
+
+
+def test_forwarded_addresses_with_ports_are_understood():
+    """Some proxies append host:port. Treating `1.2.3.4:5678` as junk would
+    silently demote a correct edge to the fallback path."""
+    settings = _settings_with(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=1)
+    assert client_ip(_request_with({"x-real-ip": "203.0.113.9:5678"}), settings) == "203.0.113.9"
+    assert client_ip(_request_with({"x-real-ip": "[2001:db8::1]:443"}), settings) == "2001:db8::1"
+
+
+def test_the_recorded_registration_ip_is_the_client_not_the_edge(build):
+    """End to end: the hash written to key_registrations must be the user's
+    address. If it were the Cloudflare node's, every visitor on earth would
+    share one per-IP registration allowance."""
+    gw = build(TRUST_PROXY_HEADERS=True, TRUSTED_PROXY_HOPS=1)
+    response = gw.client.post(
+        "/auth/register",
+        json={"machine_id": MACHINE_A},
+        headers={
+            "x-forwarded-for": "203.0.113.9, 172.68.44.7",
+            "x-real-ip": "203.0.113.9",
+        },
+    )
+    assert response.status_code == 201
+    dump = gw.db_dump()
+    assert gw.storage.hash_ip("203.0.113.9") in dump
+    assert gw.storage.hash_ip("172.68.44.7") not in dump
+
+
+# ---------------------------------------------------------------------------
+# 20. the registration ceilings hold under a concurrent burst
+#
+# Both caps used to be read-then-act with `await` points between the read and
+# the write: the count was fetched, the request awaited a JSON parse and a key
+# derivation, and every sibling in the burst had already read the same stale
+# number. A cap that only holds when requests arrive one at a time is not a cap
+# — and "arrive one at a time" is exactly what an abuser will not do.
+# ---------------------------------------------------------------------------
+def _burst(fn, count: int) -> list:
+    """Run `fn(i)` on `count` threads released together."""
+    barrier = threading.Barrier(count)
+    lock = threading.Lock()
+    results: list = []
+
+    def worker(index: int) -> None:
+        barrier.wait()
+        outcome = fn(index)
+        with lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert len(results) == count, "a worker thread did not finish"
+    return results
+
+
+def test_daily_registration_attempt_cap_holds_under_a_burst(build):
+    gw = build(
+        REGISTER_MAX_PER_IP_PER_DAY=3,
+        MAX_KEYS_PER_IP=0,
+        AUTH_RPM_PER_IP=0,
+        ALLOW_MULTIPLE_KEYS_PER_EMAIL=True,
+    )
+    codes = _burst(lambda i: gw.register(email=f"burst{i}@b.com").status_code, 12)
+
+    assert codes.count(201) == 3, (
+        f"the daily attempt cap of 3 let {codes.count(201)} registrations through. "
+        "check-and-increment must share one transaction."
+    )
+    assert codes.count(429) == 9
+    assert gw.storage.register_attempts_today(gw.storage.hash_ip("testclient")) == 3
+
+
+def test_per_ip_key_cap_holds_under_a_burst(build):
+    """The other counter, and a stricter test: it is enforced inside the same
+    transaction that inserts the key, so the database itself cannot end up
+    holding more keys than the cap allows."""
+    gw = build(
+        MAX_KEYS_PER_IP=2,
+        REGISTER_MAX_PER_IP_PER_DAY=0,
+        AUTH_RPM_PER_IP=0,
+        ALLOW_MULTIPLE_KEYS_PER_EMAIL=True,
+    )
+    codes = _burst(lambda i: gw.register(email=f"rush{i}@b.com").status_code, 10)
+
+    assert codes.count(201) == 2, (
+        f"the per-IP key cap of 2 issued {codes.count(201)} keys under load"
+    )
+    assert codes.count(429) == 8
+    # The ceiling is a property of the DATABASE, not of the response codes.
+    assert len(gw.storage.list_keys()) == 2
+    assert gw.storage.count_keys_issued_from_ip(gw.storage.hash_ip("testclient")) == 2
+
+
+def test_one_key_per_email_holds_under_a_burst(build):
+    """Same race, third counter: two simultaneous registrations for one address
+    both used to observe 'no existing key' and both proceed."""
+    gw = build(
+        ALLOW_MULTIPLE_KEYS_PER_EMAIL=False,
+        MAX_KEYS_PER_IP=0,
+        REGISTER_MAX_PER_IP_PER_DAY=0,
+        AUTH_RPM_PER_IP=0,
+    )
+    codes = _burst(lambda _i: gw.register(email="one@b.com").status_code, 8)
+
+    assert codes.count(201) == 1
+    assert codes.count(409) == 7
+    assert gw.storage.count_active_keys_for_email("one@b.com") == 1
+
+
+def test_the_cap_is_not_pushed_further_over_by_rejected_attempts(build):
+    """A rejected attempt must not consume allowance. Otherwise a client that
+    retries in a loop extends its own lockout, and the counter stops meaning
+    'attempts made' — which is what the operator reads it as."""
+    gw = build(REGISTER_MAX_PER_IP_PER_DAY=1, AUTH_RPM_PER_IP=0, MAX_KEYS_PER_IP=0,
+               ALLOW_MULTIPLE_KEYS_PER_EMAIL=True)
+    assert gw.register(email="first@b.com").status_code == 201
+    for i in range(5):
+        assert gw.register(email=f"later{i}@b.com").status_code == 429
+    assert gw.storage.register_attempts_today(gw.storage.hash_ip("testclient")) == 1
+
+
+# ---------------------------------------------------------------------------
+# 21. usage that could not be parsed is still metered
+#
+# UsageScanner reports parsed=False when the upstream body carried no usage
+# object it recognised — a shape change, a body over MAX_USAGE_PARSE_BYTES, a
+# truncated stream. Nothing acted on that flag, so the request was recorded with
+# zero tokens and zero cost and advanced no budget at all. A caller who can
+# provoke an unparseable response reliably had an unmetered channel through a
+# service whose entire purpose is metering.
+# ---------------------------------------------------------------------------
+FLOOR = 4000
+
+
+def _no_usage_json(gw) -> None:
+    gw.upstream.headers = {"content-type": "application/json"}
+    gw.upstream.chunks = [b'{"content":[{"text":"a reply with no usage object"}]}']
+
+
+def test_unparseable_usage_advances_both_the_key_and_the_global_budget(build):
+    gw = build(UNPARSED_USAGE_TOKEN_FLOOR=FLOOR)
+    key = gw.new_key()
+    key_id = parse_key(key)[0]
+    _no_usage_json(gw)
+
+    before_cost, before_tokens = gw.spend.current()
+    assert gw.call(key).status_code == 200
+
+    # per-key
+    day = gw.storage.usage_for_day(key_id)
+    assert day.total_tokens == FLOOR, (
+        f"an unparseable 200 charged {day.total_tokens} tokens; it must charge the floor"
+    )
+    assert day.cost_usd > 0
+
+    # global — both the persisted aggregate and the in-process tracker
+    assert gw.storage.global_usage_for_month().total_tokens == FLOOR
+    after_cost, after_tokens = gw.spend.current()
+    assert after_tokens - before_tokens == FLOOR
+    assert after_cost > before_cost
+
+    # and it is visible to the user rather than hidden
+    usage = gw.client.get("/usage", headers={"Authorization": f"Bearer {key}"}).json()
+    assert usage["today"]["total_tokens"] == FLOOR
+
+
+def test_the_floor_never_overrides_a_usage_report_that_was_parsed(build):
+    """The floor is a fallback, not a minimum. A request that really did use
+    fewer tokens than the floor must be billed for what it used."""
+    gw = build(UNPARSED_USAGE_TOKEN_FLOOR=FLOOR)
+    key = gw.new_key()
+    gw.upstream.set_json_usage(input_tokens=11, output_tokens=7)
+    assert gw.call(key).status_code == 200
+    assert gw.storage.usage_for_day(parse_key(key)[0]).total_tokens == 18
+
+
+def test_a_failed_request_is_not_charged_the_floor(build):
+    """4xx/5xx produced no completion and cost the operator nothing upstream.
+    Billing a floor for it would turn a provider outage into an invoice and let
+    one broken client burn a stranger's allowance by failing in a loop."""
+    gw = build(UNPARSED_USAGE_TOKEN_FLOOR=FLOOR)
+    key = gw.new_key()
+    gw.upstream.headers = {"content-type": "application/json"}
+    gw.upstream.chunks = [b'{"error":"upstream said no"}']
+    gw.upstream.status = 400
+
+    assert gw.call(key).status_code == 400
+    assert gw.storage.usage_for_day(parse_key(key)[0]).total_tokens == 0
+    assert gw.spend.current()[1] == 0
+
+
+def test_an_unparseable_stream_is_charged_too(build):
+    """Streaming is the path most likely to end without a usage event — a
+    disconnect mid-stream, or a translator that drops the final chunk."""
+    gw = build(UNPARSED_USAGE_TOKEN_FLOOR=FLOOR)
+    key = gw.new_key()
+    gw.upstream.headers = {"content-type": "text/event-stream"}
+    gw.upstream.chunks = [b'data: {"type":"content_block_delta"}\n\n', b"data: [DONE]\n\n"]
+
+    with gw.client.stream(
+        "POST", "/v1/messages",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": "yangble5", "messages": []},
+    ) as response:
+        assert response.status_code == 200
+        list(response.iter_bytes())
+
+    assert gw.storage.usage_for_day(parse_key(key)[0]).total_tokens == FLOOR
+
+
+def test_the_floor_pushes_a_key_towards_its_quota(build):
+    """The point of charging it: an unmetered path is one a caller can keep
+    using forever. With the floor, the daily budget still runs out."""
+    gw = build(UNPARSED_USAGE_TOKEN_FLOOR=FLOOR, DAILY_TOKEN_BUDGET=FLOOR * 2)
+    key = gw.new_key()
+    _no_usage_json(gw)
+
+    assert gw.call(key).status_code == 200
+    assert gw.call(key).status_code == 200
+    assert gw.call(key).status_code == 429
+
+
+def test_the_floor_can_be_switched_off_but_says_so(build, tmp_path):
+    """0 restores the old unmetered behaviour. That is allowed — an operator may
+    have a reason — but it is not allowed to be silent."""
+    gw = build(UNPARSED_USAGE_TOKEN_FLOOR=0)
+    key = gw.new_key()
+    _no_usage_json(gw)
+    assert gw.call(key).status_code == 200
+    assert gw.storage.usage_for_day(parse_key(key)[0]).total_tokens == 0
+
+    warnings = gw.settings.startup_warnings()
+    assert any("UNPARSED_USAGE_TOKEN_FLOOR" in warning for warning in warnings)
+    assert not any(
+        "UNPARSED_USAGE_TOKEN_FLOOR" in warning
+        for warning in Settings.from_env(
+            dict(BASE_ENV, DB_PATH=str(tmp_path / "warn.db"))
+        ).startup_warnings()
+    )
+
+
+def test_a_negative_floor_is_rejected_rather_than_clamped(tmp_path):
+    """A negative charge would run every budget backwards."""
+    with pytest.raises(ConfigError):
+        Settings.from_env(
+            dict(BASE_ENV, DB_PATH=str(tmp_path / "n.db"), UNPARSED_USAGE_TOKEN_FLOOR="-1")
+        )

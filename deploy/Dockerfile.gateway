@@ -14,13 +14,32 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Non-root runtime identity. Keep these in sync with YANGBLE5_UID/GID in .env:
-# the /data volume is chowned to this id and SQLite needs write access to both
-# the database file AND its directory (for the -wal and -shm files).
+# Non-root runtime identity.
+#
+# These are NOT decoration: docker-compose.yml passes YANGBLE5_UID/YANGBLE5_GID
+# from .env as build args AND as the runtime `user:`, so the account baked here
+# is the account the process runs as. When the two disagreed — .env carrying the
+# host service user's id (typically in the 100-999 system range) while the image
+# had hard-coded 10001 — the container ran as a uid that owned nothing, could not
+# create /data/yangble5.db-wal, and SQLite failed on the first write.
+#
+# SQLite needs write access to the database file AND its directory, because the
+# -wal and -shm files are created next to it.
 ARG APP_UID=10001
 ARG APP_GID=10001
-RUN groupadd --gid "${APP_GID}" app \
- && useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home --shell /usr/sbin/nologin app
+
+# Created only if that id is free. A host service user allocated by
+# `useradd --system` lands in a range where the base image may already have an
+# account (Debian ships uid 100 `_apt`, gid 100 `users`, and more). Failing the
+# build on such a collision would make the correct uid unusable for no reason —
+# the id is what matters, not the name attached to it.
+RUN if ! getent group "${APP_GID}" >/dev/null 2>&1; then \
+        groupadd --gid "${APP_GID}" app; \
+    fi \
+ && if ! getent passwd "${APP_UID}" >/dev/null 2>&1; then \
+        useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home \
+                --shell /usr/sbin/nologin app; \
+    fi
 
 WORKDIR /app
 
@@ -38,11 +57,17 @@ COPY gateway/ /app/gateway/
 # are standard-library only and pull in no extra dependency.
 COPY tools/ /app/tools/
 
-# SQLite lives on a named volume mounted here. Created and chowned at build
-# time so the container still starts if the volume is empty on first boot.
+# SQLite lives on a named volume mounted here. Created and chowned at build time
+# because Docker initialises a FRESH named volume from the image's directory,
+# ownership included — this chown is what makes the volume writable on first
+# boot. It does nothing for a volume that already exists; install.sh repairs
+# those separately when the uid changes.
 RUN mkdir -p /data && chown -R "${APP_UID}:${APP_GID}" /data /app
 
-USER app:app
+# Numeric, not `app:app`: when the uid already existed in the base image no
+# account named `app` was created, and the name would not resolve. The kernel
+# only cares about the number anyway.
+USER ${APP_UID}:${APP_GID}
 
 ENV GATEWAY_PORT=8000 \
     GATEWAY_ASGI_APP=gateway.app:app

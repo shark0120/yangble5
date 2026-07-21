@@ -55,7 +55,7 @@ internet ──443──▶ caddy ──edge net──▶ gateway ──backend 
 | Gateway → engine | separate Docker network; **Caddy is not on it**, so a compromised edge cannot reach the engine directly |
 | Caller identity | per-user `yb5_` keys stored as salted *and peppered* scrypt hashes; the pepper lives in `.env`, not in the database |
 | Upstream credential | added by the gateway; every client-supplied credential header is stripped first, so a caller can neither smuggle in their own nor read the operator's |
-| Spend | per-key daily token and cost budgets, plus a global monthly ceiling |
+| Spend | per-key daily token and cost budgets (on by default), plus optional whole-pool daily and monthly ceilings in tokens or dollars — **every whole-pool ceiling defaults to `0` = unlimited and is only mandatory when `REGISTRATION_MODE=open`** |
 | Management API | `/v0/*` returns 404 at the edge; the engine publishes no port; the management key is still required |
 
 ### Deliberate design decisions
@@ -127,12 +127,20 @@ expensive failures in this project are all in this list:
    them, and revoke them when they leak. yangble5 stores them; it does not manage their
    lifecycle. If they are compromised, revoke at the provider first — nothing in this repository
    can do that for you.
-2. **Your spend.** Every token your users consume is billed to your upstream accounts. Set
-   `YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET` before you open registration; the gateway refuses to
-   start in `open` registration mode without one, precisely because this is the failure that
-   costs real money. Per-key ceilings
-   (`YANGBLE5_DAILY_TOKEN_BUDGET`, `YANGBLE5_DAILY_COST_USD_BUDGET`) stop one key draining the
-   global cap on day one.
+2. **Your spend.** Every token your users consume is billed to your upstream accounts. Set an
+   operator ceiling — any one of `YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET`,
+   `YANGBLE5_GLOBAL_MONTHLY_TOKEN_BUDGET`, `YANGBLE5_GLOBAL_DAILY_USD_BUDGET` or
+   `YANGBLE5_GLOBAL_DAILY_TOKEN_BUDGET` — before you take signups. **All four default to `0`,
+   which means unlimited.** The gateway refuses to start only when `REGISTRATION_MODE=open` and
+   none of the four is set; in `invite` (the default) and `closed` it starts uncapped without
+   complaint, so an invite-only instance is capped when *you* set a number and not before.
+   Per-key ceilings (`YANGBLE5_DAILY_TOKEN_BUDGET`, default 2,000,000 tokens/day;
+   `YANGBLE5_DAILY_COST_USD_BUDGET`, default $2.00/day) stop one key draining the global cap on
+   day one. Any ceiling written in dollars is only as good as your price table: with neither
+   `PRICE_TABLE_JSON` nor `PRICE_TABLE_FILE` configured the gateway uses conservative
+   placeholder prices and reports `prices_are_placeholder: true` on `/admin/stats`. Full table
+   of every budget setting and its default:
+   [`docs/OPERATING_A_PUBLIC_SERVICE.md` §3](docs/OPERATING_A_PUBLIC_SERVICE.md#3-credits-are-operator-funded-design-the-cap-first).
 3. **Provider terms of service.** Reselling or sharing access to an upstream account may violate
    them. Check. This project takes no position on your agreement with a third party and gives
    you no cover under it.
@@ -165,7 +173,8 @@ The short version, expanded in [`docs/OPERATING_A_PUBLIC_SERVICE.md`](docs/OPERA
 
 * Never expose the engine port or `/v0/management/*` to the internet.
 * Never log prompts or completions.
-* Set a global spend cap before you open registration.
+* Set a global spend cap before you take any signups. Nothing enforces one unless
+  `REGISTRATION_MODE=open`; every ceiling ships as `0` = unlimited.
 * Issued keys are stored hashed; plan for "regenerate", not "recover".
 * Use paid keys licensed for serving third parties. Personal OAuth accounts are for personal
   use, and sharing them gets them banned.

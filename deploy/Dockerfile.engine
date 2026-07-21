@@ -35,19 +35,33 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates wget tzdata \
  && rm -rf /var/lib/apt/lists/*
 
+# Passed from docker-compose.yml (YANGBLE5_UID/YANGBLE5_GID in .env), the same
+# values used for the runtime `user:`. See Dockerfile.gateway for the full
+# rationale — in short, an image baked with one uid and run as another cannot
+# write its own volumes, and here that means CLIProxyAPI silently fails to
+# rewrite refreshed OAuth tokens in /auth.
 ARG APP_UID=10001
 ARG APP_GID=10001
-RUN groupadd --gid "${APP_GID}" engine \
- && useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home --shell /usr/sbin/nologin engine
+
+# Created only if that id is free; see Dockerfile.gateway.
+RUN if ! getent group "${APP_GID}" >/dev/null 2>&1; then \
+        groupadd --gid "${APP_GID}" engine; \
+    fi \
+ && if ! getent passwd "${APP_UID}" >/dev/null 2>&1; then \
+        useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home \
+                --shell /usr/sbin/nologin engine; \
+    fi
 
 COPY engine-bin/cli-proxy-api /usr/local/bin/cli-proxy-api
 RUN chmod 0755 /usr/local/bin/cli-proxy-api
 
 # /config is mounted read-only; /auth is a writable named volume because
-# CLIProxyAPI rewrites refreshed OAuth tokens in place.
+# CLIProxyAPI rewrites refreshed OAuth tokens in place. A fresh named volume
+# inherits this ownership, which is what makes the token refresh work at all.
 RUN mkdir -p /config /auth && chown "${APP_UID}:${APP_GID}" /auth
 
-USER engine:engine
+# Numeric: the account may not have been created if the uid was already taken.
+USER ${APP_UID}:${APP_GID}
 
 EXPOSE 8318
 

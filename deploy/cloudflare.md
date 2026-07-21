@@ -113,10 +113,19 @@ misunderstood:
 | Streaming, but time-to-first-token > 100s | **524** |
 | Non-streaming request that thinks for > 100s before replying | **524** |
 
-Our own measurements on a 748,918-token prompt gave first-token latencies of
-**21.4s cold and 10.8s warm** — comfortably inside 100s, but that was a local
-engine with no Cloudflare hop, and a bigger prompt or a slow upstream will
-move that number.
+> **We cannot tell you where you sit in that table, because we never measured
+> time-to-first-token.** `tools/cache_bench.py` sends `stream: false`, so every
+> latency figure in this repository is a **complete non-streaming round trip**,
+> request sent to last byte received. On the 748,918-token prompt those round
+> trips were **21,410 ms cold** and **10,753 / 23,457 / 22,381 ms** on the three
+> warm rounds — one machine, one run, a local engine with no Cloudflare hop.
+> Read against row 3 of the table, the slowest of those (23.5s) still sits well
+> inside 100s, so a same-shaped request would probably not 524. But rows 1 and 2
+> are about TTFT, and **nothing here measures TTFT** — a round trip is an upper
+> bound on it, never a substitute. Any budget you derive for streaming
+> first-token time from these numbers is unsupported by this repository's
+> evidence. A bigger prompt, a slow upstream, or a Cloudflare hop moves all of
+> it. Measure your own before you rely on the margin.
 
 ### Mitigations, in order of effectiveness
 

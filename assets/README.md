@@ -16,7 +16,7 @@ numbers get quoted without their footnotes:
 
 | On the card | What it actually means | Source |
 |---|---|---|
-| **99.53%** prompt-cache hit rate, token-weighted, **WARM rounds only (2-4 of 4)** | Rounds 2, 3 and 4 of a 4-round session. `2,236,290 / 2,246,844`. Fold the cold round back in and the same run reports 74.6%. Prefix-size dependent: a ~91K prefix measured 94.00%. | [FINDINGS.md](../docs/FINDINGS.md#finding-2-9953-token-weighted-prompt-cache-hit-rate-on-warm-rounds) |
+| **99.53%** prompt-cache hit rate, token-weighted, **WARM rounds only (2-4 of 4)** | Rounds 2, 3 and 4 of a 4-round session. `2,236,290 / 2,246,844`. Fold the cold round back in and the same run reports 74.6%. Prefix-size dependent: hit rate rises with prefix size (direction observed; the magnitude at any other prefix size is not in the released evidence set, which contains exactly this one run). | [FINDINGS.md](../docs/FINDINGS.md#finding-2-9953-token-weighted-prompt-cache-hit-rate-on-warm-rounds) |
 | **748,918** tokens in one prompt, ingested with no truncation, **recall at that size not tested** | The upstream's own `promptTokenCount`, relayed as `input_tokens`. Ingestion only - no needle-in-a-haystack test was run. We did **not** verify 1,000,000. | [FINDINGS.md](../docs/FINDINGS.md#finding-3-748918-tokens-ingested-with-no-truncation) |
 | **0%** on round 1 of every session | The first request of any session is a cold cache write. True by construction, not by failure. No configuration removes it. | [cache-lifecycle.md](../docs/diagrams/cache-lifecycle.md) |
 

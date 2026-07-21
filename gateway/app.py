@@ -40,6 +40,7 @@ THE FOUR THINGS THAT PROTECT THE OPERATOR
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -69,7 +70,9 @@ from .ratelimit import (
 from .storage import (
     MACHINE_ID_MAX_CHARS,
     MACHINE_ID_MIN_CHARS,
+    EmailInUseError,
     InviteError,
+    RegistrationCapError,
     Storage,
     day_key,
     month_key,
@@ -187,24 +190,65 @@ def _seconds_until_month_end() -> int:
     return max(1, int((_next_utc_month_start() - utcnow()).total_seconds()))
 
 
+def _normalize_ip(raw: str | None) -> str | None:
+    """Return `raw` as a canonical IP literal, or None if it is not one.
+
+    Forwarded headers are attacker-influenced strings. Everything downstream
+    (per-IP rate limits, the abuse fan-out counter, the registration cap) buckets
+    on this value, so a caller that can put arbitrary text here can mint an
+    unlimited number of distinct buckets. Rejecting non-addresses means a forged
+    header falls through to the next source instead of becoming a bucket key.
+
+    Ports are tolerated because some proxies append them: `1.2.3.4:5678` and
+    `[2001:db8::1]:443` are both common in the wild and both mean the address.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if value.startswith("[") and "]" in value:          # [2001:db8::1]:443
+        value = value[1 : value.index("]")]
+    elif value.count(":") == 1 and "." in value:        # 1.2.3.4:5678
+        value = value.split(":", 1)[0]
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
 def client_ip(request: Request, settings: Settings) -> str:
     """Best-effort client address.
 
-    WHY the hop arithmetic: X-Forwarded-For is *appended* to by each proxy, so
-    with N trusted proxies in front the real peer is N entries from the end.
-    Taking the first entry instead would let any client forge its own address by
-    sending the header, which is exactly how per-IP limits get bypassed.
-    Only consulted when TRUST_PROXY_HEADERS is on.
+    ORDER MATTERS, and it is the opposite of the obvious one.
+
+    X-Real-IP is consulted FIRST. Our edge (deploy/Caddyfile) sets it with
+    `header_up X-Real-IP {client_ip}`, which REPLACES any value the client sent
+    and carries Caddy's own verdict on who the client is — already unwound
+    through `trusted_proxies` and `Cf-Connecting-Ip`. It is a single address with
+    no list semantics to get wrong.
+
+    X-Forwarded-For is the FALLBACK, for edges that do not set X-Real-IP. It is
+    appended to by every hop, and Caddy appends *its own peer* — which behind
+    Cloudflare is a Cloudflare edge node, not the user. Reading the last entry
+    therefore attributes every request on the planet to a handful of Cloudflare
+    addresses and collapses all per-IP limits into one shared bucket. Hence the
+    hop arithmetic: with N appending proxies in front, the real client is the
+    Nth entry from the end. Taking the FIRST entry instead would be worse still —
+    that one is fully client-controlled.
+
+    Neither header is looked at when TRUST_PROXY_HEADERS is off: without a proxy
+    that overwrites them, both are just strings the caller chose.
     """
     if settings.trust_proxy_headers:
+        real = _normalize_ip(request.headers.get("x-real-ip"))
+        if real:
+            return real
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
             parts = [p.strip() for p in forwarded.split(",") if p.strip()]
             if parts:
-                return parts[max(0, len(parts) - settings.trusted_proxy_hops)]
-        real = request.headers.get("x-real-ip")
-        if real:
-            return real.strip()
+                candidate = _normalize_ip(parts[max(0, len(parts) - settings.trusted_proxy_hops)])
+                if candidate:
+                    return candidate
     return request.client.host if request.client else "unknown"
 
 
@@ -1021,6 +1065,7 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
     settings = state.settings
 
     @app.get("/health")
+    @app.get("/healthz")
     async def health() -> JSONResponse:
         """Liveness for the load balancer and a public status signal.
 
@@ -1029,6 +1074,20 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         (the operator's spend is their business), no version of the internal
         engine. Only whether this process is up and whether it is still
         accepting paid work.
+
+        TWO PATHS, ONE PAYLOAD. `/health` is canonical and is what the docs, the
+        smoke test and both compose files probe. `/healthz` is the same handler
+        under the spelling that container platforms, Kubernetes probes and half
+        the reverse-proxy templates on the internet assume. Serving both HERE —
+        rather than rewriting at the edge — is what makes the gateway work
+        unchanged behind Caddy, behind someone else's nginx, or behind nothing at
+        all. An edge rewrite only exists in the edge that has it; the operator
+        whose panel-managed nginx does not have it gets a 404 at 3am instead.
+
+        The one alias that is NOT served here is `/api/health`: `/api/*` is a
+        prefix an edge owns, not a route this app should squat on. The Caddyfile
+        rewrites it onto `/health`, and the landing page falls back to `/health`
+        anyway when it 404s.
         """
         cap = state.global_cap_state()
         return JSONResponse(
@@ -1128,6 +1187,11 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 )
         machine_hash = state.storage.hash_machine_id(machine_id) if machine_id else None
 
+        # CHEAP EARLY REJECT, not the decision. It saves a JSON parse and a
+        # couple of hashes for an address that is already obviously over its
+        # allowance. The binding decision is `claim_register_attempt` further
+        # down; this read is allowed to be stale because nothing acts on it
+        # except an immediate 429 that the atomic claim would also have issued.
         daily_count = await run_in_threadpool(state.storage.register_attempts_today, ip_hash)
         if settings.register_max_per_ip_per_day > 0 and (
             daily_count >= settings.register_max_per_ip_per_day
@@ -1165,26 +1229,23 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
 
         # Count the attempt BEFORE the invite check, so guessing invite codes
         # burns the per-IP daily allowance instead of being free.
-        await run_in_threadpool(state.storage.bump_register_attempt, ip_hash)
-
-        # Keys ISSUED from this address today — deliberately a different counter
-        # from attempts above. Mistyping an invite code five times farms nothing
-        # and should not be punished as if it had.
-        if settings.max_keys_per_ip > 0:
-            issued_here = await run_in_threadpool(
-                state.storage.count_keys_issued_from_ip, ip_hash
+        #
+        # ATOMIC: check-and-increment in one transaction. The stale read above
+        # cannot be the ceiling, because between it and this line the request has
+        # awaited a JSON parse, a fingerprint hash and a binding lookup — plenty
+        # of room for a burst to pile through on one stale count. This call is
+        # the first point at which the answer is binding, and it is placed AFTER
+        # the machine-binding short-circuit on purpose: re-running the installer
+        # is not an attempt to obtain a new key and must not consume allowance.
+        claimed, _attempts = await run_in_threadpool(
+            state.storage.claim_register_attempt, ip_hash, settings.register_max_per_ip_per_day
+        )
+        if not claimed:
+            return _error(
+                429, "rate_limit_error",
+                "This network has reached today's registration limit.",
+                retry_after_seconds=_seconds_until_utc_midnight(),
             )
-            if issued_here >= settings.max_keys_per_ip:
-                _log(logging.INFO, "register.ip_key_cap", ip_hash=ip_hash[:12])
-                return _error(
-                    429, "registration_throttled",
-                    f"This network already has {issued_here} key(s) from today "
-                    f"(limit {settings.max_keys_per_ip}). This is a throttle, not a "
-                    "ban: it clears at 00:00 UTC. If you are re-installing, send the "
-                    "same 'machine_id' and you will get your existing key back "
-                    "instead of a new one.",
-                    retry_after_seconds=_seconds_until_utc_midnight(),
-                )
 
         if settings.registration_mode == "invite":
             if not payload.invite_code:
@@ -1202,25 +1263,49 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     "That invite code is not valid, has expired, or has been used.",
                 )
 
-        if email and not settings.allow_multiple_keys_per_email:
-            existing = await run_in_threadpool(state.storage.count_active_keys_for_email, email)
-            if existing > 0:
-                return _error(
-                    409, "already_registered",
-                    "This address already has an active key. Ask the operator to "
-                    "revoke it if you need a replacement.",
+        # Both remaining ceilings are enforced INSIDE issue_key's transaction:
+        #
+        #   * keys ISSUED from this address today — deliberately a different
+        #     counter from the attempts above. Mistyping an invite code five
+        #     times farms nothing and should not be punished as if it had.
+        #   * one active key per address.
+        #
+        # Checking either one here and issuing afterwards is the same read-then-
+        # act race the attempt counter had: the count would be read, the request
+        # would await the key derivation (scrypt — milliseconds, not
+        # microseconds), and every concurrent sibling would have read the same
+        # number. storage.issue_key raises instead, having counted under the
+        # write lock that is about to insert the row.
+        try:
+            issued = await run_in_threadpool(
+                lambda: state.storage.issue_key(
+                    email=email,
+                    label=payload.label,
+                    scheme=settings.key_hash_scheme,
+                    pepper=settings.key_pepper,
+                    machine_hash=machine_hash,
+                    registration_ip_hash=ip_hash,
+                    max_keys_per_ip_per_day=settings.max_keys_per_ip,
+                    enforce_unique_email=not settings.allow_multiple_keys_per_email,
                 )
-
-        issued = await run_in_threadpool(
-            lambda: state.storage.issue_key(
-                email=email,
-                label=payload.label,
-                scheme=settings.key_hash_scheme,
-                pepper=settings.key_pepper,
-                machine_hash=machine_hash,
-                registration_ip_hash=ip_hash,
             )
-        )
+        except RegistrationCapError as capped:
+            _log(logging.INFO, "register.ip_key_cap", ip_hash=ip_hash[:12])
+            return _error(
+                429, "registration_throttled",
+                f"This network already has {capped.count} key(s) from today "
+                f"(limit {capped.limit}). This is a throttle, not a "
+                "ban: it clears at 00:00 UTC. If you are re-installing, send the "
+                "same 'machine_id' and you will get your existing key back "
+                "instead of a new one.",
+                retry_after_seconds=_seconds_until_utc_midnight(),
+            )
+        except EmailInUseError:
+            return _error(
+                409, "already_registered",
+                "This address already has an active key. Ask the operator to "
+                "revoke it if you need a replacement.",
+            )
         _log(
             logging.INFO,
             "register.issued",
@@ -1665,6 +1750,44 @@ async def _proxy(
     )
 
 
+def _apply_usage_floor(usage: TokenUsage, status: int, floor: int) -> tuple[TokenUsage, bool]:
+    """Make an unparseable-but-successful response cost something.
+
+    THE HOLE THIS CLOSES. `UsageScanner` reports `parsed=False` when the upstream
+    body carried no usage object we recognised — a shape change, a body larger
+    than MAX_USAGE_PARSE_BYTES, a truncated stream. Nothing acted on that flag,
+    so the request was recorded with zero tokens and zero cost: it advanced
+    neither the per-key daily budget nor the operator's global cap. A caller who
+    can provoke an unparseable response reliably therefore has an UNMETERED
+    channel through a service whose entire job is to meter.
+
+    Charged as OUTPUT tokens, at the model's output rate, because that is the
+    most expensive column in the price table — the floor should over-estimate a
+    request we cannot see, never under-estimate it.
+
+    Only applied to 2xx. A 4xx/5xx produced no completion and cost the operator
+    nothing upstream; billing a floor for it would turn a provider outage into a
+    bill and would let one broken client burn a stranger's daily allowance by
+    failing repeatedly. `floor <= 0` disables the whole mechanism, which
+    `startup_warnings()` says out loud.
+    """
+    if usage.parsed or floor <= 0 or not (200 <= status < 300):
+        return usage, False
+    return (
+        TokenUsage(
+            input_tokens=0,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
+            output_tokens=floor,
+            # Still False: this is an ESTIMATE, and a log line claiming the
+            # numbers were parsed would be a lie told to whoever debugs the
+            # price table later.
+            parsed=False,
+        ),
+        True,
+    )
+
+
 async def _record(
     state: GatewayState,
     ctx: AuthContext,
@@ -1686,6 +1809,7 @@ async def _record(
     tokens the user paid for themselves would make BYOK pointless.
     """
     usage: TokenUsage = scanner.finish()
+    usage, estimated = _apply_usage_floor(usage, status, state.settings.unparsed_usage_token_floor)
     price = state.settings.price_for(model)
     cost = compute_cost(usage, price)
     latency_ms = int((time.monotonic() - started) * 1000)
@@ -1728,6 +1852,7 @@ async def _record(
         cost_usd=round(cost, 6),
         latency_ms=latency_ms,
         usage_parsed=usage.parsed,
+        usage_estimated=estimated,
         billable=billable,
     )
 

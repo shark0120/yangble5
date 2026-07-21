@@ -105,9 +105,11 @@ these):
   (`nextModelPoolOffset` / `modelPoolOffsets` in `sdk/cliproxy/auth/conductor.go`), keyed by the
   *pool* - no session id, conversation id, credential id or `metadata.user_id` participates.
   `routing.strategy` and session affinity are both ignored on that path, so consecutive turns of
-  one conversation land on alternating upstreams and each one sees a cold cache. With two
-  members that caps the achievable hit rate at roughly 50% (that ceiling is *reasoned* from the
-  code, not measured). Symptoms: near-zero cached tokens on turns whose prompts are almost
+  one conversation land on alternating upstreams and each one sees a cold cache. The **rotation
+  mechanism is verified** in the 7.1.23 source and in the binary we ran; the **~50% ceiling that
+  follows from it is a reasoned structural upper bound, never measured** - no pool-vs-direct A/B
+  run exists in this repository, so 50% must not be quoted as a "before" number. Symptoms:
+  near-zero cached tokens on turns whose prompts are almost
   byte-identical, plus frequent 502s. The fix we ship is a **direct 1:1 OAuth model alias** -
   no pool - which is what every configuration in `deploy/` and `byok/` now generates. Presence of
   the symbol in the exact binary measured was confirmed with
@@ -134,9 +136,10 @@ These are release-blocking to *quote*, not to *ship*. Read them before repeating
   74.6% for the same run. Both numbers come from the same four records, which are printed
   verbatim in `README.md` and `docs/FINDINGS.md` so either can be recomputed.
 - **The hit rate is prefix-size dependent.** The uncached tail is roughly constant (~3.5K tokens
-  at a 749K prefix, ~5.4K at a 91K prefix), so the *ratio* improves as the prefix grows: 99.53%
-  at `--prefix-tokens 600000`, 94.00% at `--prefix-tokens 75000`, and the tool's default
-  (`--prefix-tokens 30000`) will not reach 99%. This is a property of the upstream's cache
+  measured at the 749K prefix), so the *ratio* rises as the prefix grows, and the tool's default
+  (`--prefix-tokens 30000`) will not reach 99%. That direction is observed; **the magnitude at any
+  other prefix size is not in the released evidence set**, which contains exactly one run - the
+  748,918-token one. We publish no second figure. This is a property of the upstream's cache
   granularity, not of yangble5. 99.53% is not a universal number.
 - **One machine, one run, no repetitions.** No confidence intervals, no cross-provider
   comparison, no second operator. Upstream providers change caching behaviour without notice; a

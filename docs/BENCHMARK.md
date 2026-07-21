@@ -6,6 +6,25 @@ answer, the difference is the interesting part - please open an issue with your 
 
 Everything here describes a run performed on **2026-07-21**.
 
+**Disclosures that travel with every number in this file, so nobody has to click through:**
+
+* **Warm rounds only.** The cold first request of any session is **0%** by construction.
+  Rounds 2-4 are the 99.53%.
+* **Upper bound, not a typical value.** The simulated session tail grows ~15 tokens per round,
+  the most cache-favourable shape possible. [Section 7](#7-known-confounds) is the long version.
+* **No latency improvement was measured, and TTFT was never measured at all.** Two of the three
+  warm rounds were *slower* than the cold round. Every millisecond in this repository is a
+  complete non-streaming round trip.
+* **Single machine, single run, single afternoon.** n=1. No repetitions, no error bars, no
+  cross-provider comparison.
+* **No live web search.** Nothing routed through this proxy performs a real web search. Measured
+  the same day: asked for the current year, the Gemini upstream answered **2024** and the Grok
+  upstream answered **2025**. Every answer is parametric recall.
+* **The engine is third-party.** [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) is
+  MIT-licensed work by Luis Pater / Router-For.ME. We did not write it and do not redistribute
+  it; this benchmark is meaningless without it. `tools/claude_shim.py` is a **workaround** for
+  engine versions **< 7.2.93**, not architecture — delete it once you upgrade.
+
 ---
 
 ## 1. What was measured
@@ -24,8 +43,16 @@ eligible hit rate = sum(cache_read_tokens over rounds 2..N)
 * Both numerator and denominator come from the **upstream's own usage report**, relayed by the
   engine. Nothing in the harness estimates a token count.
 
-Result: **99.53%** at a 748,918-token prefix over 4 rounds; **94.00%** at a 91,418-token prefix
-over 5 rounds. Raw per-round records are in [FINDINGS.md](FINDINGS.md#finding-2-9953-token-weighted-prompt-cache-hit-rate-on-warm-rounds).
+Result: **99.53%**, warm rounds only, at a 748,918-token prefix over 4 rounds. That single run is
+the entire released evidence set - no other prefix size is in it. Raw per-round records are in
+[FINDINGS.md](FINDINGS.md#finding-2-9953-token-weighted-prompt-cache-hit-rate-on-warm-rounds).
+
+> **99.53% is an upper bound for this harness, not a typical value.** The uncached remainder is
+> whatever the conversation added since the previous request, and this harness adds **~15 tokens
+> per round** - the most cache-favourable session shape that exists. Read
+> [section 7's first confound](#7-known-confounds) before quoting the number anywhere.
+> Hit rate also rises with prefix size (direction observed; the magnitude at other prefix sizes
+> is not in the released evidence set).
 
 ---
 
@@ -83,6 +110,11 @@ Three properties are load-bearing:
 the 749K run the growth was **exactly 15 tokens per round** (748,918 -> 748,933 -> 748,948 ->
 748,963). That growth is what the uncached remainder is made of, plus whatever fixed overhead the
 upstream adds around the request.
+
+> This is simultaneously the harness's cleanest property and its biggest confound. A 15-token
+> tail is the most cache-favourable session shape that can exist, which is exactly why the
+> measured ratio is so high - and exactly why **99.53% is an upper bound rather than a typical
+> value.** See [section 7](#7-known-confounds).
 
 **Session pinning.** Every round sends the same `metadata.user_id`
 (`--session`, default `cache-bench-fixed-session`). This is the field the engine's
@@ -210,9 +242,29 @@ says so rather than printing a zero.
 
 Every one of these can move the number, and none of them were controlled for:
 
+* **The session shape is the most cache-favourable one possible - this is the big one.**
+  The hit rate is `1 - (uncached tail / prompt)`, so the harness's tail size sets the answer
+  almost by itself. Our simulated conversation grows by **exactly 15 tokens per round**
+  (748,918 -> 748,933 -> 748,948 -> 748,963), because each round appends only a 48-token-capped
+  completion and a one-line follow-up. No real agent turn is that small: a tool result, a file
+  read, a diff or a test log adds hundreds to tens of thousands of tokens, all of it uncached,
+  every single turn. **99.53% is therefore an upper bound on what this configuration can score,
+  not an estimate of what your workload will see.** To measure your own shape, grow the tail by
+  a realistic amount per round and re-run; the ratio will be lower, and that lower number is the
+  one that describes you. (The ~3.5K uncached remainder in our run is larger than 15 tokens
+  because the upstream adds fixed per-request overhead and caches at a coarse granularity - see
+  the cache-granularity confound below.)
 * **Provider-side load.** Shared infrastructure, no isolation, no repetitions. This is the
   biggest single source of variance in the latency column, and it is why we call the latency
   figures an anecdote.
+* **Latency was not improved, and TTFT was never measured.** The harness sends `stream: false`,
+  so every millisecond it reports is a **complete non-streaming round trip** - request sent to
+  last byte received. It is not time-to-first-token, and nothing in this repository measured
+  TTFT. In the released run, warm round 2 was faster than the cold round (10,753 ms vs
+  21,410 ms) but warm rounds 3 and 4 were **slower** (23,457 ms and 22,381 ms) while reading
+  99.53% of their prompt from cache. Two of three warm rounds were slower than cold. No
+  latency-improvement claim is supportable from this data, and any argument that depends on
+  first-token timing (proxy or CDN idle-timeout budgets, for instance) is unsupported here.
 * **Implicit cache TTL.** We do not know the upstream's cache lifetime. `--interval 2.0` keeps
   rounds close together; a long pause between rounds may expire the entry and score a cold
   write mid-run.
@@ -222,9 +274,12 @@ Every one of these can move the number, and none of them were controlled for:
   `routing` block before blaming the upstream.
 * **Engine restart.** The session-to-credential table is in memory. Restarting the engine
   mid-run re-binds sessions.
-* **Cache granularity.** The uncached remainder was ~3.5K tokens at a 749K prefix and ~5.4K at a
-  91K prefix. That is upstream behaviour, not ours, and it is why the ratio is prefix-size
-  dependent.
+* **Cache granularity.** The uncached remainder was ~3.5K tokens at a 749K prefix, far more than
+  the 15 tokens the conversation actually added: the upstream caches at a coarse granularity and
+  adds fixed per-request overhead. Because that remainder does not scale with the prefix, the
+  ratio is prefix-size dependent - a roughly constant tail is a smaller fraction of a bigger
+  prompt, so the hit rate rises as the prefix grows. That direction was observed; the magnitude
+  at any other prefix size is **not** in the released evidence set, and only the 749K run is.
 * **Single run, single machine, single afternoon.** No repetitions, no confidence intervals.
   Treat every figure as one sample.
 * **This costs real money.** The 4-round 749K run moved **2,995,762 prompt tokens** through a

@@ -92,32 +92,26 @@ understand before quoting the headline anywhere:
 ```mermaid
 flowchart LR
     P30["prefix ~30K tokens<br/>(tool default)<br/><b>will not reach 99 percent</b><br/>not separately measured"]
-    P91["prefix 91,418 tokens<br/>uncached tail ~5.4K<br/><b>94.00 percent</b> warm<br/>5 rounds, measured"]
+    PMID["any prefix between<br/>the two<br/><b>no number published</b><br/>not in the released evidence set"]
     P749["prefix 748,918 tokens<br/>uncached tail ~3.5K<br/><b>99.53 percent</b> warm<br/>4 rounds, measured"]
 
-    P30 --> P91 --> P749
+    P30 -->|"hit rate rises with prefix size<br/>direction observed, magnitude not measured"| PMID --> P749
 
     classDef weak fill:#a13d2d,stroke:#5c1f14,stroke-width:2px,color:#ffffff
-    classDef mid fill:#8a6d1f,stroke:#4a3a0c,stroke-width:2px,color:#ffffff
+    classDef mid fill:#4d5560,stroke:#22262d,stroke-width:2px,color:#ffffff
     classDef strong fill:#166f4a,stroke:#0a3f2a,stroke-width:2px,color:#ffffff
 
     class P30 weak
-    class P91 mid
+    class PMID mid
     class P749 strong
 ```
 
-The 91K run, in full, same tooling and same session discipline
-(`python tools/cache_bench.py --prefix-tokens 75000 --rounds 5`):
-
-| Round | Prompt tokens | `cache_read` | Hit |
-|---:|---:|---:|---:|
-| 1 (cold) | 91,418 | 0 | 0.00% |
-| 2 | 91,433 | 85,984 | 94.04% |
-| 3 | 91,448 | 85,976 | 94.02% |
-| 4 | 91,463 | 85,969 | 93.99% |
-| 5 | 91,478 | 85,961 | 93.97% |
-
-Warm token-weighted: `343,890 / 365,822` = **94.00%**.
+**Only one run is in the released evidence set: the 748,918-token one at the top of this page.**
+The direction above - hit rate rises as the prefix grows, because a roughly constant tail is a
+smaller fraction of a bigger prompt - is observed and argued from the tail arithmetic. The
+*magnitude* at any other prefix size is **not in the released evidence set**, and this page
+publishes no number for one. If you want the figure at your prefix size, run
+`tools/cache_bench.py --prefix-tokens <yours>`; that is why it ships.
 
 **Do not quote 99.53% as a universal number.** It is what this upstream's cache granularity does
 at a ~749K prefix, on one machine, on one afternoon.

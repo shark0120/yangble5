@@ -7,6 +7,10 @@ name = "yangble5"
 version = "0.1.0"
 description = "Prompt-cache measurement and Claude-wire compatibility tooling for a local CLIProxyAPI-based proxy stack."
 readme = "README.md"
+# The floor and every version listed in the classifiers below are the exact set
+# the CI matrix runs (.github/workflows/ci.yml, job `test`), on Linux and on
+# Windows. The `offline-self-checks` job fails the build if the three ever
+# disagree, so this is a claim backed by a run rather than an intention.
 requires-python = ">=3.11"
 keywords = ["prompt-cache", "llm-proxy", "cliproxyapi", "claude-code", "codex", "benchmark"]
 classifiers = [
@@ -17,6 +21,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Testing",
   "Topic :: System :: Monitoring",
 ]

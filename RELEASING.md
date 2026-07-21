@@ -206,8 +206,10 @@ Reproduce with:
 ### Please read before quoting anything above
 - The cache figure is **warm-only**. Every session pays one cold round at 0%. The same run is
   74.6% if the cold round is folded in.
-- It is **prefix-size dependent**: 99.53% at a ~749K prefix, 94.00% at ~91K, and the tool's
-  default prefix will not reach 99%.
+- It is **prefix-size dependent**: 99.53% is what a ~749K prefix scored, and the tool's default
+  prefix will not reach 99%. Hit rate rises with prefix size (direction observed); the magnitude
+  at any other prefix size is **not in the released evidence set** and no second figure is
+  published. Do not add one without a run to back it.
 - **One machine, one run per configuration, no repetitions, no error bars**, on the date stated.
   Upstream caching behaviour changes without notice.
 - **No live web search** happens through this proxy. Measured 2026-07-21: asked for the current

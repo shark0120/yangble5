@@ -160,16 +160,18 @@ DIAGNOSTIC_CHECKLIST = (
     "Is the alias listed exactly ONCE in the engine config? Two entries sharing an",
     "  alias make a pool, and the pool rotates upstreams per request via a global",
     "  counter (conductor.go nextModelPoolOffset in 7.1.23) that ignores both",
-    "  routing.strategy and session-affinity. That alone caps the rate near 1/N.",
+    "  routing.strategy and session-affinity. The rotation is verified in 7.1.23",
+    "  source; the resulting ~1/N ceiling is reasoned from it, never measured.",
     "Is routing.strategy 'fill-first'? round-robin spreads one conversation across",
     "  credentials, and the upstream cache is per credential.",
     "Is routing.session-affinity true, with a TTL longer than your break between",
     "  requests? An expired binding is a cold write that looks like a cache bug.",
     "Did the engine restart between rounds? The affinity table is in memory.",
     "Is the prefix simply too small? Hit rate is prefix-size dependent because the",
-    "  uncached tail is roughly constant: we measured 99.53% at a 749K prefix and",
-    "  94.00% at 91K on the same stack. Re-run with --bench-prefix-tokens 200000",
-    "  before concluding anything is broken.",
+    "  uncached tail is roughly constant, so it is a smaller fraction of a bigger",
+    "  prompt. We measured 99.53% at a 749K prefix; no other prefix size is in the",
+    "  released evidence set, so measure your own. Re-run with",
+    "  --bench-prefix-tokens 200000 before concluding anything is broken.",
     "Did the upstream report ANY cached tokens at all? If every round says 0, this",
     "  upstream either does not expose cache accounting on this path or does not",
     "  cache below its minimum size. That is an upstream property, not a config bug,",
@@ -421,7 +423,8 @@ def validate_alias_entries(entries: Sequence[dict[str, str]]) -> None:
     picks its upstream from a per-process counter (``nextModelPoolOffset``) that
     ignores ``routing.strategy`` and ``session-affinity`` alike. Since the prompt
     cache lives upstream, consecutive turns of one conversation then land on
-    different caches and the hit rate collapses to roughly 1/N.
+    different caches. That rotation is verified in 7.1.23's source; the roughly
+    1/N ceiling it implies is reasoned from the mechanism, not measured here.
 
     A pool is therefore not something to warn about and render anyway.
     """
@@ -436,8 +439,9 @@ def validate_alias_entries(entries: Sequence[dict[str, str]]) -> None:
                 f"alias {alias!r} would map to both {seen[alias]!r} and {name!r}. "
                 f"CLIProxyAPI turns a repeated alias into a rotating model pool whose "
                 f"upstream is chosen by a global counter that ignores routing.strategy "
-                f"and session-affinity, which caps the prompt-cache hit rate near 1/N. "
-                f"Give each upstream model its own alias instead."
+                f"and session-affinity. That rotation is verified in the 7.1.23 source; "
+                f"the roughly 1/N ceiling on the prompt-cache hit rate is reasoned from "
+                f"it, not measured. Give each upstream model its own alias instead."
             )
         seen[alias] = name
 

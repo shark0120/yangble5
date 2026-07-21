@@ -33,8 +33,10 @@ document to say, and it costs the project nothing compared to being caught round
 
 ## Setup
 
-Python 3.11 or newer (`requires-python = ">=3.11"`; CI runs 3.11, 3.12 and 3.13 on Ubuntu and
-Windows).
+Python 3.11 or newer (`requires-python = ">=3.11"`; CI runs 3.11, 3.12, 3.13 and 3.14 on Ubuntu
+and Windows). Those three places — the matrix, `requires-python`, and the `Programming Language ::
+Python` classifiers — are checked against each other by the `offline-self-checks` job, so adding a
+version means adding it in all of them or the build fails.
 
 ```bash
 git clone https://github.com/shark0120/yangble5
@@ -73,15 +75,29 @@ e-mail address, or anybody's absolute filesystem path. These tools were ported f
 whose sources carried all four, so this is a live risk, not a hypothetical one.
 
 CI enforces it: the `no-secrets` job in `.github/workflows/ci.yml` greps the whole tree for
-key-shaped strings, the legacy management-key prefix, and Windows operator paths, and fails the
-build on a hit. The expressions live in the workflow and nowhere else, deliberately - a second
-copy in this file would itself be a match and would fail the build. Run the same check locally
-by lifting the pattern out of the workflow:
+key-shaped strings (API keys, OAuth tokens, GitHub and AWS and Slack credentials, bcrypt hashes,
+private-key headers), the legacy management-key prefix, and operator paths in both slash
+directions; two further steps assert that every committed e-mail address is at a reserved domain
+and that every IP address is either IANA-reserved or named in `.github/ip-allowlist.txt`. The
+expressions live in the workflow and nowhere else, deliberately - one authoritative copy is the
+only kind that cannot drift. Each of them is written so its own bytes never spell out the string
+it hunts (`yang[-]admin[-]`, `Us[e]rs`, `PRIVATE[ ]KEY`), which is what lets the workflow pass
+its own scan. Run the same check locally by lifting the pattern out of the workflow:
 
 ```bash
-git grep -nIE "$(grep -oP "(?<=git grep -nIE ')[^']+" .github/workflows/ci.yml)" \
-    -- . ':!.github/workflows/ci.yml'
+pattern=$(grep -oP "(?<=git grep -nIE ')[^']+" .github/workflows/ci.yml)
+[ -n "$pattern" ] || { echo "could not lift the pattern out of the workflow"; exit 1; }
+
+git grep -nIE "$pattern" -- . ':!.github/workflows/ci.yml' ':!CONTRIBUTING.md' \
+        ':!RELEASING.md' ':!SECURITY.md' ':!scripts/make_history.sh' \
+  | grep -viE 'fake|dummy|example|placeholder|changeme|redacted|not[-_]a[-_]real|__GENERATE__|<[A-Z_]+>'
 ```
+
+The trailing filter is the one CI applies too: it drops lines that announce themselves as
+fixtures. Without it the command reports the handful of deliberately-fake keys in `tests/` on
+every run, and a check that always prints three hits is a check nobody reads. (`grep -oP` needs
+a UTF-8 locale; under Git Bash, `export LC_ALL=C.UTF-8` first or the extraction silently yields
+an empty pattern that matches every line in the repository.)
 
 or simply push to a branch and let CI answer.
 

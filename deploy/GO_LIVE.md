@@ -8,6 +8,9 @@ Companion documents:
 
 | Document | What it covers |
 |---|---|
+| [`README.md`](README.md) | **which of the two deployment paths you are on** — decide there first |
+| [`AAPANEL.md`](AAPANEL.md) | panel-managed nginx: file layout, `nginx -t`, reloading without dropping other sites |
+| [`nginx/yangble5.com.conf.example`](nginx/yangble5.com.conf.example) | the server block for the behind-proxy path, including the streaming settings |
 | [`SECRETS_SETUP.md`](SECRETS_SETUP.md) | supplying upstream credentials without leaking them |
 | [`cloudflare.md`](cloudflare.md) | the Cloudflare settings referenced in step 2 |
 | [`runbook.md`](runbook.md) | day-to-day operations after go-live |
@@ -43,6 +46,294 @@ Known limits that will generate support questions on day one:
 - **`tools/claude_shim.py` is a workaround**, not a feature. It backports the
   `role:"system"` streaming fix for engines older than v7.2.93. If you are on
   7.2.93 or newer, retire it (`runbook.md` §10).
+
+---
+
+# Which path? Answer this before step 1
+
+```sh
+ss -ltnp | grep -E ':(80|443)\b'      # any output = something owns those ports
+```
+
+| | Empty host | Host already serves other sites |
+|---|---|---|
+| **Path** | **A — standalone** | **B — behind your web server** |
+| Compose file | `docker-compose.yml` | `docker-compose.behind-proxy.yml` |
+| Follow | **Steps 1–9 below** | **Path B**, immediately below |
+| TLS | Caddy issues it | you already have it |
+
+> On a host that is already serving sites, Path A takes them all down — it
+> publishes Caddy on `0.0.0.0:80` and `0.0.0.0:443`. There is no flag that
+> makes it safe there. [`README.md`](README.md) → "Which file do I use?"
+
+---
+
+# Path B — behind an existing web server
+
+For a host where nginx (often panel-managed) already owns 80/443, the domain
+already resolves, and its certificate already works. If any of those is not
+true yet, do Steps 1–2 below (DNS, Cloudflare) first, then come back here.
+
+Panel-managed nginx: read [`AAPANEL.md`](AAPANEL.md) alongside this. It has the
+file paths, the reload that does not disturb the other sites, and the rollback.
+
+The ordering is deliberate and it is **least-risk-first**. Every step before B4
+is invisible to the sites already on the box; B4 is the only one that can
+affect them, and it is a single graceful reload with a two-command rollback.
+
+## B0 — Baseline, so you can prove you broke nothing
+
+```sh
+mkdir -p /root/yangble5-backup
+nginx -T > /root/yangble5-backup/nginx-T.before.txt 2>&1
+nginx -T 2>/dev/null | grep -c 'server_name'      # note this number
+ss -ltnp | grep -E ':(80|443|8081|8318|8320)\b'   # note what is bound
+
+# status of two other sites on this box, from your laptop:
+curl -sS -o /dev/null -w '%{http_code}\n' https://<other-site-1>/
+curl -sS -o /dev/null -w '%{http_code}\n' https://<other-site-2>/
+```
+
+- [ ] The `server_name` count and the two status codes are written down.
+- [ ] `/root/yangble5-backup/nginx-T.before.txt` exists.
+
+**ABORT IF** you cannot get a clean `nginx -T`. A config that does not
+currently parse means the running nginx is serving an *older* config than what
+is on disk, and your reload would apply someone else's unfinished edit along
+with yours. Find out why before adding anything.
+
+**Rollback** Nothing has changed.
+
+## B1 — Static site first (zero risk, and it proves the vhost)
+
+The landing page needs no gateway, no container and no config change. Shipping
+it first means the risky steps happen on a vhost you have just seen working.
+
+```sh
+cp -a /www/wwwroot/yangble5.com /root/yangble5-backup/webroot.$(date +%s)
+cp -a site/. /www/wwwroot/yangble5.com/
+chown -R www:www /www/wwwroot/yangble5.com    # aaPanel's nginx user
+```
+
+**Verify — from your laptop, not the VPS:**
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' https://yangble5.com/          # 200
+curl -fsS https://yangble5.com/install.sh | head -3                      # script
+curl -fsS https://yangble5.com/install.sh.sha256                         # digest
+curl -fsS https://yangble5.com/install.sh | sha256sum                    # matches
+```
+
+- [ ] The page renders and the status widget says 「狀態未知」. That is
+      **correct** at this stage: `/api/health` is not routed yet, and the page
+      is built to say "unknown" rather than invent a status.
+- [ ] The digest matches the file. If it does not, you copied a stale pair.
+
+**ABORT IF** `install.sh` downloads as a file instead of displaying, and you
+care about that — it means `default_type` is `application/octet-stream`. Not
+dangerous (`curl | sh` is unaffected) but it defeats "read it before you run
+it". The fix is in the nginx snippet's `location /`, applied in B3.
+
+**Rollback**
+
+```sh
+rm -rf /www/wwwroot/yangble5.com
+cp -a /root/yangble5-backup/webroot.<stamp> /www/wwwroot/yangble5.com
+```
+
+## B2 — Gateway on loopback (still invisible from the internet)
+
+```sh
+cd deploy
+cp .env.example .env          # SECRETS_SETUP.md before you fill this in
+```
+
+Set at least these, and read the comment above each one in `.env.example`:
+
+```sh
+COMPOSE_FILE=docker-compose.behind-proxy.yml   # so plain `docker compose` is right
+GATEWAY_PORT=8081                              # must equal every proxy_pass in B3
+YANGBLE5_TRUST_PROXY_HEADERS=true
+YANGBLE5_TRUSTED_PROXY_HOPS=1                  # matches the snippet's XFF handling
+YANGBLE5_MAX_REQUEST_BYTES=33554432            # 32m, same as client_max_body_size
+```
+
+```sh
+cp /path/to/cli-proxy-api engine-bin/cli-proxy-api
+cp engine/config.example.yaml engine/config.yaml    # then edit it
+docker compose up -d
+docker compose ps
+```
+
+**Verify — on the VPS:**
+
+```sh
+curl -sS http://127.0.0.1:8081/health          # {"status":"ok",...}
+ss -ltnp | grep 8081                           # 127.0.0.1:8081 — NOT 0.0.0.0
+curl -sS -o /dev/null -w '%{http_code}\n' https://yangble5.com/health   # 404 — nginx
+```
+
+- [ ] `/health` answers on loopback.
+- [ ] Port 8081 is bound to `127.0.0.1` **only**.
+- [ ] The public 404 confirms nginx is still serving the static site and has
+      not been touched.
+- [ ] Ports 80/443 are still nginx's, and the other sites still answer.
+
+**ABORT IF** `ss` shows `0.0.0.0:8081` or `[::]:8081`. The `ports:` line was
+changed. `docker compose down`, restore it, and start again — a gateway on all
+interfaces is reachable without your TLS, without the `/v0/*` block, and with
+`X-Forwarded-For` under the caller's control. `ufw deny 8081` does **not** fix
+it: Docker's `DOCKER-USER` chain is evaluated before UFW.
+
+**ABORT IF** the engine container restart-loops. Almost always: wrong binary
+architecture, malformed `engine/config.yaml`, or upstream credentials that were
+never authenticated. `docker compose logs --tail=100 engine`.
+
+**Rollback** `docker compose down`. Volumes, `.env` and the database survive.
+
+## B3 — The nginx block (edit only; nothing is live yet)
+
+Paste PART 1–3 of [`nginx/yangble5.com.conf.example`](nginx/yangble5.com.conf.example)
+into your vhost. On aaPanel, use the file [`AAPANEL.md`](AAPANEL.md) §2 tells
+you to — **not** the vhost file itself, which the panel regenerates.
+
+Back up first:
+
+```sh
+cp -a /www/server/panel/vhost/rewrite/yangble5.com.conf \
+      /root/yangble5-backup/rewrite.yangble5.com.conf.$(date +%s)
+```
+
+- [ ] Every `proxy_pass` port equals `GATEWAY_PORT` from B2.
+- [ ] `proxy_pass` targets the literal `127.0.0.1`, never `localhost`.
+- [ ] The Cloudflare `set_real_ip_from` list is the one **you** generated with
+      the curl one-liner in the snippet, not the copy in the file.
+- [ ] If you are not behind Cloudflare, PART 1a is deleted.
+- [ ] You added no `add_header` and no `proxy_set_header` inside any location.
+      Either one silently drops the whole inherited set (snippet PART 2j).
+
+**ABORT IF** you cannot find where the vhost is loaded from. `nginx -T | grep -n
+'configuration file'` — editing a file nginx does not load is the failure that
+passes every test and changes nothing.
+
+**Rollback** Restore the backup. Nothing was reloaded, so nothing is live.
+
+## B4 — `nginx -t`, then reload
+
+This is the only step that can affect the other sites, and it is the one with
+the shortest rollback.
+
+```sh
+nginx -t
+```
+
+**ABORT IF** this prints anything but `syntax is ok` / `test is successful`.
+Do not reload. Restore the backup from B3 and read the error — it names the
+file and line. `nginx -t` validates the *entire* configuration, so an error may
+be pre-existing and not yours; `diff` against
+`/root/yangble5-backup/nginx-T.before.txt` to find out.
+
+```sh
+nginx -t && nginx -s reload         # or: /etc/init.d/nginx reload
+```
+
+`reload` re-reads the config, starts new workers and lets the old ones finish
+their in-flight requests. Listening sockets are never closed and no connection
+is dropped. **Never `restart` on a shared host** — that closes the sockets and
+every site on the box refuses connections until nginx comes back.
+
+**Verify — immediately, in this order:**
+
+```sh
+nginx -T 2>/dev/null | grep -c 'server_name'    # same number as B0
+tail -50 /www/wwwlogs/nginx_error.log
+
+# the other sites, from your laptop — same codes as B0:
+curl -sS -o /dev/null -w '%{http_code}\n' https://<other-site-1>/
+curl -sS -o /dev/null -w '%{http_code}\n' https://<other-site-2>/
+```
+
+- [ ] `server_name` count unchanged.
+- [ ] Both other sites return exactly what they returned in B0.
+- [ ] No new errors in the nginx error log.
+
+**ABORT IF** either other site changed. Roll back **before** you debug:
+
+```sh
+cp -a /root/yangble5-backup/rewrite.yangble5.com.conf.<stamp> \
+      /www/server/panel/vhost/rewrite/yangble5.com.conf
+nginx -t && nginx -s reload
+```
+
+## B5 — Smoke test
+
+Run it **from your laptop**. On the VPS it would pass the health checks while
+telling you nothing about what the internet can reach, and it would make the
+"management surface is not exposed" check meaningless.
+
+```sh
+export YANGBLE5_API_KEY=yb5_...      # a real key, issued via the invite code
+bash deploy/smoke_test.sh --base-url https://yangble5.com
+```
+
+Same checklist as Step 6 below — it is path-independent, because it only ever
+talks to the public URL:
+
+- [ ] TLS verifies; certificate has sensible remaining life.
+- [ ] `/health` returns 200 with `status=ok`.
+- [ ] `/pool/status` returns 200 and contains **no dollar figures**.
+- [ ] Anonymous and garbage-key requests are both rejected **401**.
+- [ ] The non-streaming round trip returns 200 with content.
+- [ ] **The streaming round trip delivers events progressively, not in one burst.**
+- [ ] `/v0/management/*` returns **404** from the internet.
+- [ ] The engine's port 8318 does not answer from the internet.
+
+Two behind-proxy-specific checks the standalone path does not need:
+
+```sh
+curl -sS https://yangble5.com/api/health        # 200 — the widget's endpoint
+curl -si https://yangble5.com/admin/keys | head -1   # 404
+```
+
+- [ ] The landing page's status widget now shows a real status, not 「狀態未知」.
+- [ ] `/admin/*` is 404 from outside. Use `curl http://127.0.0.1:8081/admin/...`
+      over SSH instead.
+
+**ABORT IF** any check fails. The three emergencies in Step 6's table apply
+identically here. One extra failure mode is specific to this path:
+
+| Failure | Meaning | Do this now |
+|---|---|---|
+| `api/streaming` = `BUFFERED` | nginx or Cloudflare is collecting the whole stream; agents will look frozen | snippet PART 4's four-item list, in order |
+| every request 502 | `GATEWAY_PORT` and `proxy_pass` disagree, or `proxy_pass` says `localhost` on a dual-stack host | fix, `nginx -t`, reload |
+| per-IP limits fire on innocent users | `TRUSTED_PROXY_HOPS` does not match how nginx writes `X-Forwarded-For` | snippet PART 1b's table |
+
+**Rollback** B4's two commands. The static site returns; the gateway keeps
+running on loopback with its database intact.
+
+## B6 — Then carry on with the shared steps
+
+Path B rejoins the main runbook here:
+
+| Step | Applies? |
+|---|---|
+| Step 7 — lock the origin down | **Yes**, but read `harden.sh` before running it on a panel host: it assumes it owns UFW, and the panel manages firewall rules too. `AAPANEL.md` §8. |
+| Step 8 — open registration | Yes, unchanged. |
+| Step 9 — announce | Yes, unchanged. The claim rules do not depend on how you deployed. |
+| Day 2, kill switch, what to watch | Yes — except the Caddy commands. Your kill switch is `docker stop yangble5-gateway`, which 502s the API and leaves the static site and the other 27 sites untouched. |
+
+One thing Path B does **not** get: the fail2ban jail `harden.sh` installs reads
+Caddy's JSON access log, and there is no Caddy here. Until an nginx filter
+exists, your brute-force defence is the gateway's own
+`YANGBLE5_AUTH_FAIL_LOCKOUT_*` settings plus Cloudflare. Do not tell yourself
+otherwise.
+
+---
+
+# Path A — standalone, on an empty host
+
+Steps 1–9 below are Path A. **Do not run them on a host that already serves
+other sites.**
 
 ---
 
@@ -380,8 +671,11 @@ Existing keys keep working; no new ones can be created.
   token-weighted, warm rounds only, one machine, one run, ~749K prefix; round 1
   is 0%.
 - That a 748,918-token prompt was processed without truncation.
-- That the cache finding (`nextModelPoolOffset` rotating the upstream per
-  request and capping cache hits at ~50%) is reproducible from source.
+- That the **rotation mechanism** — `nextModelPoolOffset` in
+  `sdk/cliproxy/auth/conductor.go` selecting the upstream per request from a
+  global counter that consults neither `routing.strategy` nor session
+  affinity — is **verified in CLIProxyAPI 7.1.23's source**, with the symbols
+  present in the binary we ran. Say that much and no more.
 
 ### What you must not say
 
@@ -391,6 +685,15 @@ Existing keys keep working; no new ones can be created.
 - That it "beats" GPT, Claude or Gemini. Nothing here was benchmarked against
   another provider — the tool ships so people can measure for themselves.
 - 99.53% without the warm-only qualifier.
+- That the **~50% pool ceiling** is measured, benchmarked, or "reproducible
+  from source". It is a **reasoned structural upper bound** argued from the
+  rotation mechanism. **No pool-vs-direct A/B run exists in this repository**,
+  so there is no "before" number and 50% must never be quoted as one. The
+  mechanism is verified; the ceiling is reasoned. Do not merge the two.
+- Any hit-rate figure at a prefix size other than the ~749K one. Only one run
+  is in the released evidence set.
+- Any claim that the cache made things **faster**. Two of the three warm rounds
+  were *slower* than the cold round. There is no latency win to announce.
 - Anything implying live web search. There is none.
 
 Do not invent testimonials and do not display the logos of companies that have
@@ -449,12 +752,14 @@ Check at +1h, +6h and +24h.
 | Registrations | `runbook.md` §3 | matches what you expect from your announcement | a spike far beyond it, especially from one IP range |
 | Spend | `runbook.md` §2 | tracking below your daily cap | on pace to exhaust the monthly cap in days |
 | Distinct IPs per key | `runbook.md` §4 | 1-3 per key | above `YANGBLE5_ABUSE_DISTINCT_IP_THRESHOLD` = a shared key |
-| Cache hit rate | `tools/cache_stats_sidecar.py` | warm rounds well above 90% | a drop toward ~50%, which means the model pool is rotating upstreams again |
+| Cache hit rate | `tools/cache_stats_sidecar.py` | warm rounds well above 90% | a drop toward ~50% — the signature the two-member rotation would be expected to produce; check the alias before concluding anything |
 | Disk | `df -h /var/lib/docker` | flat-ish | steady growth — check log rotation |
 
 A hit rate sagging toward 50% is the specific regression this project exists to
-prevent. It means an alias is mapping to more than one upstream model again;
-re-read `docs/FINDINGS.md` and check `oauth-model-alias` is still 1:1.
+prevent. The likeliest cause is an alias mapping to more than one upstream model
+again; re-read `docs/FINDINGS.md` and check `oauth-model-alias` is still 1:1.
+(The ~50% figure is a reasoned ceiling, not a measured threshold — treat it as
+the shape to look for, not a number to alert on.)
 
 ## The three things most likely to go wrong
 

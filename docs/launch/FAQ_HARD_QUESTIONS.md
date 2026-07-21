@@ -61,7 +61,11 @@ behind a public endpoint, even if they agreed, even if they're family.
 serving third parties.** That is written down in
 [`docs/OPERATING_A_PUBLIC_SERVICE.md`](../OPERATING_A_PUBLIC_SERVICE.md), whose pre-launch
 checklist opens with "no personal OAuth account is in the pool", and the gateway **refuses to
-start** in a configuration with public registration enabled and no spend ceiling.
+start** in a configuration with public registration enabled and no spend ceiling. Be precise
+about the limit of that protection, because someone will test it: the startup check fires only
+when `REGISTRATION_MODE=open`. In `invite` (the default) and `closed`, every global ceiling
+defaults to `0` = unlimited and the gateway starts without complaint. It is a guard rail on the
+one path that lets strangers mint keys, not a guarantee that any instance is capped.
 
 **Localhost, against your own account: this is ordinary client configuration.** You're making the
 same API calls to the same provider on the same credential you were already using; a local process
@@ -122,18 +126,21 @@ not by failure. Every session you ever start pays exactly one.
 
 Check us: `2,236,290 / 2,995,762 = 0.7465`.
 
-**(b) It's prefix-size dependent, and that's the interesting part.** The uncached tail is roughly
-*constant* (~3.5K tokens at a 749K prefix) because it's the conversation growth since the last
-request, not a fraction of the prompt. So the ratio necessarily improves as the prefix grows:
+**(b) It's an upper bound for that harness, not a typical value.** The hit rate is
+`1 - (uncached tail / prompt)`, and our simulated conversation grows by **exactly 15 tokens per
+round** — the most cache-favourable session shape that exists. A real agent turn appends a tool
+result, a file read or a diff: orders of magnitude more uncached tokens, every turn. Expect
+lower.
 
-| Measured prefix | Warm token-weighted hit rate |
-|---|---|
-| ~749K tokens | 99.53% |
-| ~91K tokens | 94.00% |
-| ~30K (tool default) | does not reach 99% |
+**(b2) It's prefix-size dependent.** The uncached remainder we measured (~3.5K tokens at a 749K
+prefix) is roughly *constant* rather than proportional, so it is a smaller fraction of a bigger
+prompt and the hit rate rises with prefix size. That direction was observed. **The magnitude at
+other prefix sizes is not in the released evidence set** — there is exactly one released run, at
+748,918 tokens — so we are not publishing a number for any other prefix. The tool's default
+(`--prefix-tokens 30000`) will not reach 99%.
 
 **Do not quote 99.53% as a universal number.** It's what this upstream's cache granularity does at
-that prompt size.
+that prompt size, with that session shape, on one machine, once.
 
 **(c) The comparison figure is not a measurement.** The "~50%" pool ceiling is reasoned from the
 source, never measured. See question 5's sibling below.

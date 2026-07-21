@@ -312,6 +312,14 @@ create_env() {
     # Values this script owns rather than the template.
     env_set YANGBLE5_DOMAIN "$DOMAIN" "$envfile"
     env_set ACME_EMAIL "$ACME_EMAIL" "$envfile"
+    # THE ONE IDENTITY. docker-compose.yml reads YANGBLE5_UID/YANGBLE5_GID twice:
+    # once as build args (so the image creates that account and chowns /data and
+    # /auth to it) and once as the runtime `user:`. Writing them here used to be
+    # only half of that — the images hard-coded 10001 and nothing passed a build
+    # arg — so the container ran as an id that owned nothing, SQLite could not
+    # create the -wal file, and the stack never came up. sync_container_identity()
+    # below is what keeps already-built images and already-created volumes in
+    # step when this value changes.
     env_set YANGBLE5_UID "$SERVICE_UID" "$envfile"
     env_set YANGBLE5_GID "$SERVICE_GID" "$envfile"
     # Absolute, and matching the path harden.sh points the fail2ban jail at.
@@ -397,7 +405,85 @@ check_engine_binary() {
     warn "no engine binary and no pre-built engine image"
 }
 
+# ── 6b. container identity ─────────────────────────────────────────────────
+# Everything runs as SERVICE_UID:SERVICE_GID inside the containers. Two things
+# can drift out of step with that, and both present identically — "unable to
+# open database file" or a silent failure to refresh an OAuth token — with
+# nothing naming the cause:
+#
+#   1. IMAGES built for a different uid. Harmless to fix: the uid is a build arg
+#      now, and changing a build arg invalidates the cache by itself, so the
+#      rebuild in start_stack picks it up. We only need to SAY so.
+#   2. VOLUMES that already exist. Docker seeds a fresh named volume from the
+#      image's directory ownership, so the Dockerfile's chown covers the first
+#      boot and nothing else. An existing volume keeps the ownership it had, and
+#      no rebuild will ever touch it.
+#
+# The stamp file records what the last successful run built for, so the common
+# case (nothing changed) costs one `cat`.
+IDENTITY_STAMP=""
+IDENTITY_CHANGED=0
+
+sync_container_identity() {
+    step "Container identity"
+
+    IDENTITY_STAMP="$PREFIX/.image-uid"
+    local want="${SERVICE_UID}:${SERVICE_GID}"
+    local had=""
+    [ -f "$IDENTITY_STAMP" ] && had="$(cat -- "$IDENTITY_STAMP" 2>/dev/null || true)"
+
+    if [ "$had" = "$want" ]; then
+        ok "images and volumes already built for uid:gid ${want}"
+        return 0
+    fi
+
+    IDENTITY_CHANGED=1
+    if [ -n "$had" ]; then
+        warn "container uid:gid changed: ${had} -> ${want}"
+        warn "images will rebuild and any existing data volume will be re-owned"
+    else
+        ok "container uid:gid = ${want}"
+    fi
+}
+
+# Re-own the named volumes. Called AFTER the build, because it borrows the
+# gateway image we just built rather than pulling a utility image the operator
+# did not ask for.
+#
+# Plain `docker run`, not `compose run`: every service in docker-compose.yml
+# drops ALL capabilities, and chown needs CAP_CHOWN. That restriction is
+# deliberate and this one-shot deliberately steps outside it.
+repair_volume_ownership() {
+    [ "$IDENTITY_CHANGED" -eq 1 ] || return 0
+
+    local envfile="$DEPLOY_DIR/.env"
+    local image vol repaired=0
+    image="$(env_get GATEWAY_IMAGE "$envfile" || echo '')"
+    [ -n "$image" ] || image="yangble5/gateway:local"
+
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        warn "cannot re-own volumes: image $image not found (build must have failed)"
+        return 0
+    fi
+
+    # Volume names are stable because docker-compose.yml sets `name: yangble5`.
+    for vol in yangble5_gateway_data yangble5_engine_auth; do
+        docker volume inspect "$vol" >/dev/null 2>&1 || continue
+        if docker run --rm --user 0:0 -v "${vol}:/mnt" "$image" \
+             chown -R "${SERVICE_UID}:${SERVICE_GID}" /mnt >/dev/null 2>&1; then
+            ok "re-owned volume $vol to ${SERVICE_UID}:${SERVICE_GID}"
+            repaired=$((repaired + 1))
+        else
+            warn "could not re-own volume $vol — the stack may fail to write to it"
+            warn "  docker run --rm -u 0:0 -v ${vol}:/mnt ${image} chown -R ${SERVICE_UID}:${SERVICE_GID} /mnt"
+        fi
+    done
+    [ "$repaired" -gt 0 ] || ok "no pre-existing volumes needed re-owning"
+}
+
 # ── 7. bring the stack up ──────────────────────────────────────────────────
+# No -p flag: docker-compose.yml declares `name: yangble5`, so the project (and
+# therefore every volume name above) is the same however this is invoked.
 compose() { docker compose --project-directory "$DEPLOY_DIR" -f "$DEPLOY_DIR/docker-compose.yml" "$@"; }
 
 start_stack() {
@@ -405,6 +491,7 @@ start_stack() {
 
     if [ "$NO_START" -eq 1 ]; then
         warn "--no-start: skipping build and up"
+        warn "volume ownership is NOT repaired until you run without --no-start"
         return 0
     fi
     if [ "${ENGINE_READY:-0}" -eq 0 ]; then
@@ -416,8 +503,17 @@ start_stack() {
     compose build
     ok "images built"
 
+    repair_volume_ownership
+
     compose up -d
     ok "stack started"
+
+    # Recorded only once the stack is actually up with this identity, so an
+    # aborted run does not leave a stamp claiming work that did not happen.
+    if [ -n "$IDENTITY_STAMP" ]; then
+        printf '%s:%s\n' "$SERVICE_UID" "$SERVICE_GID" > "$IDENTITY_STAMP"
+        chmod 0600 "$IDENTITY_STAMP"
+    fi
 
     # Certificate issuance and the engine's first credential load both take a
     # moment; report state rather than pretending it is instant.
@@ -571,6 +667,7 @@ main() {
     create_env
     create_engine_config
     check_engine_binary
+    sync_container_identity
     start_stack
     print_admin_key
     bootstrap_invite

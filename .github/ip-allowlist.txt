@@ -1,0 +1,68 @@
+# Public-looking IPv4 literals that are allowed to appear in this repository.
+#
+# WHY AN ALLOWLIST AND NOT A PATTERN
+# ----------------------------------
+# The address we most need to keep out of this tree is the operator's real
+# server. We cannot write a regex for it, because writing it down is the leak.
+# So the check in .github/workflows/ci.yml (job `no-secrets`) is inverted: it
+# extracts every dotted quad in the tree and fails on anything not permitted.
+# A new public address -- a VPS pasted into a runbook, a client address copied
+# out of a log -- stops the build and makes a human decide, which is exactly
+# the moment you want a human involved.
+#
+# WHAT IS *NOT* IN HERE
+# ---------------------
+# Addresses IANA has reserved are exempted by the workflow itself and must not
+# be listed here: loopback, RFC 1918 private space, RFC 3927 link-local, RFC
+# 6598 CGNAT, RFC 5737 documentation ranges (192.0.2/24, 198.51.100/24,
+# 203.0.113/24), RFC 2544 benchmarking, multicast and reserved space. None of
+# them can be a real host, so requiring sign-off for each new one would only
+# teach people to add lines without reading them. CI also fails if an entry
+# here matches nothing in the tree, so this file cannot rot into cover.
+#
+# Format: one address per line; `#` starts a comment.
+
+# --- well-known public resolvers, used only as "can this box reach the
+#     internet at all" examples ---------------------------------------------
+1.1.1.1
+8.8.8.8
+9.9.9.9
+
+# --- generic throwaway addresses in prose and fixtures --------------------
+1.2.3.4
+5.6.7.8
+5.6.7.9
+
+# --- deliberately-wrong values. Each sits just outside a reserved range so
+#     the classifier in deploy/preflight.sh has a negative case to fail on,
+#     which is also why they cannot be exempted as reserved. ---------------
+11.0.0.1                 # one past 10.0.0.0/8
+172.32.0.1               # one past 172.16.0.0/12
+100.63.255.255           # one below 100.64.0.0/10
+100.128.0.1              # one past 100.64.0.0/10
+256.1.1.1                # not an address at all; the parser must reject it
+
+# --- Cloudflare's published IPv4 ranges. deploy/preflight.sh carries these as
+#     a fallback for when https://www.cloudflare.com/ips-v4 cannot be fetched,
+#     so the network addresses appear verbatim in its source.
+#     Source: https://www.cloudflare.com/ips/ -------------------------------
+103.21.244.0
+103.22.200.0
+103.31.4.0
+104.16.0.0
+104.24.0.0
+108.162.192.0
+131.0.72.0
+141.101.64.0
+162.158.0.0
+172.64.0.0
+173.245.48.0
+188.114.96.0
+190.93.240.0
+197.234.240.0
+198.41.128.0
+
+# --- addresses inside those ranges, used as positive cases for ip_in_cf() --
+104.16.0.1
+172.67.1.1
+188.114.96.5

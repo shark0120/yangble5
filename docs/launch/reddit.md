@@ -81,14 +81,18 @@ rounds at a 748,918-token prompt, ingested with no truncation.
 
 - **Warm rounds only.** Round 1 is a cold write, 0% by construction, and every session pays one.
   Fold it in and this run is 74.6% — which is really just a function of how many rounds I ran.
-- **Prefix-size dependent.** The uncached tail is roughly *constant* (~3.5K tokens), not
-  proportional, so the ratio improves as the prefix grows. At ~91K prefix the same tool measures
-  94.00%. The 30K default won't hit 99%. Don't quote 99.53% as a universal number.
+- **Upper bound, not a typical value.** My simulated conversation grows by exactly 15 tokens per
+  round — the most cache-favourable shape possible. A real agent turn appends a tool result or a
+  diff, which is orders of magnitude bigger and uncached. Expect lower.
+- **Prefix-size dependent.** The uncached remainder is roughly *constant* (~3.5K tokens), not
+  proportional, so the ratio rises as the prefix grows. Direction observed; I'm not publishing a
+  magnitude for other prefix sizes because the released evidence is one run at 748,918 tokens.
+  The 30K default won't hit 99%. Don't quote 99.53% as a universal number.
 - **The "~50% ceiling" from the pool bug is reasoned from source, not measured.** I never ran a
   clean pool-vs-direct A/B — by the time I understood it, the pool config was broken for a second
   unrelated reason, so any A/B would have measured that instead.
 - **n=1**, one machine, one afternoon, no error bars, no cross-provider comparison.
-- **Latency is not a clean win.** Round 2 was 2x faster than cold; rounds 3 and 4 were *slower*
+- **Latency did not improve predictably — there is no speed claim here.** Round 2 was 2x faster than cold; rounds 3 and 4 were *slower*
   than cold while reading 99.5% from cache. Caching cuts cost predictably, not wall-clock.
 - **No live web search through any of this.** Measured: asked the year, Gemini said 2024, Grok
   said 2025. Pure parametric recall behind a training cutoff.
@@ -209,8 +213,9 @@ warm rounds** at a 748,918-token prompt.
 
 - Warm rounds (2–4) only. The cold round is 0% by construction and every session pays one. With
   the cold round folded in this run is 74.6%.
-- Prefix-size dependent — at ~91K it measures 94.00%, and the tool's 30K default won't reach 99%.
-  99.53% is not a universal number.
+- Prefix-size dependent, and an upper bound: the harness's tail grows 15 tokens/round, the most
+  cache-favourable shape there is, and the hit rate rises with prefix size. The tool's 30K default
+  won't reach 99%. 99.53% is not a universal number.
 - One machine, one run, one afternoon. No repetitions, no error bars.
 - Latency did **not** reliably improve: one warm round was 2x faster than cold, two were *slower*.
   Caching saves money much more reliably than time.

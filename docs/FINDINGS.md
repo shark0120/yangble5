@@ -217,7 +217,7 @@ python tools/cache_bench.py --model yangble5 --prefix-tokens 600000 --rounds 4
 Per-request records as the engine reported them, captured by `tools/cache_stats_sidecar.py`
 into `stats.json`. Nothing here is averaged, smoothed or reordered:
 
-| Round | Prompt tokens | `cache_read` | Hit | Uncached tail | Latency |
+| Round | Prompt tokens | `cache_read` | Hit | Uncached tail | Round-trip (non-streaming) |
 |---:|---:|---:|---:|---:|---:|
 | 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,410 ms |
 | 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,753 ms |
@@ -242,33 +242,34 @@ it is what a long session experiences after its first request, and we print the 
 beside it so you can compute either. See
 [BENCHMARK.md](BENCHMARK.md#5-why-the-cold-round-is-excluded).
 
-**It is prefix-size dependent, and the dependency is the interesting part.** The uncached tail
-is roughly *constant* - about 3.5K tokens at a 749K prefix - because it is the conversation
-growth since the last request, not a fraction of the prompt. So the ratio improves as the
-prefix grows. A second run at a smaller prefix, same tooling, same session discipline:
+**It is an upper bound for this harness, not a typical value.** The uncached tail is whatever
+the conversation added since the previous request, and this harness adds **exactly 15 tokens per
+round** (748,918 -> 748,933 -> 748,948 -> 748,963) - the most cache-favourable session shape
+that can exist. A real agent turn appends a tool result, a file read, a diff or a test log:
+hundreds to tens of thousands of uncached tokens, every turn, which pushes the ratio down. The
+~3.5K uncached remainder we actually measured is already much larger than those 15 tokens,
+because the upstream caches at a coarse granularity and adds fixed per-request overhead. Full
+treatment of this confound in
+[BENCHMARK.md §7](BENCHMARK.md#7-known-confounds).
 
-```bash
-python tools/cache_bench.py --prefix-tokens 75000 --rounds 5
-```
+**It is prefix-size dependent.** Because that uncached remainder is roughly *constant* rather
+than proportional, it is a smaller fraction of a bigger prompt, so the hit rate **rises as the
+prefix grows**. We observed that direction; the magnitude at any other prefix size is **not in
+the released evidence set**, which contains exactly one run - the 748,918-token one above.
+The tool's default (`--prefix-tokens 30000`) will not reach 99%. **Do not quote 99.53% as a
+universal number** - it is what this upstream's cache granularity does at a ~749K prefix, with a
+15-token-per-round tail, on one machine, once. If you want the number at your prefix size, run
+the tool at your prefix size; that is why it ships.
 
-| Round | Prompt tokens | `cache_read` | Hit |
-|---:|---:|---:|---:|
-| 1 (cold) | 91,418 | 0 | 0.00% |
-| 2 | 91,433 | 85,984 | 94.04% |
-| 3 | 91,448 | 85,976 | 94.02% |
-| 4 | 91,463 | 85,969 | 93.99% |
-| 5 | 91,478 | 85,961 | 93.97% |
-
-Warm token-weighted: `343,890 / 365,822` = **94.00%**. The tool's default
-(`--prefix-tokens 30000`) will not reach 99%. **Do not quote 99.53% as a universal number** -
-it is what this upstream's cache granularity does at a ~749K prefix.
-
-**Latency is not a clean win, and we are not going to pretend otherwise.** Round 2 was roughly
-2x faster than the cold round (10,753 ms vs 21,410 ms). Rounds 3 and 4 were *slower than the
-cold round* (23,457 ms and 22,381 ms) while reading 99.53% of their prompt from cache. Single
-run, no repetitions, shared upstream, zero control over provider-side load. Prompt caching
-reduces **cost** predictably; on this evidence it does not reduce **wall-clock time**
-predictably. Treat the latency column as an anecdote.
+**Latency did not improve predictably, and we are not going to pretend otherwise.** Round 2 was
+roughly 2x faster than the cold round (10,753 ms vs 21,410 ms). Rounds 3 and 4 were *slower than
+the cold round* (23,457 ms and 22,381 ms) while reading 99.53% of their prompt from cache -
+**two of the three warm rounds were slower than cold.** No latency-improvement claim is
+supportable from this run. Every figure in that column is also a **complete non-streaming round
+trip**, not time-to-first-token: the harness sends `stream: false`, and TTFT was never measured
+anywhere in this repository. Single run, no repetitions, shared upstream, zero control over
+provider-side load. Prompt caching reduces **cost** predictably; on this evidence it does not
+reduce **wall-clock time** predictably. Treat the latency column as an anecdote.
 
 **`--prefix-tokens` is a target, not a count.** The generator sizes the corpus at ~30 tokens per
 line; the live tokenizer counted ~37. `--prefix-tokens 600000` therefore produced a

@@ -1,6 +1,23 @@
-# yangble5 — public deployment stack
+# yangble5 — public deployment stack (STANDALONE HOST)
 # ===========================================================================
 #   internet ──80/443──▶ caddy ──edge──▶ gateway ──backend──▶ engine ──▶ upstream LLM APIs
+#
+# ⚠ READ THIS BEFORE `docker compose up` ⚠
+#
+# The caddy service below BINDS HOST PORTS 80, 443/tcp AND 443/udp. If anything
+# else on this machine already listens there — an nginx installed by aaPanel,
+# cPanel, Plesk, or by hand — one of two things happens, and both are outages:
+# the bind fails and this stack does not start, or it wins the port and every
+# other site on the host goes dark.
+#
+# Check first, on the host:
+#     sudo ss -ltnp '( sport = :80 or sport = :443 )'
+#
+# If ANYTHING comes back, do not use this file. Use
+# deploy/docker-compose.behind-proxy.yml instead: it publishes only on
+# 127.0.0.1 high ports and lets the existing web server terminate TLS and
+# reverse-proxy to it. That is the supported shape for a shared host, not a
+# downgrade.
 #
 # WHY THIS SHAPE
 #
@@ -27,11 +44,39 @@
 # is silently ignored, which is one of several reasons v1 is unsupported here.
 # ===========================================================================
 
+# Fixed project name. Without it Compose derives the project from the directory
+# it is invoked in, so `deploy/` yields volumes called `deploy_gateway_data` and
+# invoking from anywhere else silently creates a SECOND, empty database. The
+# volume names below (`yangble5_gateway_data`, `yangble5_engine_auth`) are what
+# install.sh and runbook.md refer to by name, and they are only stable because
+# of this line.
+name: yangble5
+
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: "10m"
     max-file: "5"
+
+# The container-side uid:gid. It is used TWICE and the two uses must agree:
+#
+#   * as a BUILD ARG, so the image creates that account and chowns /data and
+#     /auth to it. A fresh named volume inherits its ownership from the image's
+#     directory, so this is what makes the volume writable at all.
+#   * as the RUNTIME `user:`, so the process actually is that uid.
+#
+# install.sh writes YANGBLE5_UID/YANGBLE5_GID into .env from the host service
+# user it created, and both uses read the same variables — which is the fix for
+# the original defect, where .env said (for example) 998 while every image had
+# baked 10001. The container then ran as an account that owned nothing, could
+# not create /data/yangble5.db-wal, and the stack never came up.
+#
+# CHANGING THE UID LATER: the images must be rebuilt (`docker compose build`;
+# changing a build arg invalidates the cache by itself) AND any volume that
+# already exists keeps its old ownership. install.sh handles both.
+x-app-build-args: &app-build-args
+  APP_UID: ${YANGBLE5_UID:-10001}
+  APP_GID: ${YANGBLE5_GID:-10001}
 
 x-hardening: &default-hardening
   security_opt:
@@ -81,7 +126,15 @@ services:
       - edge
     depends_on:
       gateway:
-        condition: service_healthy
+        # service_started, NOT service_healthy. Gating the edge on the origin's
+        # health sounds tidier and fails far worse: any condition that keeps the
+        # gateway unhealthy — a bad env var, a corrupt database, a probe path
+        # that does not exist — then also means Caddy never starts, so nothing
+        # answers on 443, no certificate is ever issued, and the operator sees a
+        # dead host instead of a 502 that names the broken service. Start the
+        # edge; let it report the truth. The gateway's healthcheck below is still
+        # correct and is what `docker compose ps` and install.sh read.
+        condition: service_started
     healthcheck:
       # Caddy's admin API is bound to the container's own loopback (see the
       # `admin` global option in the Caddyfile) — not reachable from anywhere else.
@@ -110,6 +163,7 @@ services:
       # Build context is the REPO ROOT so the image can copy ../gateway.
       context: ..
       dockerfile: deploy/Dockerfile.gateway
+      args: *app-build-args
     container_name: yangble5-gateway
     user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
     # Every name here is a real setting read by gateway/config.py. If you add
@@ -157,9 +211,23 @@ services:
       # true because Caddy is the only peer that can reach this port; without
       # it every client is indistinguishable from the Caddy container.
       YANGBLE5_TRUST_PROXY_HEADERS: ${YANGBLE5_TRUST_PROXY_HEADERS:-true}
+      # Fallback only. The gateway reads X-Real-IP first, and the Caddyfile sets
+      # it with `header_up X-Real-IP {client_ip}` — Caddy's own verdict, already
+      # unwound through trusted_proxies and Cf-Connecting-Ip, overwriting
+      # whatever the client sent. HOPS is what the X-Forwarded-For fallback uses
+      # when the edge does NOT set X-Real-IP, and it counts proxies that APPEND
+      # to XFF between the client and this container. Caddy alone = 1; behind
+      # Cloudflare as well = 2. Getting it wrong there attributed every request
+      # to a Cloudflare edge address and collapsed all per-IP limits into one
+      # bucket, which is why X-Real-IP now wins.
       YANGBLE5_TRUSTED_PROXY_HOPS: ${YANGBLE5_TRUSTED_PROXY_HOPS:-1}
       YANGBLE5_MAX_REQUEST_BYTES: ${YANGBLE5_MAX_REQUEST_BYTES:-33554432}
       YANGBLE5_MAX_USAGE_PARSE_BYTES: ${YANGBLE5_MAX_USAGE_PARSE_BYTES:-2097152}
+      # -- metering --
+      # Output tokens charged for a 2xx whose usage report could not be parsed.
+      # 0 makes those requests free and invisible to every budget; the gateway
+      # prints a startup warning if you set it there.
+      YANGBLE5_UNPARSED_USAGE_TOKEN_FLOOR: ${YANGBLE5_UNPARSED_USAGE_TOKEN_FLOOR:-1000}
       # -- misc --
       YANGBLE5_LOG_LEVEL: ${YANGBLE5_LOG_LEVEL:-INFO}
       GATEWAY_PORT: ${GATEWAY_PORT:-8000}
@@ -179,11 +247,20 @@ services:
         condition: service_started
     healthcheck:
       # python is guaranteed present in this image; curl/wget are not.
+      #
+      # `/health` is CANONICAL and is the path gateway/app.py registers first.
+      # `/healthz` is registered as an alias on the same handler, so either works
+      # — but every probe in this repo uses /health so there is one string to
+      # grep for. tests/test_gateway.py::test_infra_probe_paths_are_routed_by_the_app
+      # parses this file and fails if the path stops matching a real route, which
+      # is how the original /healthz-vs-/health mismatch would have been caught:
+      # the gateway never became healthy, and caddy — which waited on it — never
+      # started at all.
       test:
         - CMD
         - python
         - -c
-        - "import os,sys,urllib.request; p=os.environ.get('GATEWAY_PORT','8000'); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+p+'/healthz', timeout=5).status == 200 else 1)"
+        - "import os,sys,urllib.request; p=os.environ.get('GATEWAY_PORT','8000'); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+p+'/health', timeout=5).status == 200 else 1)"
       interval: 30s
       timeout: 10s
       retries: 3
@@ -228,6 +305,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.engine
+      args: *app-build-args
     container_name: yangble5-engine
     user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
     environment:
@@ -294,6 +372,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.gateway
+      args: *app-build-args
     container_name: yangble5-shim
     user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
     # Reuses the gateway image purely because it already has a Python runtime.

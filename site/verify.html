@@ -8,96 +8,236 @@
 <meta name="color-scheme" content="dark light">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="index,follow">
+<meta name="theme-color" content="#0a0e14" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="canonical" href="https://yangble5.com/verify.html">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0e14'/%3E%3Cpath d='M14 20h8l10 14 10-14h8L37 40v10h-10V40z' fill='%235aa9ff'/%3E%3C/svg%3E">
 <style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   yangble5.com/verify.html — same design system as index.html, same rules:
+   zero external subresources, one inline style block, one inline script block pinned
+   by a CSP sha256 (see site/README.md), dark first, light fully considered.
+   ═══════════════════════════════════════════════════════════════════════════ */
 :root{
-  --bg:#0b0f14; --bg2:#121820; --bg3:#18202a; --bg4:#1e2833;
-  --fg:#e8eef5; --muted:#9fb0c0; --border:#243040;
-  --accent:#4da3ff; --accent-ink:#06111f;
-  --good:#3fb950; --warn:#e0a02a; --bad:#ff6b61;
+  --t--2:.75rem; --t--1:.8125rem; --t-0:.9375rem; --t-1:1.0625rem; --t-2:1.1875rem;
+  --t-3:clamp(1.25rem,1.08rem + .85vw,1.6rem);
+  --t-4:clamp(1.6rem,1.26rem + 1.7vw,2.25rem);
+  --t-5:clamp(1.8rem,1.35rem + 2.2vw,2.6rem);
+
+  --s-1:.25rem; --s-2:.5rem; --s-3:.75rem; --s-4:1rem;
+  --s-5:1.5rem; --s-6:2rem; --s-7:2.75rem; --s-8:4rem;
+  --gutter:clamp(1rem,4vw,1.5rem);
+  --band:clamp(2.25rem,5vw,3.5rem);
+
+  --r-1:8px; --r-2:12px; --r-3:16px;
+
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace;
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
-  --radius:10px;
+
+  --bg:#0a0e14;
+  --surface-1:#111823;
+  --surface-2:#18212d;
+  --surface-3:#1f2a38;
+  --line:#26344a;
+  --line-strong:#5b7191;
+  --fg:#e9f0f8;
+  --fg-2:#c3d1e0;
+  --muted:#98abbf;
+  --accent:#5aa9ff;
+  --accent-ink:#04101c;
+  --good:#4ec565;
+  --bad:#ff7d72;
+  --warn:#e8ad3d;
+  --shadow:0 1px 1px rgba(0,0,0,.5), 0 14px 40px -22px rgba(0,0,0,.9);
 }
 @media (prefers-color-scheme: light){
   :root{
-    --bg:#ffffff; --bg2:#f5f8fb; --bg3:#eaf0f6; --bg4:#dfe7ef;
-    --fg:#0f151c; --muted:#4d5b6a; --border:#cfd9e3;
-    --accent:#0a58ca; --accent-ink:#ffffff;
-    --good:#1a7f37; --warn:#8a6100; --bad:#b62324;
+    --bg:#ffffff;
+    --surface-1:#f7f9fc;
+    --surface-2:#edf2f8;
+    --surface-3:#e2eaf3;
+    --line:#d3ddea;
+    --line-strong:#7b8ca0;
+    --fg:#0c131b;
+    --fg-2:#33465b;
+    --muted:#4e5f72;
+    --accent:#0a58ca;
+    --accent-ink:#ffffff;
+    --good:#146b34;
+    --bad:#b0201c;
+    --warn:#75540a;
+    --shadow:0 1px 1px rgba(14,30,50,.06), 0 12px 32px -20px rgba(14,30,50,.5);
   }
 }
+
 *,*::before,*::after{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+html{
+  -webkit-text-size-adjust:100%;
+  scroll-behavior:smooth;
+  scroll-padding-top:4.5rem;
+  scrollbar-color:var(--line-strong) var(--bg);
+  scrollbar-width:thin;
+}
 body{
   margin:0; background:var(--bg); color:var(--fg);
-  font-family:var(--sans); font-size:17px; line-height:1.7; overflow-wrap:break-word;
+  font-family:var(--sans); font-size:var(--t-1); line-height:1.75;
+  overflow-wrap:break-word; line-break:strict;
+  text-spacing-trim:normal; text-autospace:normal;
+  -webkit-font-smoothing:antialiased;
 }
-.wrap{max-width:820px; margin-inline:auto; padding:0 20px}
-h1,h2,h3{line-height:1.3; margin:0 0 .5em; font-weight:650; letter-spacing:-.015em}
-h1{font-size:clamp(1.7rem,4.6vw,2.4rem)}
-h2{font-size:clamp(1.2rem,3vw,1.5rem); margin-top:2.2em}
-h3{font-size:1.02rem; margin-top:1.6em}
-p{margin:0 0 1em}
-a{color:var(--accent); text-underline-offset:3px}
-code,kbd{font-family:var(--mono); font-size:.92em}
-:where(a,button,summary,[tabindex]):focus-visible{outline:3px solid var(--accent); outline-offset:2px; border-radius:4px}
-.skip{position:absolute; left:-9999px; background:var(--accent); color:var(--accent-ink); padding:10px 16px; z-index:9}
-.skip:focus{left:0}
-header.site{border-bottom:1px solid var(--border)}
-header.site .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-block:14px}
-.brand{font-family:var(--mono); font-weight:700; color:var(--fg); text-decoration:none}
-.brand span{color:var(--accent)}
-header.site nav{margin-inline-start:auto; font-size:.88rem}
-main{padding-block:clamp(34px,6vw,56px)}
-.eyebrow{font-family:var(--mono); font-size:.76rem; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); margin:0 0 .8em}
-.lede{color:var(--muted); font-size:1.03rem}
+::selection{background:var(--accent); color:var(--accent-ink)}
+::-webkit-scrollbar{width:11px; height:11px}
+::-webkit-scrollbar-track{background:var(--surface-1)}
+::-webkit-scrollbar-thumb{background:var(--line-strong); border-radius:99px; border:3px solid var(--surface-1)}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 
+.wrap{max-width:840px; margin-inline:auto; padding-inline:var(--gutter)}
+h1,h2,h3{margin:0 0 .5em; line-height:1.26; font-weight:660; letter-spacing:-.018em; text-wrap:balance}
+h1{font-size:var(--t-5); letter-spacing:-.03em; line-height:1.14}
+h2{font-size:var(--t-4); margin-top:2em; letter-spacing:-.022em}
+h3{font-size:var(--t-1); margin-top:1.8em}
+p{margin:0 0 var(--s-4); text-wrap:pretty}
+p:last-child{margin-bottom:0}
+strong,b{font-weight:660; color:var(--fg)}
+a{color:var(--accent); text-underline-offset:.25em; text-decoration-thickness:1px; text-decoration-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+a:hover{text-decoration-thickness:2px; text-decoration-color:currentColor}
+code,kbd{font-family:var(--mono); font-size:.9em; font-variant-ligatures:none}
+:where(p,li,dd,dt,td,th,summary) code{margin-inline:.15em}
+:where(a,button,summary,[tabindex]):focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:4px}
+:where(a,button,summary,[tabindex]):focus:not(:focus-visible){outline:none}
+.skip{
+  position:absolute; inset-inline-start:-9999px; top:0; z-index:99;
+  background:var(--accent); color:var(--accent-ink); font-weight:650;
+  padding:var(--s-3) var(--s-5); border-radius:0 0 var(--r-2) 0;
+}
+.skip:focus{inset-inline-start:0}
+
+header.site{
+  position:sticky; top:0; z-index:40;
+  border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--bg) 88%,transparent);
+}
+@supports (backdrop-filter: blur(8px)){
+  header.site{backdrop-filter:saturate(160%) blur(10px)}
+}
+@supports not (backdrop-filter: blur(8px)){
+  header.site{background:var(--bg)}
+}
+header.site .wrap{display:flex; align-items:center; gap:var(--s-4); flex-wrap:wrap; padding-block:var(--s-3)}
+.brand{font-family:var(--mono); font-weight:700; font-size:var(--t-1); color:var(--fg); text-decoration:none; letter-spacing:-.03em}
+.brand span{color:var(--accent)}
+.tagline{color:var(--muted); font-size:var(--t--1); margin-inline-end:auto}
+header.site nav{font-size:var(--t-0)}
+header.site nav a{color:var(--muted); text-decoration:none}
+header.site nav a:hover,header.site nav a:focus-visible{color:var(--fg); text-decoration:underline}
+
+main{padding-block:var(--band) var(--s-8)}
+.eyebrow{
+  font-family:var(--mono); font-size:var(--t--2); letter-spacing:.16em;
+  text-transform:uppercase; color:var(--muted); margin:0 0 var(--s-3);
+  display:flex; align-items:center; gap:.7em;
+}
+.eyebrow::after{content:""; flex:1 1 auto; height:1px; background:var(--line); max-width:6rem}
+.lede{color:var(--fg-2); font-size:var(--t-2); line-height:1.68; max-width:62ch}
+.fine{font-size:var(--t--1); color:var(--muted); line-height:1.7}
+
+/* ── the live digest ────────────────────────────────────────────────────── */
 .digest{
-  border:1px solid var(--border); border-radius:var(--radius);
-  background:var(--bg2); padding:20px 22px; margin:26px 0;
+  border:1px solid var(--line); border-radius:var(--r-3);
+  background:var(--surface-1); padding:var(--s-5); margin-block:var(--s-6);
+  box-shadow:var(--shadow); position:relative; overflow:hidden;
 }
-.digest h2{margin:0 0 .5em; font-size:1.06rem}
-.digest-row{display:flex; gap:12px; align-items:stretch; flex-wrap:wrap; margin-top:12px}
+.digest::before{
+  content:""; position:absolute; inset-inline:0; top:0; height:2px;
+  background:linear-gradient(90deg,transparent,var(--accent) 22%,var(--accent) 78%,transparent);
+  opacity:.85;
+}
+.digest h2{margin:0 0 var(--s-2); font-size:var(--t-3)}
+.digest h3{
+  margin:var(--s-5) 0 var(--s-2); font-size:var(--t-0); font-family:var(--mono);
+  letter-spacing:0; font-weight:700;
+}
+.digest h3 .os{color:var(--muted); font-weight:400; font-family:var(--sans)}
+.digest-row{display:flex; gap:var(--s-3); align-items:stretch; flex-wrap:wrap}
 .digest pre{
-  flex:1 1 300px; min-width:0; margin:0; background:var(--bg); border:1px solid var(--border);
-  border-radius:8px; padding:14px 16px; font-family:var(--mono);
-  font-size:clamp(.76rem,2.6vw,.95rem); overflow-x:auto; white-space:pre-wrap; word-break:break-all;
-  line-height:1.5;
+  flex:1 1 min(300px,100%); min-width:0; margin:0;
+  background:var(--bg); border:1px solid var(--line); border-radius:var(--r-1);
+  padding:var(--s-3) var(--s-4); font-family:var(--mono);
+  font-size:clamp(.76rem,2.7vw,.95rem); overflow-x:auto;
+  white-space:pre-wrap; word-break:break-all; line-height:1.55;
+  font-variant-numeric:tabular-nums; font-variant-ligatures:none;
 }
-.digest .meta{font-size:.84rem; color:var(--muted); margin:12px 0 0; font-family:var(--mono)}
+.digest .meta{font-size:var(--t--1); color:var(--muted); margin:var(--s-4) 0 0; font-family:var(--mono)}
 .copybtn{
-  flex:0 0 auto; font:inherit; font-weight:600; font-size:.9rem;
+  flex:0 0 auto; font:inherit; font-weight:650; font-size:var(--t-0);
   background:var(--accent); color:var(--accent-ink); border:1px solid var(--accent);
-  border-radius:8px; padding:0 18px; min-height:46px; cursor:pointer;
+  border-radius:var(--r-1); padding-inline:var(--s-5); min-height:2.9rem; cursor:pointer;
+  transition:filter .15s ease, transform .08s ease; white-space:nowrap;
 }
-.copybtn:hover{filter:brightness(1.1)}
-.copybtn[data-state="ok"]{background:var(--good); border-color:var(--good); color:#fff}
-.copybtn[data-state="fail"]{background:var(--bad); border-color:var(--bad); color:#fff}
-.status{min-height:1.5em; font-family:var(--mono); font-size:.84rem; color:var(--good); margin:.5em 0 0}
+.copybtn:hover{filter:brightness(1.12)}
+.copybtn:active{transform:translateY(1px)}
+.copybtn[data-state="ok"]{background:var(--good); border-color:var(--good); color:var(--bg)}
+.copybtn[data-state="fail"]{background:var(--bad); border-color:var(--bad); color:var(--bg)}
+.status{min-height:1.5em; font-family:var(--mono); font-size:var(--t--1); color:var(--good); margin:var(--s-3) 0 0}
 .status:empty{min-height:0; margin:0}
 
 pre.block{
-  background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius);
-  padding:16px 18px; overflow-x:auto; font-family:var(--mono); font-size:.86rem;
-  line-height:1.65; margin:0 0 1.2em; white-space:pre;
+  background:var(--surface-1); border:1px solid var(--line); border-radius:var(--r-2);
+  padding:var(--s-4); overflow-x:auto; font-family:var(--mono); font-size:var(--t-0);
+  line-height:1.7; margin:0 0 var(--s-5); white-space:pre;
 }
 pre.block .c{color:var(--muted)}
 .note{
-  border-inline-start:4px solid var(--accent); background:var(--bg2);
-  border-radius:0 var(--radius) var(--radius) 0; padding:14px 18px; margin:0 0 1.3em;
+  border:1px solid var(--line); border-inline-start:4px solid var(--accent);
+  background:var(--surface-1); border-radius:0 var(--r-2) var(--r-2) 0;
+  padding:var(--s-4) var(--s-5); margin:0 0 var(--s-5);
 }
+.note p{color:var(--fg-2); font-size:var(--t-0)}
 .warnbox{
-  border:1px solid var(--bad); border-radius:var(--radius);
-  background:color-mix(in srgb,var(--bad) 8%,var(--bg2)); padding:16px 20px; margin:1.4em 0;
+  border:1px solid color-mix(in srgb,var(--bad) 40%,var(--line)); border-radius:var(--r-2);
+  background:color-mix(in srgb,var(--bad) 6%,var(--surface-1));
+  padding:var(--s-5); margin-block:var(--s-5);
 }
-.warnbox h3{margin-top:0; color:var(--bad)}
-.warnbox ul{margin:0; padding-inline-start:1.15em}
-.warnbox li{margin-bottom:.45em}
-ul.plain{padding-inline-start:1.2em}
-ul.plain li{margin-bottom:.55em}
-footer.site{border-top:1px solid var(--border); background:var(--bg2); padding-block:26px; font-size:.86rem; color:var(--muted); margin-top:40px}
-@media (max-width:420px){ body{font-size:16px} .copybtn{width:100%} }
-@media (prefers-reduced-motion:reduce){ *{transition:none!important; animation:none!important} }
+.warnbox h3{margin:0 0 var(--s-3); color:var(--bad); font-size:var(--t-1)}
+.warnbox ul{margin:0; padding-inline-start:1.15em; color:var(--fg-2); font-size:var(--t-0)}
+.warnbox li{margin-bottom:var(--s-2)}
+.warnbox li:last-child{margin-bottom:0}
+ul.plain{padding-inline-start:1.2em; color:var(--fg-2)}
+ul.plain li{margin-bottom:var(--s-3)}
+ul.plain li:last-child{margin-bottom:0}
+
+footer.site{
+  border-top:1px solid var(--line); background:var(--surface-1);
+  padding-block:var(--s-6); font-size:var(--t-0); color:var(--muted); margin-top:var(--s-8);
+}
+footer.site .wrap{display:grid; gap:var(--s-3)}
+
+@media (max-width:460px){
+  body{font-size:1rem}
+  .copybtn{width:100%}
+  header.site{position:static}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{transition:none!important; animation:none!important}
+}
+@media print{
+  :root{
+    --bg:#fff; --surface-1:#fff; --surface-2:#fff; --surface-3:#f2f2f2;
+    --line:#9aa4b0; --line-strong:#5a6470;
+    --fg:#000; --fg-2:#1a1a1a; --muted:#3d3d3d;
+    --accent:#00308f; --accent-ink:#fff;
+    --good:#0a5c2a; --bad:#8c1a16; --warn:#5c4300;
+    --shadow:none;
+  }
+  header.site,.skip,.copybtn{display:none!important}
+  body{font-size:10.5pt; line-height:1.55; background:#fff}
+  .digest::before{display:none}
+  .digest,.note,.warnbox,pre.block{break-inside:avoid; box-shadow:none}
+  h1,h2,h3{break-after:avoid}
+  pre.block{white-space:pre-wrap; word-break:break-all}
+  a[href^="http"]::after{content:" \003C" attr(href) "\003E"; font-size:8pt; color:#333; word-break:break-all}
+}
 </style>
 </head>
 <body>
@@ -106,6 +246,7 @@ footer.site{border-top:1px solid var(--border); background:var(--bg2); padding-b
 <header class="site">
   <div class="wrap">
     <a class="brand" href="/">yangble<span>5</span></a>
+    <span class="tagline">安裝腳本校驗</span>
     <nav aria-label="主要導覽"><a href="/">← 回首頁</a></nav>
   </div>
 </header>
@@ -113,27 +254,25 @@ footer.site{border-top:1px solid var(--border); background:var(--bg2); padding-b
 <main id="main">
 <div class="wrap">
   <p class="eyebrow">校驗</p>
-  <h1>執行之前,先自己核對</h1>
+  <h1>執行之前，先自己核對</h1>
   <p class="lede">
-    首頁那一行是 <code>curl … | sh</code>。這種安裝方式的安全性,完全建立在
-    「你信任 yangble5.com 這個網域,而且連線沒有被中間人竄改」之上。
-    這一頁讓你不必只靠信任 —— 你可以自己驗。
+    首頁那一行是 <code>curl … | sh</code>。這種安裝方式的安全性，完全建立在「你信任 yangble5.com 這個網域，而且連線沒有被中間人竄改」之上。這一頁讓你不必只靠信任 —— 你可以自己驗。
   </p>
 
   <!-- ── the live digest ───────────────────────────────────────────── -->
   <div class="digest">
     <h2>目前公告的 SHA256</h2>
-    <p style="margin:0;color:var(--muted);font-size:.88rem">
-      即時讀取自 <code>/install.sh.sha256</code>,沒有寫死在這個頁面裡。
+    <p class="fine" style="margin:0">
+      即時讀取自 <code>/install.sh.sha256</code> 與 <code>/install.ps1.sha256</code>，沒有任何一個雜湊值寫死在這個頁面裡。
     </p>
 
-    <h3 style="margin-top:1.3em;font-size:.9rem">install.sh <span style="color:var(--muted);font-weight:400">(macOS / Linux)</span></h3>
+    <h3>install.sh <span class="os">(macOS / Linux)</span></h3>
     <div class="digest-row">
       <pre id="shaSh">讀取中…</pre>
       <button type="button" class="copybtn" data-copy-target="shaSh" data-label="複製">複製</button>
     </div>
 
-    <h3 style="font-size:.9rem">install.ps1 <span style="color:var(--muted);font-weight:400">(Windows)</span></h3>
+    <h3>install.ps1 <span class="os">(Windows)</span></h3>
     <div class="digest-row">
       <pre id="shaPs1">讀取中…</pre>
       <button type="button" class="copybtn" data-copy-target="shaPs1" data-label="複製">複製</button>
@@ -145,10 +284,8 @@ footer.site{border-top:1px solid var(--border); background:var(--bg2); padding-b
 
   <div class="note">
     <p style="margin:0">
-      <strong>顯示「尚未公告」代表什麼?</strong> 代表這台伺服器上還沒有放校驗檔,
-      <em>不代表</em>腳本是安全的,也不代表可以跳過驗證。這種情況下請直接去
-      <a href="https://github.com/shark0120/yangble5">GitHub 上的原始碼</a>比對,
-      或乾脆不要執行。我們寧可你不裝,也不要你在沒有校驗的情況下裝。
+      <strong>顯示「尚未公告」代表什麼？</strong>代表這台伺服器上還沒有放校驗檔，<em>不代表</em>腳本是安全的，也不代表可以跳過驗證。這種情況下請直接去
+      <a href="https://github.com/shark0120/yangble5">GitHub 上的原始碼</a>比對，或乾脆不要執行。我們寧可你不裝，也不要你在沒有校驗的情況下裝。
     </p>
   </div>
 
@@ -190,46 +327,41 @@ if ($actual -ieq $expected) { 'OK - 相符' } else { 'MISMATCH - 不要執行' }
 notepad .\install.ps1
 .\install.ps1</pre>
 
-  <h3>用 certutil(不想開 PowerShell 的話)</h3>
+  <h3>用 certutil（不想開 PowerShell 的話）</h3>
   <pre class="block">certutil -hashfile install.ps1 SHA256</pre>
 
   <!-- ── mismatch ─────────────────────────────────────────────────── -->
   <div class="warnbox">
     <h3>對不上怎麼辦</h3>
     <ul>
-      <li><strong>不要執行那個檔案。</strong>先做這一件事,其他都之後再說。</li>
-      <li>把下載到的檔案刪掉,不要留著「等一下再看」。</li>
-      <li>可能只是我們發佈了新版而校驗檔還沒同步 —— 但你沒辦法從外面分辨這個和真正的攻擊,
-        所以處理方式相同:先當作有問題。</li>
-      <li>到 <a href="https://github.com/shark0120/yangble5/issues">GitHub issues</a> 回報,
-        附上你算到的雜湊、頁面顯示的雜湊,以及下載時間。</li>
-      <li>如果你是透過公共 Wi-Fi 或不受信任的網路下載的,換一個網路重試一次再下結論。</li>
+      <li><strong>不要執行那個檔案。</strong>先做這一件事，其他都之後再說。</li>
+      <li>把下載到的檔案刪掉，不要留著「等一下再看」。</li>
+      <li>可能只是我們發佈了新版而校驗檔還沒同步 —— 但你沒辦法從外面分辨這個和真正的攻擊，所以處理方式相同：先當作有問題。</li>
+      <li>到 <a href="https://github.com/shark0120/yangble5/issues">GitHub issues</a> 回報，附上你算到的雜湊、頁面顯示的雜湊，以及下載時間。</li>
+      <li>如果你是透過公共 Wi-Fi 或不受信任的網路下載的，換一個網路重試一次再下結論。</li>
     </ul>
   </div>
 
   <!-- ── what this does and does not prove ────────────────────────── -->
   <h2>這個校驗能證明什麼、不能證明什麼</h2>
   <ul class="plain">
-    <li><strong>能證明:</strong>你手上這份檔案,和我們公告雜湊時的那份檔案,位元組完全一致。
-      傳輸過程沒有被改、沒有下載到一半壞掉。</li>
-    <li><strong>不能證明腳本本身是善意的。</strong>雜湊只保證「一致」,不保證「安全」。
-      如果我們發佈了一份惡意腳本並公告它的雜湊,校驗一樣會過。
-      這就是為什麼首頁把腳本做的每一件事都<a href="/#installer">逐條列出來</a>,
-      而且原始碼公開 —— 校驗和公開原始碼要一起看,單獨任何一個都不夠。</li>
-    <li><strong>不能防護網域本身被攻陷。</strong>如果 yangble5.com 被入侵,
-      攻擊者可以同時換掉腳本和校驗檔。要防這種情況,請直接從
+    <li><strong>能證明：</strong>你手上這份檔案，和我們公告雜湊時的那份檔案，位元組完全一致。傳輸過程沒有被改、沒有下載到一半壞掉。</li>
+    <li><strong>不能證明腳本本身是善意的。</strong>雜湊只保證「一致」，不保證「安全」。如果我們發佈了一份惡意腳本並公告它的雜湊，校驗一樣會過。這就是為什麼首頁把腳本做的每一件事都<a href="/#installer">逐條列出來</a>，而且原始碼公開 —— 校驗和公開原始碼要一起看，單獨任何一個都不夠。</li>
+    <li><strong>不能防護網域本身被攻陷。</strong>如果 yangble5.com 被入侵，攻擊者可以同時換掉腳本和校驗檔。要防這種情況，請直接從
       <a href="https://github.com/shark0120/yangble5">GitHub repo</a> 取得腳本並核對 commit 歷史。</li>
-    <li><strong>HTTPS 是前提。</strong>如果你是用 <code>http://</code> 讀這一頁的,
-      上面的雜湊值本身就可能已經被竄改了。請確認網址列是
+    <li><strong>HTTPS 是前提。</strong>如果你是用 <code>http://</code> 讀這一頁的，上面的雜湊值本身就可能已經被竄改了。請確認網址列是
       <code>https://yangble5.com</code>。</li>
   </ul>
 
   <h2>最保險的做法</h2>
-  <p>不用管線,直接從版本控制拿:</p>
+  <p>不用管線，直接從版本控制拿：</p>
   <pre class="block">git clone https://github.com/shark0120/yangble5
 cd yangble5
 <span class="c"># 讀原始碼、看 commit 歷史,然後自己決定要不要跑</span>
 git log --oneline -20</pre>
+  <p class="fine">
+    這一頁跟首頁一樣是單一檔案、沒有任何外部請求：沒有 CDN、沒有網頁字型、沒有分析追蹤、沒有 cookie。你可以整頁存下來離線讀。
+  </p>
 </div>
 </main>
 
@@ -241,8 +373,10 @@ git log --oneline -20</pre>
       <a href="https://github.com/shark0120/yangble5/blob/main/LICENSE">MIT 授權</a> ·
       <a href="https://github.com/shark0120/yangble5/blob/main/SECURITY.md">安全性政策</a>
     </p>
-    <p style="margin:.6em 0 0">
-      yangble5 是社群開源專案,與任何模型供應商沒有從屬或合作關係。本站沒有 cookie、沒有追蹤。
+    <p class="fine" style="margin:0">
+      核心引擎 <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a>
+      由 Luis Pater / Router-For.ME 開發並以 MIT 授權釋出，不是我們的作品。
+      yangble5 是社群開源專案，與任何模型供應商沒有從屬或合作關係。本站沒有 cookie、沒有追蹤。
     </p>
   </div>
 </footer>
@@ -277,7 +411,7 @@ git log --oneline -20</pre>
           hour12: false, timeZoneName: "short"
         }).format(now);
       } catch (e) { t = now.toISOString(); }
-      stampEl.textContent = "讀取時間:" + t;
+      stampEl.textContent = "讀取時間：" + t;
     } else {
       stampEl.textContent = "沒有讀到任何校驗檔。請改用 GitHub 原始碼核對。";
     }
@@ -286,7 +420,7 @@ git log --oneline -20</pre>
   TARGETS.forEach(function (t) {
     var node = document.getElementById(t.el);
     if (!node) { done(); return; }
-    if (!("fetch" in window)) { node.textContent = "尚未公告(瀏覽器不支援 fetch)"; done(); return; }
+    if (!("fetch" in window)) { node.textContent = "尚未公告（瀏覽器不支援 fetch）"; done(); return; }
 
     fetch(t.url, { cache: "no-store", credentials: "omit" })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
@@ -329,7 +463,7 @@ git log --oneline -20</pre>
     btn.textContent = ok ? "已複製 ✓" : "失敗";
     if (statusEl) {
       statusEl.style.color = ok ? "var(--good)" : "var(--bad)";
-      statusEl.textContent = ok ? "已複製到剪貼簿。" : "無法存取剪貼簿,請手動選取複製。";
+      statusEl.textContent = ok ? "已複製到剪貼簿。" : "無法存取剪貼簿，請手動選取複製。";
     }
     window.clearTimeout(timer);
     timer = window.setTimeout(function () {

@@ -24,7 +24,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        # These must stay in step with `requires-python` and the
+        # `Programming Language :: Python` classifiers in pyproject.toml.
+        # The `offline-self-checks` job asserts that they do, so a version
+        # added here and forgotten there fails the build rather than shipping
+        # a support claim nobody tested.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -76,12 +81,53 @@ jobs:
           python-version: "3.11"
 
       - name: Confirm the environment really is bare
+        # An allowlist, not a denylist. The old form grepped for a handful of
+        # package names, which meant the check silently stopped proving anything
+        # the moment a dependency arrived under a name nobody had thought of.
+        # Anything outside the packaging toolchain now fails the job.
         run: |
-          python -m pip list --format=freeze --exclude-editable | tee installed.txt
-          if grep -qiE '^(fastapi|httpx|pydantic|starlette|requests)==' installed.txt; then
-            echo "::error::the bare-environment check is not bare; it cannot prove anything"
+          python -m pip list --format=freeze --exclude-editable > installed.txt
+          cat installed.txt
+          if grep -vE '^(pip|setuptools|wheel|packaging)==' installed.txt | grep -q .; then
+            echo "::error::this environment is not bare, so it cannot prove anything about imports"
+            grep -vE '^(pip|setuptools|wheel|packaging)==' installed.txt
             exit 1
           fi
+
+      - name: No non-stdlib import anywhere in tools/ or byok/
+        # Static, and therefore stronger than the runtime import below: an
+        # `import httpx` buried inside a function that CI never calls would
+        # import cleanly and still break the copy-one-file-and-run promise
+        # the first time a user hit that code path.
+        run: |
+          python - <<'PY'
+          import ast
+          import pathlib
+          import sys
+
+          allowed = set(sys.stdlib_module_names) | {"tools", "byok"}
+          offenders = []
+          files = sorted(pathlib.Path("tools").rglob("*.py"))
+          files += sorted(pathlib.Path("byok").rglob("*.py"))
+          for path in files:
+              tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [alias.name for alias in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      names = [node.module] if node.level == 0 and node.module else []
+                  else:
+                      continue
+                  for name in names:
+                      root = name.split(".")[0]
+                      if root not in allowed:
+                          offenders.append(f"{path}:{node.lineno}: imports {name!r}")
+          if offenders:
+              print("::error::non-stdlib import in a file that promises stdlib-only")
+              print("\n".join(offenders))
+              raise SystemExit(1)
+          print(f"{len(files)} files checked, every import is in the standard library")
+          PY
 
       - name: Import every tool
         run: |
@@ -95,21 +141,297 @@ jobs:
           python tools/claude_shim.py --help
           python byok/setup.py --help
 
-  no-secrets:
-    name: no secrets or operator paths
+  offline-self-checks:
+    # Everything in this job runs with no network, no root and no server. These
+    # are the entry points a user reaches for BEFORE anything is installed --
+    # `--help`, `--dry-run`, `--self-test` -- which makes them the easiest paths
+    # in the repo to break without noticing, because nothing else exercises them.
+    name: offline self-checks (--help / --dry-run / --self-test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scan the tree
-        # Cheap, high-value backstop: these tools were ported from an install
-        # whose sources carried a live API key, a management key and absolute
-        # operator paths. This fails the build if any of those shapes come back.
-        # The workflow file itself is excluded, since it contains the patterns.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
         run: |
-          if git grep -nIE 'sk-[A-Za-z0-9]{16,}|yang-admin-|C:\\Users\\' \
-              -- . ':!.github/workflows/ci.yml'; then
-            echo "::error::possible secret or operator path committed"
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Every shell script parses
+        run: |
+          status=0
+          while IFS= read -r script; do
+            if bash -n "$script"; then
+              echo "ok    $script"
+            else
+              echo "::error file=$script::shell syntax error"
+              status=1
+            fi
+          done < <(git ls-files '*.sh')
+          exit "$status"
+
+      - name: Every PowerShell script parses
+        shell: pwsh
+        # The Windows installer is a 50 KB script that no test imports and no
+        # Linux job can execute. Parsing it is the cheapest way to keep a typo
+        # in it from reaching the one platform that runs it.
+        run: |
+          $status = 0
+          foreach ($file in (git ls-files '*.ps1')) {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              Write-Output "::error file=$file::PowerShell parse error"
+              $errors | ForEach-Object { Write-Output ("  line " + $_.Extent.StartLineNumber + ": " + $_.Message) }
+              $status = 1
+            } else {
+              Write-Output "ok    $file ($($tokens.Count) tokens)"
+            }
+          }
+          exit $status
+
+      - name: preflight.sh --self-test
+        # Pure address/CIDR/ELF helpers against known inputs. No network, no
+        # root, no server -- the script says so in its own --help and this is
+        # what keeps that true.
+        run: bash deploy/preflight.sh --self-test
+
+      - name: Every script answers --help without touching anything
+        run: |
+          for script in \
+              deploy/harden.sh \
+              deploy/install.sh \
+              deploy/preflight.sh \
+              deploy/smoke_test.sh \
+              scripts/make_history.sh \
+              site/install.sh \
+              site/uninstall.sh; do
+            bash "$script" --help > /dev/null
+            echo "ok    $script --help"
+          done
+
+      - name: byok/setup.py --dry-run writes nothing
+        # --dry-run must render every artefact and create no file. Asserting the
+        # directory is still empty afterwards is the whole point: a regression
+        # here writes an engine config, a Claude Code settings.json and a secret
+        # env file onto a machine whose owner asked for a preview.
+        env:
+          YANGBLE5_UPSTREAM_KEY: not-a-real-key-only-for-the-dry-run
+        run: |
+          out="$(mktemp -d)/out"
+          python byok/setup.py --dry-run --non-interactive --skip-bench \
+            --provider gemini-api-key --out-dir "$out" > /dev/null
+          if [ -e "$out" ]; then
+            echo "::error::byok/setup.py --dry-run created $out; it must write nothing"
+            find "$out"
+            exit 1
+          fi
+          echo "ok    --dry-run wrote nothing"
+
+      - name: site/uninstall.sh --dry-run deletes nothing
+        run: |
+          home="$(mktemp -d)"
+          mkdir -p "$home/.yangble5"
+          date > "$home/.yangble5/credentials"
+          HOME="$home" sh site/uninstall.sh --dry-run
+          test -f "$home/.yangble5/credentials" \
+            || { echo "::error::--dry-run deleted a file"; exit 1; }
+          echo "ok    --dry-run deleted nothing"
+
+      - name: Project metadata agrees with this workflow
+        # Drift between the matrix, requires-python and the classifiers is how a
+        # project ends up advertising a Python it has never once run on.
+        run: |
+          python - <<'PY'
+          import re
+          import sys
+          import tomllib
+
+          import yaml
+
+          workflow = yaml.safe_load(open(".github/workflows/ci.yml", encoding="utf-8"))
+          project = tomllib.load(open("pyproject.toml", "rb"))["project"]
+
+          matrix = workflow["jobs"]["test"]["strategy"]["matrix"]["python-version"]
+          tested = sorted(tuple(int(p) for p in v.split(".")) for v in matrix)
+
+          floor = re.fullmatch(r">=(\d+)\.(\d+)", project["requires-python"].strip())
+          if not floor:
+              sys.exit(f"cannot read requires-python: {project['requires-python']!r}")
+          declared_floor = (int(floor[1]), int(floor[2]))
+
+          problems = []
+          if tested[0] != declared_floor:
+              problems.append(
+                  f"requires-python floor is {declared_floor} but the matrix starts at {tested[0]}"
+              )
+          expected = [tested[0]]
+          while expected[-1] != tested[-1]:
+              expected.append((expected[-1][0], expected[-1][1] + 1))
+          if expected != tested:
+              problems.append(f"matrix has gaps: {tested} (expected {expected})")
+
+          classified = sorted(
+              tuple(int(p) for p in c.rsplit(" :: ", 1)[1].split("."))
+              for c in project["classifiers"]
+              if c.startswith("Programming Language :: Python :: ") and "." in c.rsplit(" :: ", 1)[1]
+          )
+          if classified != tested:
+              problems.append(f"classifiers say {classified} but the matrix tests {tested}")
+
+          readme = open("README.md", encoding="utf-8").read()
+          if "actions/workflows/ci.yml/badge.svg" not in readme:
+              problems.append("README badge does not point at .github/workflows/ci.yml")
+
+          for name, job in workflow["jobs"].items():
+              if not job.get("steps"):
+                  problems.append(f"job {name!r} has no steps")
+              for i, step in enumerate(job.get("steps", [])):
+                  if "uses" not in step and "run" not in step:
+                      problems.append(f"job {name!r} step {i} has neither `uses` nor `run`")
+
+          if problems:
+              print("::error::project metadata and CI disagree")
+              print("\n".join(f"  - {p}" for p in problems))
+              raise SystemExit(1)
+          print(f"matrix, requires-python and classifiers all say {tested}")
+          print(f"{len(workflow['jobs'])} jobs, every step well-formed")
+          PY
+
+  installer-digests:
+    # site/*.sha256 is the entire verification story told on the download page:
+    # "check this digest before you pipe the script into a shell". A digest that
+    # has drifted from its file does not fail loudly -- it teaches the one user
+    # who bothered to check that checking is pointless.
+    name: site installer digests match their files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every payload has a digest and every digest matches
+        working-directory: site
+        run: |
+          shopt -s nullglob
+          payloads=(*.sh *.ps1)
+          digests=(*.sha256)
+
+          if [ ${#digests[@]} -eq 0 ]; then
+            echo "::error::no .sha256 files in site/ -- this check is checking nothing"
+            exit 1
+          fi
+
+          status=0
+          for payload in "${payloads[@]}"; do
+            if [ ! -f "${payload}.sha256" ]; then
+              echo "::error file=site/${payload}::downloadable but has no ${payload}.sha256"
+              status=1
+            fi
+          done
+          for digest in "${digests[@]}"; do
+            if [ ! -f "${digest%.sha256}" ]; then
+              echo "::error file=site/${digest}::digest for a file that does not exist"
+              status=1
+            fi
+          done
+          [ "$status" -eq 0 ] || exit "$status"
+
+          sha256sum -c "${digests[@]}"
+          echo "${#digests[@]} digests verified"
+
+  no-secrets:
+    # Cheap, high-value backstop: these tools were ported from an install whose
+    # sources carried a live API key, a management key and absolute operator
+    # paths. This job fails the build if any of those shapes come back.
+    #
+    # TWO defences keep the scan from tripping over itself. First, the paths
+    # that quote the pattern are excluded. Second -- and this is the one that
+    # actually matters, because path exclusions rot -- every literal that would
+    # otherwise match itself is split by a bracket expression, so the bytes on
+    # this page never spell out the string being hunted: `yang[-]admin[-]`,
+    # `Us[e]rs`, `PRIVATE[ ]KEY`, `sl[a]ck`, `gservice[a]ccount`. Delete the
+    # exclusions and this file still passes its own scan.
+    name: no secrets, operator paths or unknown addresses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for key-shaped strings and operator paths
+        # The pattern is kept on ONE line on purpose: CONTRIBUTING.md documents
+        # extracting it from this file to run the identical scan locally, and a
+        # folded line would silently hand contributors half a pattern.
+        # The trailing filter drops lines that announce themselves as fixtures.
+        # A leaked credential does not contain the word "fake"; a test fixture
+        # that says FAKE four times is not a leak, and pretending otherwise
+        # trains everyone to ignore this job.
+        run: |
+          if git grep -nIE 'sk-[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}|GOCSPX-[A-Za-z0-9_-]{20,}|ya29\.[A-Za-z0-9_-]{20,}|[0-9]{9,}-[0-9a-z]{16,}\.apps\.googleuser[c]ontent\.com|[a-z0-9-]{6,30}@[a-z0-9-]{4,30}\.iam\.gservice[a]ccount\.com|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,}|(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|hooks\.sl[a]ck\.com/services/[A-Za-z0-9/+]{20,}|[sr]k_live_[0-9a-zA-Z]{20,}|\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}|-{5}BEGIN([A-Z ]+)?PRIVATE[ ]KEY-{5}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|yang[-]admin[-]|[A-Za-z]:[\\/]Us[e]rs[\\/]|projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/|"project_id"[[:space:]]*:|(GOOGLE_CLOUD_PROJECT|GCP_PROJECT(_ID)?)[[:space:]]*[:=][[:space:]]*[a-z][a-z0-9-]{5,}|gcloud[[:space:]]+config[[:space:]]+set[[:space:]]+project[[:space:]]+[a-z]' -- . ':!.github/workflows/ci.yml' ':!CONTRIBUTING.md' ':!RELEASING.md' ':!SECURITY.md' ':!scripts/make_history.sh' | grep -viE 'fake|dummy|example|placeholder|changeme|redacted|not[-_]a[-_]real|__GENERATE__|<[A-Z_]+>'; then
+            echo "::error::possible secret, credential or operator path committed"
             exit 1
           fi
           echo "no secret-shaped strings found"
+
+      - name: Every email address belongs to a reserved domain
+        # The operator's own address is the leak nobody thinks about, and it is
+        # not key-shaped, so the scan above will never see it. Rather than name
+        # the address -- naming it here would BE the leak -- this asserts the
+        # only addresses in the tree live at RFC 2606 reserved domains plus the
+        # two fixture domains the gateway tests use.
+        run: |
+          if git grep -hIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- . ':!.github/workflows/ci.yml' \
+              | sort -u \
+              | grep -vE '@(example\.(com|org|net)|api\.example\.com|b\.com|test|invalid|localhost)$'; then
+            echo "::error::an email address outside the reserved/fixture domains is committed"
+            echo "if it is legitimate, add its domain to the allowlist in this step and say why"
+            exit 1
+          fi
+          echo "every committed address is at a reserved or fixture domain"
+
+      - name: Every IP address is reserved or on the allowlist
+        # Inverted on purpose. The address we most need to keep out of this tree
+        # is the operator's server, and we cannot write a regex for a value that
+        # must not appear in this file. So: extract every dotted quad, drop the
+        # ones that IANA has reserved and which therefore cannot be anybody's
+        # host, and fail on anything left that is not named in
+        # .github/ip-allowlist.txt.
+        #
+        # Two stages rather than one because a single exact-match list turns
+        # every new `203.0.113.x` in a doc into a build failure and a shrug,
+        # which is how a check stops being read. A documentation-range address
+        # can never be a leak; a public one always needs a human to say why.
+        run: |
+          reserved='^(0\.|10\.|010\.|127\.|169\.254\.|192\.168\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|198\.1[89]\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|2(2[4-9]|3[0-9])\.|24[0-9]\.|25[0-5]\.)'
+
+          git grep -hIoE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' \
+              -- . ':!.github/ip-allowlist.txt' \
+            | LC_ALL=C sort -u > /tmp/all-ips.txt
+          grep -vE "$reserved" /tmp/all-ips.txt | LC_ALL=C sort -u > /tmp/found-ips.txt || true
+          grep -vE '^[[:space:]]*(#|$)' .github/ip-allowlist.txt \
+            | awk '{print $1}' \
+            | LC_ALL=C sort -u > /tmp/allowed-ips.txt
+
+          comm -23 /tmp/found-ips.txt /tmp/allowed-ips.txt > /tmp/unknown-ips.txt
+          if [ -s /tmp/unknown-ips.txt ]; then
+            echo "::error::public IP address in the tree that is not on .github/ip-allowlist.txt"
+            cat /tmp/unknown-ips.txt
+            echo "if this is not a real host, add it to .github/ip-allowlist.txt with a reason"
+            exit 1
+          fi
+
+          # An allowlist entry that nothing references any more is dead weight
+          # and, worse, cover for the next address someone pastes in.
+          comm -13 /tmp/all-ips.txt /tmp/allowed-ips.txt > /tmp/stale-ips.txt
+          if [ -s /tmp/stale-ips.txt ]; then
+            echo "::error::.github/ip-allowlist.txt permits addresses that appear nowhere in the tree"
+            cat /tmp/stale-ips.txt
+            exit 1
+          fi
+
+          echo "$(wc -l < /tmp/all-ips.txt) distinct addresses:"
+          echo "  $(( $(wc -l < /tmp/all-ips.txt) - $(wc -l < /tmp/found-ips.txt) )) reserved by IANA"
+          echo "  $(wc -l < /tmp/found-ips.txt) public, every one of them allowlisted"

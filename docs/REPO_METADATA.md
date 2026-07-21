@@ -188,6 +188,16 @@ self-authored rather than auto-generated:
 - Footer, on the card: measured 2026-07-21, one Windows 11 machine, one run per configuration,
   no repetitions; built on third-party CLIProxyAPI (MIT); **no live web search**.
 
+**Three things must never appear on the card, in any size:**
+
+- **A latency or speed figure.** Two of the three warm rounds were *slower* than the cold round,
+  and time-to-first-token was never measured. There is no speed claim to make.
+- **A hit rate for any prefix size other than 748,918 tokens.** One run is the entire released
+  evidence set. "Rises with prefix size" is the most that can be said, and it needs no number.
+- **The "~50%" pool ceiling next to the 99.53%.** One is reasoned from source and one is
+  measured; putting them side by side reads as a before/after, and no pool-vs-direct A/B was
+  ever run.
+
 If a redesign cannot fit the qualifiers, the fix is to drop the number, not the qualifier.
 
 ---
