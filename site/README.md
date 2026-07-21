@@ -304,9 +304,47 @@ every sentence in those sections is mapped below to the code that implements it.
 > A wrong short list is worse than no list — it teaches the reader that the section is decorative,
 > and the next reader will not check the one claim that mattered.
 
-Rows are anchored on **function names first, line numbers second**: `site/install.sh` is owned by
-another track and line numbers drift. Line numbers below are accurate for the file whose SHA256 is
-published in `site/install.sh.sha256` at this commit.
+Rows are anchored on **function names first, line numbers second**, because `site/install.sh` gets
+edited and the numbers drift — they drifted by 3–4 lines while this table was being written.
+
+Do **not** pin these numbers to `install.sh.sha256`. That digest is over raw bytes, so it changes
+when a checkout flips CRLF↔LF even though not one line moved; it answers "same file?", not "same
+line numbers?". Anchor them mechanically instead — each row's number must still land on the
+construct it names:
+
+```sh
+python - <<'PY'
+import pathlib, re
+L = pathlib.Path("site/install.sh").read_text(encoding="utf-8", errors="replace").splitlines()
+# (line cited in the table, a pattern that line must still match)
+A = [(132,r'^YB5_HOME='),(151,r'^PRINT_KEY=0'),(127,r'^EX_VERIFY=8'),
+     (274,r'^sanitize_remote\(\)'),(295,r'^print_remote\(\)'),
+     (380,r'--no-bin-link\)'),(381,r'--show-key\)'),(404,r'^refuse_root\(\)'),
+     (556,r'^timestamp\(\)'),(564,r'chmod 700 "\$1"'),
+     (591,r'if \[ -f "\$wf_dest" \]'),(597,r'wf_nobak.*!= "nobackup"'),
+     (621,r'^ensure_machine_salt\(\)'),(636,r'> "\$ems_file"'),
+     (656,r'^http_call\(\)'),(666,r'chmod 600 "\$hc_cfg"'),(694,r'curl --config'),
+     (749,r'^CRED_FILE='),(867,r'^\s+reg_body='),(972,r'ensure_dir "\$YB5_HOME"'),
+     (1019,r'write_file "\$CRED_FILE" 600'),(1039,r'yb5_load_credentials\(\)'),
+     (1102,r'^export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL'),
+     (1108,r'^export CLAUDE_CONFIG_DIR'),(1125,r'^unset ANTHROPIC_API_KEY'),
+     (1128,r'^export CODEX_HOME'),(1131,r'write_file "\$\{YB5_HOME\}/env\.sh" 600'),
+     (1156,r'codex/config\.toml" 600'),(1230,r'INSTALL_INFO" 600 nobackup'),
+     (1250,r'for ll_name in yangble5-claude'),(1265,r'>> ~/\.profile'),
+     (1405,r'http_call GET /health'),(1452,r'"max_tokens":16'),(1467,r'COLD request'),
+     (1489,r'PRINT_KEY" -ne 1'),(1529,r'^print_backups\(\)'),
+     (1540,r'Exempt on purpose'),(1623,r'verification FAILED')]
+bad = [(n, rx, (L[n-1] if 0 < n <= len(L) else "")[:64])
+       for n, rx in A if not re.search(rx, L[n-1] if 0 < n <= len(L) else "")]
+print(f"anchors: {len(A)}  mismatches: {len(bad)}")
+for b in bad: print("  MISMATCH", b)
+PY
+```
+
+Last run: **`anchors: 38  mismatches: 0`**. If it reports mismatches, the numbers moved — re-derive
+them from the diff and update this table. **The claims do not expire when line numbers do.** Only
+change the prose if the *behaviour* changed; a moved line is a bookkeeping fix, a changed behaviour
+is a page edit.
 
 ### How the rows below were verified
 
@@ -530,8 +568,8 @@ NON_MEASUREMENT = {
     "1000000": "CLAUDE_CODE_MAX_CONTEXT_TOKENS / model_context_window default written by the installer",
     "65536":   "CLAUDE_CODE_MAX_OUTPUT_TOKENS default written by the installer",
     "600000":  "API_TIMEOUT_MS default written by the installer",
-    "1098":    "install.sh line reference (start of the env.sh export block)",
-    "1124":    "install.sh line reference (end of the env.sh export block)",
+    "1102":    "install.sh line reference (start of the env.sh export block)",
+    "1128":    "install.sh line reference (end of the env.sh export block)",
     "0600":    "file mode",
     "0700":    "file mode",
     "700":     "directory mode",
@@ -742,26 +780,26 @@ Two things that check cannot see, and how they were covered:
 ```
 $ grep -nE "bashrc|zshrc|\.profile" site/install.sh
 30:#   * It does NOT edit .bashrc, .zshrc, .profile or your PATH.
-451:    - modify your PATH, .bashrc, .zshrc or .profile
-1261:            info "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+455:    - modify your PATH, .bashrc, .zshrc or .profile
+1265:            info "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
 
 $ grep -nE "~/\.codex|~/\.claude" site/install.sh
 25:#     your ~/.claude directory and your existing subscription are untouched.
-448:    - touch your existing Claude Code login or ~/.claude (a separate
-1103:# damage the credentials in ~/.claude.
-1135:# Your normal ~/.codex is untouched.
-1160:here is separate from your real ~/.claude. Deleting this directory logs out
-1316:printf '\nIt will NOT touch ~/.claude, ~/.codex, your shell rc files, or anything\n'
+452:    - touch your existing Claude Code login or ~/.claude (a separate
+1107:# damage the credentials in ~/.claude.
+1139:# Your normal ~/.codex is untouched.
+1164:here is separate from your real ~/.claude. Deleting this directory logs out
+1320:printf '\nIt will NOT touch ~/.claude, ~/.codex, your shell rc files, or anything\n'
 
 $ grep -nE "systemd|launchd|launchctl|crontab" site/install.sh
 (no matches)
 
 $ grep -nE "\beval\b" site/install.sh
 70:#   * No `eval`, and nothing the server sends is ever executed. The API key is
-703:# Deliberately dumb: no eval, no shell expansion of server data, and every
+707:# Deliberately dumb: no eval, no shell expansion of server data, and every
 ```
 
-Every hit is a comment or a string that gets *printed*. `install.sh:1261` is the `info` line that
+Every hit is a comment or a string that gets *printed*. `install.sh:1265` is the `info` line that
 shows the user the `>> ~/.profile` command to run themselves; it is not executed. There is no
 `systemd` / `launchd` / `launchctl` / `crontab` match at all, and both `eval` matches are prose in
 comments.
