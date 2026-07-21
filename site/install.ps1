@@ -1064,65 +1064,217 @@ logs out the yangble5 session and nothing else.
     # Plain .cmd on purpose: no PowerShell execution-policy dependency, one
     # process instead of three, and the key is read from the credentials file
     # at launch rather than baked into the launcher.
-    $credRead = @"
+    # A LITERAL here-string (@'...'@). Everything below is cmd.exe syntax -
+    # '%VAR%' expansions, findstr regexes - and none of it interpolates anything
+    # from this script, so it must not go through PowerShell's parser.
+    $credRead = @'
 @echo off
 REM yangble5-launcher
 setlocal
 set "YB5_HOME=%USERPROFILE%\.yangble5"
-if not exist "%YB5_HOME%\credentials" (
-  >&2 echo yangble5: %YB5_HOME%\credentials is missing. Re-run install.ps1.
+set "YB5_CRED=%YB5_HOME%\credentials"
+if not exist "%YB5_CRED%" (
+  >&2 echo yangble5: %YB5_CRED% is missing. Re-run install.ps1.
   exit /b 6
 )
-set "YANGBLE5_API="
-set "YANGBLE5_API_KEY="
-set "YANGBLE5_MODEL="
-for /f "usebackq tokens=1,* delims==" %%A in ("%YB5_HOME%\credentials") do (
-  if /i "%%A"=="YANGBLE5_API"     set "YANGBLE5_API=%%B"
-  if /i "%%A"=="YANGBLE5_API_KEY" set "YANGBLE5_API_KEY=%%B"
-  if /i "%%A"=="YANGBLE5_MODEL"   set "YANGBLE5_MODEL=%%B"
+REM ===========================================================================
+REM THE INVARIANT: the set of lines this launcher CONSUMES must equal the set
+REM of lines it CHECKS.
+REM
+REM Two releases each closed one AXIS of that and left the invariant itself
+REM broken, which is why the whole file is now gated on SHAPE instead:
+REM
+REM   * `if /i` consumed case-INsensitively while findstr checked
+REM     case-sensitively, so a hostile `yangble5_api=` line was invisible to
+REM     the scan and authoritative for the launcher. Fixed the case axis.
+REM   * `for /f "delims=="` SKIPS LEADING DELIMITERS, so `=YANGBLE5_API=x`
+REM     tokenises to %%A=YANGBLE5_API / %%B=x and WAS consumed, while every
+REM     guard is anchored ^YANGBLE5_API= and never matched it. Measured:
+REM     `=YANGBLE5_API=https://x&echo pwned` ran the echo and exit was 0.
+REM
+REM Chasing the next tokeniser quirk one at a time is a losing game. So before
+REM a single line reaches `for /f`, three whole-file gates run. Together they
+REM leave the tokeniser no freedom at all - see the proof under each gate.
+REM
+REM Everything is findstr reading the FILE. That is deliberate: echoing the
+REM value into a findstr pipeline is not an alternative, because a pipeline
+REM runs each side in a fresh cmd which RE-PARSES the substituted text, so a
+REM bare `&` in the value splits the command and executes. Measured, not
+REM assumed. Data only ever flows through a pipe here; no untrusted byte is
+REM ever on a command line.
+REM
+REM No comment in this file contains a redirection or pipe character. `REM`
+REM does swallow them on the cmd this was tested against, but a comment that
+REM is one edit away from being a command is not worth the convenience, and a
+REM test asserts the property so it cannot come back.
+REM ===========================================================================
+REM
+REM GATE 1 - SHAPE. Every line is blank, a `#` comment, or KEY=... with KEY
+REM matching [A-Za-z0-9_][A-Za-z0-9_]* . `findstr /V` prints the lines that
+REM match NEITHER pattern; the second findstr drops the blank ones; anything
+REM still standing is a line no guard below could parse, so the file is
+REM refused rather than partly read.
+REM
+REM This is what kills the leading-delimiter class outright: `=YANGBLE5_API=x`,
+REM `==...`, ` YANGBLE5_API=x` (leading space - `for /f` does NOT strip it once
+REM delims is `=`, but it is refused anyway), a tab, a bare key with no `=`, a
+REM line that is only `=`, and a line with no delimiter at all.
+REM Comment lines stay inert for a different reason: `delims==` makes %%A
+REM everything up to the first `=`, so a `#` line always yields %%A starting
+REM with `#`, which is never one of the three key names.
+REM ---------------------------------------------------------------------------
+findstr /V /R /C:"^#" /C:"^[A-Za-z0-9_][A-Za-z0-9_]*=" "%YB5_CRED%" | findstr /R /C:"." >nul
+if not errorlevel 1 (
+  >&2 echo yangble5: %YB5_CRED% contains a line that is not blank, not a
+  >&2 echo yangble5: comment, and not KEY=VALUE. Refusing to read the file.
+  >&2 echo yangble5: a line the checks cannot parse is still a line cmd.exe
+  >&2 echo yangble5: would consume, so the file is rejected as a whole.
+  >&2 echo yangble5: fix that line, or re-run install.ps1.
+  exit /b 6
 )
-if not defined YANGBLE5_API_KEY (
-  >&2 echo yangble5: no API key in %YB5_HOME%\credentials
+REM
+REM GATE 2 - LF ONLY, AND A FINAL NEWLINE. findstr's regex cannot cross a
+REM carriage return: `.` and every character class stop dead at one, and `^`
+REM only anchors at a real line start. `for /f` has no such limit - it hands
+REM the CR and everything after it to %%B. Measured: on the line
+REM `YANGBLE5_API=https://ok(CR)&echo pwned`, `^YANGBLE5_API=.*[^A-Za-z0-9:/._~-]`
+REM does not match, and %%B is `https://ok(CR)&echo pwned`. That is the same
+REM defect as the leading `=`, wearing a different hat.
+REM
+REM findstr also cannot MATCH a CR - `[^A-Za-z0-9:/._~=-]` does not see one -
+REM so it cannot be caught by a character class. It can be caught by `$`:
+REM findstr anchors `$` at a CR, and on a pure-LF file `$` never matches at
+REM all. So `.$` matching means the file is not pure LF terminated by a
+REM newline, which is exactly what both installers write. Refusing here is
+REM also what makes the two launchers agree: env.sh keeps the stray CR in the
+REM parsed value and refuses it too.
+REM ---------------------------------------------------------------------------
+findstr /V /R /C:"^#" "%YB5_CRED%" | findstr /R /C:".$" >nul
+if not errorlevel 1 (
+  >&2 echo yangble5: %YB5_CRED% is not plain LF text ending in a newline.
+  >&2 echo yangble5: a carriage return is invisible to findstr but not to
+  >&2 echo yangble5: cmd.exe, so the bytes that get checked and the bytes that
+  >&2 echo yangble5: get used would not be the same bytes. Refusing to run.
+  >&2 echo yangble5: rewrite it with Unix line endings, or re-run install.ps1.
+  exit /b 6
+)
+REM
+REM GATE 3 - BYTES. No non-comment line may contain a byte outside the union
+REM of the three value alphabets plus the `=` separator. Unanchored on purpose:
+REM an unanchored findstr scan DOES see past a CR (measured), so this catches
+REM a metacharacter hidden behind one even before Gate 2 refuses the CR.
+REM Swept every byte 0x01-0xFF: there is none that hides an `&` from all three
+REM gates. NUL is caught here too, and `for /f` stops reading the file at a NUL
+REM anyway, so it can only ever consume less than findstr checked.
+REM ---------------------------------------------------------------------------
+findstr /V /R /C:"^#" "%YB5_CRED%" | findstr /R /C:"[^A-Za-z0-9:/._~=-]" >nul
+if not errorlevel 1 (
+  >&2 echo yangble5: %YB5_CRED% contains a character that cannot appear in any
+  >&2 echo yangble5: of these settings. Refusing to run, because cmd.exe would
+  >&2 echo yangble5: treat some of them as syntax rather than as text.
+  >&2 echo yangble5: fix that line, or re-run install.ps1.
+  exit /b 6
+)
+REM ---------------------------------------------------------------------------
+REM BYOK: an empty key is not a malformed file, it is a to-do. Asked of the
+REM FILE, not of a parsed variable, because nothing has been parsed yet.
+REM `YANGBLE5_API_KEY=notakey` still has a first character in the class, so it
+REM falls through to the guards below and is reported as malformed instead.
+REM ---------------------------------------------------------------------------
+findstr /R /C:"^YANGBLE5_API_KEY=[A-Za-z0-9_-]" "%YB5_CRED%" >nul
+if errorlevel 1 (
+  >&2 echo yangble5: no API key in %YB5_CRED%
   >&2 echo yangble5: add one, or re-run the installer.
   exit /b 6
 )
 REM ---------------------------------------------------------------------------
-REM Second layer, and the important one on Windows. The installer's allow-list
-REM only governs what the INSTALLER writes; anything running as this user can
-REM edit the credentials file afterwards, and cmd.exe expands %VAR% textually
-REM BEFORE it parses the line - so a value containing & or ^| in a file this
-REM launcher reads becomes a command on the next launch.
+REM Per-value allow-lists. The gates above prove that the line `for /f` will
+REM consume for KEY is exactly a line matching ^KEY=, with no CR to hide a
+REM tail, so these anchored patterns now see every byte that will be used.
 REM
-REM findstr re-checks the file's own bytes against the same character sets the
-REM installer enforced. Two patterns per value, both needed:
-REM   * a positive one, so an empty or malformed value is refused. Note the
-REM     doubled first class: findstr has no '+'.
-REM   * a negative one, which must NOT match. This is what catches a stray
-REM     metacharacter, and it carries no '$' anchor on purpose - findstr's '$'
-REM     only matches on CRLF-terminated lines, so an anchored pattern would
-REM     silently reject every LF file, including the one written next to it.
+REM Three patterns per value, quantified deliberately:
+REM   * a positive one - at least one well-formed line for this key exists.
+REM     Note the doubled character class: findstr has no '+'.
+REM   * `findstr ^KEY= file` piped into `findstr /V (good prefix)` - EVERY
+REM     line for this key starts well.
+REM   * a negative one - NO line for this key contains a byte outside the set.
+REM     This is what catches a repeated `=` (`KEY==value`, which `for /f`
+REM     collapses to %%B=value) and any stray metacharacter.
+REM The last two are universal, so a second, later line cannot smuggle a value
+REM past a check that an earlier good line satisfied - `for /f` keeps the LAST
+REM line it sees, and every line has now been checked.
+REM
+REM No pattern here carries a '$' anchor: findstr reproduces its input's line
+REM endings and only matches '$' on CRLF, so anchoring would silently reject
+REM every LF file - including the one the installer writes next to it. Gate 2
+REM is the one place '$' is used, and it is used as a rejection trigger.
 REM ---------------------------------------------------------------------------
 set "YB5_BAD="
-findstr /R /C:"^YANGBLE5_MODEL=[A-Za-z0-9._:-][A-Za-z0-9._:-]*" "%YB5_HOME%\credentials" >nul
+findstr /R /C:"^YANGBLE5_MODEL=[A-Za-z0-9._:-][A-Za-z0-9._:-]*" "%YB5_CRED%" >nul
 if errorlevel 1 set "YB5_BAD=YANGBLE5_MODEL"
-findstr /R /C:"^YANGBLE5_MODEL=.*[^A-Za-z0-9._:-]" "%YB5_HOME%\credentials" >nul
+findstr /R /C:"^YANGBLE5_MODEL=" "%YB5_CRED%" | findstr /V /R /C:"^YANGBLE5_MODEL=[A-Za-z0-9._:-]" >nul
 if not errorlevel 1 set "YB5_BAD=YANGBLE5_MODEL"
-findstr /R /C:"^YANGBLE5_API=[A-Za-z0-9:/._~-][A-Za-z0-9:/._~-]*" "%YB5_HOME%\credentials" >nul
+findstr /R /C:"^YANGBLE5_MODEL=.*[^A-Za-z0-9._:-]" "%YB5_CRED%" >nul
+if not errorlevel 1 set "YB5_BAD=YANGBLE5_MODEL"
+findstr /R /C:"^YANGBLE5_API=https://" /C:"^YANGBLE5_API=http://127\.0\.0\.1" /C:"^YANGBLE5_API=http://localhost" "%YB5_CRED%" >nul
 if errorlevel 1 set "YB5_BAD=YANGBLE5_API"
-findstr /R /C:"^YANGBLE5_API=.*[^A-Za-z0-9:/._~-]" "%YB5_HOME%\credentials" >nul
+findstr /R /C:"^YANGBLE5_API=" "%YB5_CRED%" | findstr /V /R /C:"^YANGBLE5_API=https://" /C:"^YANGBLE5_API=http://127\.0\.0\.1" /C:"^YANGBLE5_API=http://localhost" >nul
 if not errorlevel 1 set "YB5_BAD=YANGBLE5_API"
-findstr /R /C:"^YANGBLE5_API_KEY=yb5_[0-9a-f][0-9a-f]*_[A-Za-z0-9_-][A-Za-z0-9_-]*" "%YB5_HOME%\credentials" >nul
+findstr /R /C:"^YANGBLE5_API=.*[^A-Za-z0-9:/._~-]" "%YB5_CRED%" >nul
+if not errorlevel 1 set "YB5_BAD=YANGBLE5_API"
+findstr /R /C:"^YANGBLE5_API_KEY=yb5_[0-9a-f][0-9a-f]*_[A-Za-z0-9_-][A-Za-z0-9_-]*" "%YB5_CRED%" >nul
 if errorlevel 1 set "YB5_BAD=YANGBLE5_API_KEY"
-findstr /R /C:"^YANGBLE5_API_KEY=.*[^A-Za-z0-9_-]" "%YB5_HOME%\credentials" >nul
+findstr /R /C:"^YANGBLE5_API_KEY=" "%YB5_CRED%" | findstr /V /R /C:"^YANGBLE5_API_KEY=yb5_[0-9a-f][0-9a-f]*_[A-Za-z0-9_-][A-Za-z0-9_-]*" >nul
+if not errorlevel 1 set "YB5_BAD=YANGBLE5_API_KEY"
+findstr /R /C:"^YANGBLE5_API_KEY=.*[^A-Za-z0-9_-]" "%YB5_CRED%" >nul
 if not errorlevel 1 set "YB5_BAD=YANGBLE5_API_KEY"
 if defined YB5_BAD (
-  >&2 echo yangble5: %YB5_BAD% in %YB5_HOME%\credentials is empty or contains
+  >&2 echo yangble5: %YB5_BAD% in %YB5_CRED% is empty, malformed, or contains
   >&2 echo yangble5: characters that are not allowed there. Refusing to run,
   >&2 echo yangble5: because cmd.exe would treat some of them as syntax.
   >&2 echo yangble5: fix that line, or re-run install.ps1.
   exit /b 6
 )
-"@
+REM ---------------------------------------------------------------------------
+REM Only now is the file parsed. Every gate above ran against the FILE, so this
+REM loop cannot reach a line that was not checked:
+REM
+REM   * Gate 1 makes the first byte of every consumed line a [A-Za-z0-9_], so
+REM     `delims==` has no leading delimiter to skip and %%A is exactly the key.
+REM     A `;` cannot start a line either - gates 1 and 3 both refuse it - so
+REM     eol= skips nothing the guards were counting on. (A `;` mid-line does
+REM     NOT truncate %%B, measured, and gate 3 refuses it regardless.)
+REM   * Gate 2 means %%B is exactly the bytes after the first `=` on that line,
+REM     the same bytes `^KEY=` matched.
+REM   * Gate 3 means every one of those bytes is in the union alphabet, and the
+REM     per-key patterns above narrowed it further.
+REM
+REM So: %%A can only be a key name if the line literally begins `KEY=`, and
+REM every line that literally begins `KEY=` was checked. Consumed == checked.
+REM
+REM The comparisons stay case-SENSITIVE to match findstr, which is also
+REM case-sensitive. A differently-cased key is not a second spelling of a
+REM setting; it is not one of these settings at all. env.sh does the same.
+REM ---------------------------------------------------------------------------
+set "YANGBLE5_API="
+set "YANGBLE5_API_KEY="
+set "YANGBLE5_MODEL="
+for /f "usebackq tokens=1,* delims==" %%A in ("%YB5_CRED%") do (
+  if "%%A"=="YANGBLE5_API"     set "YANGBLE5_API=%%B"
+  if "%%A"=="YANGBLE5_API_KEY" set "YANGBLE5_API_KEY=%%B"
+  if "%%A"=="YANGBLE5_MODEL"   set "YANGBLE5_MODEL=%%B"
+)
+set "YB5_UNSET="
+if not defined YANGBLE5_API     set "YB5_UNSET=1"
+if not defined YANGBLE5_API_KEY set "YB5_UNSET=1"
+if not defined YANGBLE5_MODEL   set "YB5_UNSET=1"
+if defined YB5_UNSET (
+  >&2 echo yangble5: internal: %YB5_CRED% passed every check but a value came
+  >&2 echo yangble5: back empty. That is a bug in this launcher, not in your
+  >&2 echo yangble5: file. Refusing to run, and please report it.
+  exit /b 6
+)
+'@
 
     $claudeCmd = $credRead + @"
 

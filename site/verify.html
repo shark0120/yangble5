@@ -206,6 +206,26 @@ ul.plain{padding-inline-start:1.2em; color:var(--fg-2)}
 ul.plain li{margin-bottom:var(--s-3)}
 ul.plain li:last-child{margin-bottom:0}
 
+.tablewrap{
+  overflow-x:auto; border:1px solid var(--line); border-radius:var(--r-2);
+  background:var(--surface-1); margin:0 0 var(--s-5);
+}
+.tablewrap:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+table{border-collapse:collapse; width:100%; font-size:var(--t-0)}
+table.files{min-width:640px}
+caption{
+  text-align:start; padding:var(--s-4) var(--s-4) 0; color:var(--muted);
+  font-size:var(--t--1); line-height:1.6;
+}
+th,td{padding:.7em .9em; text-align:start; border-bottom:1px solid var(--line); vertical-align:top; color:var(--fg-2)}
+thead th{
+  background:var(--surface-3); font-weight:650; font-size:var(--t--2);
+  letter-spacing:.06em; text-transform:uppercase; color:var(--muted); white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td code{background:var(--surface-3); padding:.15em .45em; border-radius:5px; display:inline-block; word-break:break-all}
+td.yes{color:var(--bad); font-weight:700; white-space:nowrap}
+
 footer.site{
   border-top:1px solid var(--line); background:var(--surface-1);
   padding-block:var(--s-6); font-size:var(--t-0); color:var(--muted); margin-top:var(--s-8);
@@ -234,6 +254,9 @@ footer.site .wrap{display:grid; gap:var(--s-3)}
   body{font-size:10.5pt; line-height:1.55; background:#fff}
   .digest::before{display:none}
   .digest,.note,.warnbox,pre.block{break-inside:avoid; box-shadow:none}
+  .tablewrap{overflow-x:visible; box-shadow:none}
+  table.files{min-width:0}
+  tr{break-inside:avoid}
   h1,h2,h3{break-after:avoid}
   pre.block{white-space:pre-wrap; word-break:break-all}
   a[href^="http"]::after{content:" \003C" attr(href) "\003E"; font-size:8pt; color:#333; word-break:break-all}
@@ -357,9 +380,10 @@ notepad .\install.ps1
   <h2 id="env">啟動器到底設了哪些環境變數</h2>
   <p>
     首頁寫的是「<strong>export 十一個變數，外加一個 unset</strong>」。下面是那十一行的<strong>逐字原文</strong>，
-    出自 <code>install.sh</code> 的 <code>write_config()</code>（第 1102–1128 行，寫出
-    <code>~/.yangble5/env.sh</code>）。沒有省略任何一項；如果你自己數出來不是十一個，那是我們寫錯了，
-    請開 issue 告訴我們。
+    出自 <code>install.sh</code> 的 <code>write_config()</code>——就是產生 <code>~/.yangble5/env.sh</code>
+    的那一段。沒有省略任何一項；如果你自己數出來不是十一個，那是我們寫錯了，請開 issue 告訴我們。
+    （這一頁不寫行號。行號會隨腳本改動而位移，一個過期的行號讀起來卻跟正確的一模一樣；
+    函式名稱不會這樣騙人。<code>grep -n 'write_config()' install.sh</code> 一秒就能定位。）
   </p>
   <pre class="block" tabindex="0" role="region" aria-label="env.sh 逐字內容，可左右捲動"><span class="c"># ~/.yangble5/env.sh —— 只被 ~/.yangble5/bin/yangble5-* 這幾支啟動器 source。</span>
 <span class="c"># 這些值只存在於啟動器啟動的那個行程裡,不會寫進你的 shell。</span>
@@ -410,10 +434,11 @@ export CODEX_HOME="${HOME}/.yangble5/codex"</pre>
   <!-- ── verbatim: what lands on disk ─────────────────────────────── -->
   <h2 id="files">它在你的磁碟上寫了哪些東西</h2>
   <p>
-    完整清單。除了下面這些路徑，安裝腳本不寫任何地方 —— 特別是不寫
-    <code>~/.claude</code>、<code>~/.codex</code>、<code>.bashrc</code>、<code>.zshrc</code>、
+    完整清單，分成<strong>永久留下</strong>與<strong>暫存</strong>兩類。除了下面這些路徑，安裝腳本不寫任何地方 ——
+    特別是不寫 <code>~/.claude</code>、<code>~/.codex</code>、<code>.bashrc</code>、<code>.zshrc</code>、
     <code>.profile</code>，也不改 <code>PATH</code>。
   </p>
+  <h3>永久：留在你磁碟上的東西</h3>
   <ul class="plain">
     <li><code>~/.yangble5/</code>（目錄，權限 <code>700</code>）連同底下的
       <code>claude/</code>、<code>codex/</code>、<code>bin/</code>。</li>
@@ -438,7 +463,62 @@ export CODEX_HOME="${HOME}/.yangble5/codex"</pre>
     <li><code>~/.local/bin/</code> 底下四個指向上面那四支的 symlink。加
       <code>--no-bin-link</code> 就不會建立；那裡若已經有同名的<em>非</em> symlink 檔案，
       它保留原檔並警告，不覆蓋。</li>
+    <li><code>&lt;檔名&gt;.bak-&lt;時間戳&gt;</code>—— 只在覆蓋既有檔案時產生，一律建在原檔旁邊，
+      所以也都在 <code>~/.yangble5/</code> 裡面。<a href="#backup">下面那一節</a>是完整規則。</li>
   </ul>
+
+  <h3 id="tmp">暫存：安裝期間存在，離開時刪除</h3>
+  <p>
+    這一段以前不在這一頁上，而上面那句「除了這些路徑不寫任何地方」因此是錯的。
+    <strong>安裝腳本還會用 <code>mktemp -d</code> 開一個暫存目錄</strong>，位置由 <code>$TMPDIR</code> 決定
+    （沒設的話多數系統是 <code>/tmp</code>），名字是 <code>tmp.</code> 加隨機字元。
+    建立它的是 <code>install.sh</code> 的 <code>validate_settings()</code>，建完立刻 <code>chmod 700</code>。
+    <strong>它跟你的家目錄無關，所以任何只掃 <code>$HOME</code> 的檢查都看不到它 ——
+    這正是這句話錯了那麼久還沒被抓到的原因。</strong>
+  </p>
+  <p>
+    安裝過程中會在那裡出現十個檔案。下表的「含金鑰」欄是實測結果：在一次完整安裝中側錄暫存目錄、
+    再到副本裡搜尋那把金鑰字串。
+  </p>
+  <div class="tablewrap" tabindex="0" role="region" aria-label="暫存目錄裡的十個檔案，可左右捲動">
+  <table class="files">
+    <caption>安裝腳本在 <code>mktemp -d</code> 暫存目錄裡建立的十個檔案。「含金鑰」欄是實測結果，不是推論。</caption>
+    <thead>
+      <tr><th scope="col">檔名</th><th scope="col">內容</th><th scope="col">含金鑰</th><th scope="col">額外 chmod</th><th scope="col">何時刪除</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>curlrc.&lt;pid&gt;</code></td><td>curl 的設定檔，含 <code>x-api-key</code> 與 <code>authorization</code> 兩個標頭</td><td class="yes">是</td><td><code>600</code></td><td>每次呼叫結束</td></tr>
+      <tr><td><code>resp.&lt;pid&gt;</code></td><td>HTTP 回應本體，註冊那一次就是金鑰送達的地方</td><td class="yes">是</td><td>—</td><td>每次呼叫結束</td></tr>
+      <tr><td><code>credentials.&lt;pid&gt;</code></td><td><code>~/.yangble5/credentials</code> 的暫存版</td><td class="yes">是</td><td>—</td><td>寫檔後立刻</td></tr>
+      <tr><td><code>write.&lt;pid&gt;</code></td><td>寫檔中繼站，每一個產生的檔案都經過它，所以金鑰也經過</td><td class="yes">是</td><td>—</td><td>每寫一個檔就刪</td></tr>
+      <tr><td><code>curlerr.&lt;pid&gt;</code></td><td>curl 的 stderr</td><td>否</td><td>—</td><td>每次呼叫結束</td></tr>
+      <tr><td><code>env.&lt;pid&gt;</code></td><td><code>env.sh</code> 的暫存版（金鑰在這裡是變數引用，不是字面值）</td><td>否</td><td>—</td><td>寫檔後立刻</td></tr>
+      <tr><td><code>codex.&lt;pid&gt;</code></td><td><code>codex/config.toml</code> 的暫存版</td><td>否</td><td>—</td><td>寫檔後立刻</td></tr>
+      <tr><td><code>install_info.&lt;pid&gt;</code></td><td><code>INSTALL_INFO</code> 的暫存版</td><td>否</td><td>—</td><td>寫檔後立刻</td></tr>
+      <tr><td><code>register.json</code></td><td>註冊請求本體：機器指紋、標籤，以及你自己傳的 e-mail／邀請碼</td><td>否</td><td><code>600</code></td><td><strong>只在離開時</strong></td></tr>
+      <tr><td><code>probe.json</code></td><td>驗證用的那一次 <code>/v1/messages</code> 請求本體</td><td>否</td><td>—</td><td><strong>只在離開時</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note">
+    <p style="margin:0 0 var(--s-3)">
+      <strong>權限：真正的邊界是目錄，不是檔案。</strong>十個裡面只有
+      <code>curlrc</code> 與 <code>register.json</code> 另外做了 <code>chmod 600</code>
+      （分別在 <code>http_call()</code> 與 <code>obtain_key()</code> 裡），其餘八個沿用你當下的 <code>umask</code>。
+      擋住同一台機器上其他使用者的是外面那層 <code>700</code> 的目錄。
+      這在單人機器上沒有差別；在共用主機上，這是你該知道的實際邊界。
+    </p>
+    <p style="margin:0">
+      <strong>刪除：<code>trap cleanup EXIT HUP INT TERM</code> 涵蓋這四種離開方式，
+      但涵蓋不了 <code>SIGKILL</code>、斷電與當機。</strong>
+      正常結束、或你按 Ctrl-C，整個目錄會被 <code>rm -rf</code>，那裡不會留下任何東西。
+      被 <code>kill -9</code> 或機器直接斷掉時目錄會留著；我們實測過一次：在 HTTP 呼叫進行中送出
+      <code>SIGKILL</code>，磁碟上留下 <code>curlrc</code>、<code>register.json</code>、
+      <code>probe.json</code>、<code>curlerr</code> 四個檔案，
+      <strong>其中 <code>curlrc</code> 裡有完整的金鑰</strong>。
+      遇到這種情況，刪掉 <code>$TMPDIR</code> 底下那個 <code>tmp.</code> 目錄再重跑一次安裝就好。
+    </p>
+  </div>
 
   <h3 id="backup">被覆蓋的檔案，以及怎麼還原</h3>
   <p>
@@ -469,7 +549,10 @@ cd yangble5
 <span class="c"># 讀原始碼、看 commit 歷史,然後自己決定要不要跑</span>
 git log --oneline -20</pre>
   <p class="fine">
-    這一頁跟首頁一樣是單一檔案、沒有任何外部請求：沒有 CDN、沒有網頁字型、沒有分析追蹤、沒有 cookie。你可以整頁存下來離線讀。
+    這一頁跟首頁一樣是單一檔案，沒有任何<strong>第三方</strong>請求：沒有 CDN、沒有網頁字型、沒有分析追蹤、沒有 cookie。
+    唯一的執行期請求是<strong>同源</strong>的那兩個 <code>.sha256</code> 檔（首頁另外會讀同源的
+    <code>/api/health</code>）。整頁存下來離線讀也可以 —— 那兩個雜湊會顯示「尚未公告」，
+    頁面不會拿一個看起來合理的舊值來充數。
   </p>
 </div>
 </main>

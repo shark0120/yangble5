@@ -364,6 +364,117 @@ def test_sh_print_remote_prints_nothing_for_empty_input():
 
 
 # --------------------------------------------------------------------------
+# json_string: the field extractor that feeds the sanitiser.
+#
+# It used to pipe through `tr ',' '\n'` before extracting, which cut the
+# document on every comma. A value that contained one lost its closing quote
+# and matched nothing, so {"message":"install complete, key accepted"} came
+# back EMPTY -- the server's explanation of a failure simply did not appear.
+# That also made the sanitiser above pointless for exactly the messages most
+# likely to need it: there is nothing to sanitise in a message nobody sees,
+# and prose -- especially `text`, the model's own reply -- is full of commas.
+# --------------------------------------------------------------------------
+def sh_json(field: str, body: str) -> str:
+    return run_sh(
+        'printf "[%s]" "$(printf \'%s\' "$YB5_TEST_JSON" | json_string "$YB5_TEST_FIELD")"',
+        YB5_TEST_JSON=body,
+        YB5_TEST_FIELD=field,
+    )[1:-1]
+
+
+JSON_CASES = [
+    # (field, body, expected)
+    ("message", '{"message":"hello"}', "hello"),
+    # the regression this section exists for
+    ("message", '{"message":"install complete, key accepted"}', "install complete, key accepted"),
+    ("message", '{"type":"error","message":"bad, very bad"}', "bad, very bad"),
+    ("text", '{"text":"pong, as requested"}', "pong, as requested"),
+    # colons are the other character that a naive extractor eats
+    ("message", '{"message":"see: https://x/y"}', "see: https://x/y"),
+    ("message", '{"message":"done, see: here"}', "done, see: here"),
+    ("message", '{"message":"a: "}', "a: "),
+    # ordinary shapes
+    ("type", '{"type":"rate_limit","message":"slow, down"}', "rate_limit"),
+    ("message", '{"message"  :   "a, b"}', "a, b"),
+    ("message", '{"error":{"type":"x","message":"a, b"}}', "a, b"),
+    ("message", '{"message":"https://a.b/c?d=e"}', "https://a.b/c?d=e"),
+    # and the ones that must stay empty rather than guess
+    ("message", '{"type":"error"}', ""),
+    ("message", '{"message":"unterminated', ""),
+    ("message", "not json at all", ""),
+    ("message", "", ""),
+    ("message", '{"message":""}', ""),
+]
+
+
+@needs_sh
+@pytest.mark.parametrize("field,body,expected", JSON_CASES)
+def test_sh_json_string_extracts_the_whole_value(field, body, expected):
+    assert sh_json(field, body) == expected
+
+
+@needs_powershell
+@pytest.mark.parametrize("field,body,expected", JSON_CASES)
+def test_ps_json_field_extracts_the_whole_value(field, body, expected):
+    """install.ps1 parses with ConvertFrom-Json and never had the comma bug.
+    Asserted rather than assumed, and asserted on the same corpus, because
+    "the other implementation is probably fine" is how the two drift apart."""
+    os.environ["YB5_TEST_JSON"] = body
+    os.environ["YB5_TEST_FIELD"] = field
+    try:
+        out = run_ps(
+            ["Get-JsonField"],
+            "'['+(Get-JsonField -Json $env:YB5_TEST_JSON "
+            "-Field $env:YB5_TEST_FIELD)+']'",
+        )
+    finally:
+        del os.environ["YB5_TEST_JSON"]
+        del os.environ["YB5_TEST_FIELD"]
+    assert out[1:-1] == expected
+
+
+NUMERIC_BODY = '{"code":429,"message":"too many, sorry"}'
+
+
+@needs_sh
+def test_sh_json_string_ignores_a_non_string_value():
+    """Documented divergence, pinned so it cannot drift further.
+
+    json_string matches ``"field": "..."`` and so returns nothing for a number;
+    Get-JsonField goes through ConvertFrom-Json and stringifies it. Harmless:
+    every field either installer actually reads (api_key, key_id, message,
+    type, status, text) is a JSON string, and both results are validated or
+    sanitised before use. Recorded here so that "they disagree" is a decision
+    on the record rather than something a later reader has to rediscover."""
+    assert sh_json("code", NUMERIC_BODY) == ""
+    assert sh_json("message", NUMERIC_BODY) == "too many, sorry"
+
+
+@needs_powershell
+def test_ps_json_field_stringifies_a_non_string_value():
+    os.environ["YB5_TEST_JSON"] = NUMERIC_BODY
+    try:
+        out = run_ps(
+            ["Get-JsonField"],
+            "'['+(Get-JsonField -Json $env:YB5_TEST_JSON -Field 'code')+']'",
+        )
+    finally:
+        del os.environ["YB5_TEST_JSON"]
+    assert out[1:-1] == "429"
+
+
+@needs_sh
+def test_sh_json_string_value_still_reaches_the_sanitiser_intact():
+    """End to end: extract a hostile message containing a comma, then sanitise
+    it. Before the fix this produced an empty string, so the ANSI payload was
+    'safe' only because the whole message had disappeared."""
+    body = '{"message":"' + ESC + "[2Jcleared, and forged ok line" + '"}'
+    extracted = sh_json("message", body)
+    assert extracted == ESC + "[2Jcleared, and forged ok line"
+    assert sh_sanitize(extracted) == "cleared, and forged ok line"
+
+
+# --------------------------------------------------------------------------
 # POSIX: end-to-end refusal. The unit tests above prove the predicate; this
 # proves the predicate is actually wired into the entry path, before any file
 # is written or any request is sent.

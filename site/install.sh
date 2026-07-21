@@ -705,11 +705,26 @@ http_call() {
 
 # json_string <field> — reads JSON on stdin, prints the first string value.
 # Deliberately dumb: no eval, no shell expansion of server data, and every
-# value it produces is validated by the caller before it is used.
+# value it produces is either validated or sanitised by the caller.
+#
+# Do NOT reintroduce a `tr ',' '\n'` pre-split here. It cut the document on
+# every comma before extracting, so a value that contained one lost its closing
+# quote and matched nothing: {"message":"install complete, key accepted"} came
+# back EMPTY. That silently defeated the message sanitiser downstream — there is
+# no point sanitising a message the user never sees — and it hit `text`, the
+# model's own reply, hardest, because prose has commas in it.
+#
+# grep -o takes the shortest match instead. [^"]* cannot cross a quote, so a
+# comma inside the value is just an ordinary byte. The sed then strips the
+# ANCHORED key prefix rather than `.*:`, which would be greedy and would eat
+# into a value that itself contains `": "` (e.g. {"message":"a: "} -> empty).
+#
+# Known limitation, unchanged and failing safe: a value containing an escaped
+# quote (\") is truncated there.
 json_string() {
-    tr ',' '\n' | \
-        sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | \
-        head -n 1
+    grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | \
+        head -n 1 | \
+        sed 's/^"'"$1"'"[[:space:]]*:[[:space:]]*"//; s/"$//'
 }
 
 valid_key() {
@@ -1035,6 +1050,24 @@ CRED
 # NOTE: ~/.yangble5/credentials is PARSED below, not sourced. Sourcing it would
 # turn every stored value into shell code, which is exactly the bug this
 # installer had. A KEY=VALUE reader cannot execute what it reads.
+#
+# THE INVARIANT, same as the .cmd launchers on Windows: the set of lines this
+# file CONSUMES must equal the set of lines it CHECKS.
+#
+# This parser already satisfies the dangerous half of it for free, and for a
+# reason worth writing down: every check below runs on the PARSED VARIABLE, not
+# on the text of the file. Whatever "${yb5_line%%=*}" decides a key is, that
+# same decision produced the value that gets validated — the two cannot drift.
+# cmd.exe has no equivalent (it cannot hand a variable to a matcher without
+# putting it on a command line, where it would be re-parsed), which is why the
+# Windows side has to gate the file's shape with findstr instead.
+#
+# What the shape gate below adds here is not safety, it is AGREEMENT. Without
+# it, a line the Windows launcher refuses outright — `=YANGBLE5_API=…`, a line
+# with no `=`, a stray CR — is silently IGNORED here. Two launchers that
+# disagree about what is acceptable are one launcher plus a bug, and silently
+# ignoring a line an attacker appended also means the user never finds out the
+# file was touched.
 
 yb5_load_credentials() {
     yb5_cred="${HOME}/.yangble5/credentials"
@@ -1042,16 +1075,64 @@ yb5_load_credentials() {
         printf 'yangble5: %s is missing. Re-run the installer.\n' "$yb5_cred" >&2
         exit 6
     fi
+    # A literal CR, built without $'\r' (not POSIX) and without a raw CR byte
+    # in this file (which is LF by construction and must stay that way). The
+    # 'x' guard is because command substitution strips trailing newlines, not
+    # trailing carriage returns — belt and braces, so this cannot become ''.
+    yb5_cr="$(printf '\rx')"
+    yb5_cr="${yb5_cr%x}"
     YANGBLE5_API=''
     YANGBLE5_API_KEY=''
     YANGBLE5_KEY_ID=''
     YANGBLE5_MODEL=''
-    while IFS= read -r yb5_line || [ -n "$yb5_line" ]; do
+    yb5_partial=0
+    # The `|| [ -n … ]` clause is what lets a final line with no newline be
+    # read at all; yb5_partial records that it happened so the shape gate can
+    # refuse it, because findstr on Windows cannot tell that case apart from a
+    # stray CR and refuses both.
+    while IFS= read -r yb5_line || { [ -n "$yb5_line" ] && yb5_partial=1; }; do
         case "$yb5_line" in
             '#'*|'') continue ;;
         esac
+        if [ "$yb5_partial" -ne 0 ]; then
+            printf 'yangble5: the last line of %s has no newline.\n' "$yb5_cred" >&2
+            printf 'yangble5: rewrite it as plain LF text, or re-run the installer.\n' >&2
+            exit 6
+        fi
+        case "$yb5_line" in
+            *"$yb5_cr"*)
+                printf 'yangble5: %s contains a carriage return.\n' "$yb5_cred" >&2
+                printf 'yangble5: rewrite it with Unix line endings, or re-run the installer.\n' >&2
+                exit 6 ;;
+        esac
+        # The union of the three value alphabets plus the '=' separator. The
+        # per-value checks further down are narrower; this one exists so that a
+        # line for a key NEITHER launcher consumes still cannot differ in
+        # verdict between them. The Windows side rejects such a line with a
+        # whole-file findstr scan, so this side has to as well.
+        case "$yb5_line" in
+            *[!A-Za-z0-9:/._~=-]*)
+                printf 'yangble5: %s contains a character that cannot appear in\n' "$yb5_cred" >&2
+                printf 'yangble5: any of these settings. Refusing to read the file.\n' >&2
+                exit 6 ;;
+        esac
         yb5_k="${yb5_line%%=*}"
         yb5_v="${yb5_line#*=}"
+        # Shape gate. "$yb5_k" is the text before the first '=', or the whole
+        # line when there is no '=' at all — so the second test is what tells
+        # `YANGBLE5_API=` apart from a bare `YANGBLE5_API`, which the plain
+        # prefix strip would otherwise turn into key and value both.
+        case "$yb5_k" in
+            ''|*[!A-Za-z0-9_]*)
+                printf 'yangble5: %s contains a line that is not blank, not a comment,\n' "$yb5_cred" >&2
+                printf 'yangble5: and not KEY=VALUE. Refusing to read the file.\n' >&2
+                exit 6 ;;
+        esac
+        if [ "$yb5_k" = "$yb5_line" ]; then
+            printf 'yangble5: %s contains a line with no "=" in it.\n' "$yb5_cred" >&2
+            printf 'yangble5: Refusing to read the file.\n' >&2
+            exit 6
+        fi
         case "$yb5_k" in
             YANGBLE5_API)     YANGBLE5_API="$yb5_v" ;;
             YANGBLE5_API_KEY) YANGBLE5_API_KEY="$yb5_v" ;;

@@ -130,6 +130,14 @@ ignore = [
 # Tests assert (S101), bind loopback sockets (S104), and carry obviously fake
 # keys as fixtures (S105/S106) on purpose.
 "tests/*" = ["S101", "S104", "S105", "S106"]
+# F811 in ONE file, not across tests/. Importing a fixture from another test
+# module and then naming it as a test parameter is how pytest shares fixtures
+# without a conftest, and ruff reads every such parameter as a redefinition.
+# The ignore is scoped this tightly on purpose: F811 also catches a test
+# function defined twice, which in a test suite means a test that silently
+# stops running -- so the file that turns it off carries
+# `test_no_test_name_in_this_module_is_defined_twice` to put that back.
+"tests/test_launcher_line_invariant.py" = ["S101", "S104", "S105", "S106", "F811"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["tools", "gateway"]

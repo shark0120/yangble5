@@ -1034,7 +1034,20 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
         它建立的是 <code>~/.yangble5/</code> 和底下的 <code>claude/</code>、<code>codex/</code>、
         <code>bin/</code>（權限都是 <code>700</code>），另外在 <code>~/.local/bin</code> 放四個指向
         <code>~/.yangble5/bin</code> 的 symlink（<code>--no-bin-link</code> 可以關掉；那裡如果已經有同名的
-        <em>非</em> symlink 檔案，它會保留原檔並警告，不會覆蓋）。除了這兩個位置，它不寫任何地方。<br>
+        <em>非</em> symlink 檔案，它會保留原檔並警告，不會覆蓋）。這兩個是它<strong>留下來</strong>的位置。<br>
+        <strong>還有第三個位置，而且那裡的東西是暫時的：一個 <code>mktemp -d</code> 建立的暫存目錄。</strong>
+        它在 <code>$TMPDIR</code>（多數 Linux 上就是 <code>/tmp</code>）底下建一個 <code>tmp.</code> 開頭的目錄，
+        建好立刻 <code>chmod 700</code>，然後在裡面放<strong>十個檔案</strong>：每一個要寫出去的設定檔都先在這裡組好再
+        <code>cp</code> 過去，每一次 HTTP 請求與回應也都經過這裡。
+        <strong>其中四個含有你的 API key 明文</strong>——curl 的設定檔（<code>x-api-key</code> 與
+        <code>authorization</code> 那兩行）、<code>/auth/register</code> 的回應本體（金鑰就是從那裡來的）、
+        <code>credentials</code> 的暫存版，以及寫檔用的中繼副本。十個裡面只有兩個另外 <code>chmod 600</code>，
+        其餘沿用你的 <code>umask</code>；真正擋住同機其他使用者的是那個 <code>700</code> 的目錄本身，不是檔案權限。<br>
+        腳本用 <code>trap … EXIT HUP INT TERM</code> 在離開時 <code>rm -rf</code> 掉整個目錄，
+        所以正常跑完（或你按 Ctrl-C）之後那裡是空的。<strong>但 trap 攔不到 <code>SIGKILL</code>，也攔不到斷電或當機</strong>——
+        那種情況下暫存目錄會留在磁碟上；如果剛好中斷在一次 HTTP 呼叫進行中，
+        留下來的 curl 設定檔裡就有你的金鑰。真的發生了，刪掉 <code>$TMPDIR</code> 底下那個
+        <code>tmp.</code> 目錄，然後重跑一次安裝。<a href="verify.html#tmp">verify.html：那十個暫存檔逐項列表</a>（哪一個含金鑰、什麼時候刪）。<br>
         <strong>它不會尋找、讀取或修改你的 shell profile</strong>（<code>.bashrc</code>／<code>.zshrc</code>／
         <code>.profile</code>）—— 腳本裡根本沒有一行去找那些檔案，也不會改你的 <code>PATH</code>。
         <code>~/.local/bin</code> 不在 <code>PATH</code> 上時，它只會把該加的那一行<strong>印出來</strong>讓你自己決定
@@ -1048,7 +1061,9 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
         它會連同「你剛剛把密鑰放進了誰的 transcript」一起警告你；或者自己讀
         <code>grep '^YANGBLE5_API_KEY=' ~/.yangble5/credentials</code>。<br>
         金鑰也<strong>不會</strong>出現在命令列參數裡 —— <code>argv</code> 同一台機器上的其他使用者用
-        <code>ps</code> 就看得到。curl 是從一個 <code>0600</code> 的暫存設定檔把它讀進去的。</li>
+        <code>ps</code> 就看得到。curl 是從一個 <code>0600</code> 的暫存設定檔把它讀進去的 ——
+        就是上一條說的那個暫存目錄裡的檔案。它換掉的是「<code>argv</code> 全機可見」這個問題，
+        代價是金鑰在安裝期間確實會短暫落在磁碟上；每次呼叫結束就刪，上一條也寫了什麼情況下刪不掉。</li>
 
       <li><b>寫一支啟動器，由它設定環境變數。</b>變數只存在於啟動器啟動的那個行程裡，不會寫進你的 shell。
         macOS／Linux 上的 <code>~/.yangble5/env.sh</code> 一共

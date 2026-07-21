@@ -132,6 +132,7 @@ jobs:
       - name: Import every tool
         run: |
           python -c "import tools.cache_bench, tools.cache_stats_sidecar, tools.claude_shim"
+          python -c "import tools.sitecheck"
           python -c "import byok.setup"
 
       - name: Every tool runs as a plain script
@@ -139,6 +140,7 @@ jobs:
           python tools/cache_bench.py --help
           python tools/cache_stats_sidecar.py --help
           python tools/claude_shim.py --help
+          python tools/sitecheck.py --help
           python byok/setup.py --help
 
   offline-self-checks:
@@ -343,6 +345,65 @@ jobs:
 
           sha256sum -c "${digests[@]}"
           echo "${#digests[@]} digests verified"
+
+  published-numbers:
+    # The only automated guard over the numbers on the landing page. It used to
+    # live as a fenced code block inside site/README.md, which is why nothing
+    # ever ran it, and its regex could not see a decimal -- so the headline
+    # 99.53% hit rate was outside the check that claimed to cover it while the
+    # run printed OK. Two lessons are wired in below: the checker is a file, and
+    # CI proves on every push that it can still go red.
+    name: published numbers match the measurement record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The checker's own self-test
+        # Runs first and on its own: exit 2 means the guard is untrustworthy,
+        # which is a different and worse failure than a page finding.
+        run: python tools/sitecheck.py --self-test
+
+      - name: Every figure on the pages is accounted for
+        run: python tools/sitecheck.py
+
+      - name: What the guard actually looked at
+        # "0 problems" is also what a checker that examined nothing prints.
+        run: python tools/sitecheck.py --inventory --quiet
+
+      - name: Negative control -- a bogus hit rate must turn this job red
+        # Without this step the job is one silent tokeniser change away from
+        # being decorative again. Plant 99.54 in a COPY of the pages and require
+        # a non-zero exit that names it. The copy is why there is no "restore"
+        # step: nothing in the working tree was touched, so nothing has to be
+        # put back and no cleanup can discard anything.
+        run: |
+          work="$(mktemp -d)/site"
+          cp -r site "$work"
+          python - "$work" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1]) / "index.html"
+          s = p.read_text(encoding="utf-8")
+          assert "99.53%" in s, "the page no longer publishes the hit rate"
+          p.write_text(s.replace("99.53%", "99.54%", 1), encoding="utf-8", newline="")
+          PY
+          if out=$(python tools/sitecheck.py --quiet --site "$work" 2>&1); then
+            echo "::error::the checker passed a page claiming an unmeasured 99.54% hit rate"
+            echo "$out"
+            exit 1
+          fi
+          echo "$out" | grep -q "99.54" || {
+            echo "::error::the checker failed, but not for the planted figure"
+            echo "$out"; exit 1; }
+          echo "ok    planted 99.54% was reported:"
+          echo "$out" | grep "99.54"
+          git diff --quiet -- site || {
+            echo "::error::the negative control modified the working tree"; exit 1; }
+          echo "ok    working tree untouched"
 
   no-secrets:
     # Cheap, high-value backstop: these tools were ported from an install whose

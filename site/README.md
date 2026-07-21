@@ -154,7 +154,9 @@ index.html    'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c='
 verify.html   'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='
 ```
 
-**These change whenever you edit a `<script>` block.** Recompute with:
+**These change whenever you edit a `<script>` block.** `python tools/sitecheck.py` checks them on
+every push: it recomputes both hashes from the pages and reports any consumer that is missing one
+or still carries a hash no page produces. Recompute them by hand with:
 
 ```sh
 python - <<'PY'
@@ -315,36 +317,79 @@ construct it names:
 ```sh
 python - <<'PY'
 import pathlib, re
-L = pathlib.Path("site/install.sh").read_text(encoding="utf-8", errors="replace").splitlines()
+def load(p):
+    return pathlib.Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
+L = load("site/install.sh")
+P = load("site/install.ps1")
 # (line cited in the table, a pattern that line must still match)
 A = [(132,r'^YB5_HOME='),(151,r'^PRINT_KEY=0'),(127,r'^EX_VERIFY=8'),
+     (184,r'^trap cleanup EXIT HUP INT TERM'),
      (274,r'^sanitize_remote\(\)'),(295,r'^print_remote\(\)'),
      (380,r'--no-bin-link\)'),(381,r'--show-key\)'),(404,r'^refuse_root\(\)'),
+     (539,r'TMPD="\$\(mktemp -d'),(541,r'chmod 700 "\$TMPD"'),
      (556,r'^timestamp\(\)'),(564,r'chmod 700 "\$1"'),
+     (577,r'wf_tmp="\$\{TMPD\}/write'),
      (591,r'if \[ -f "\$wf_dest" \]'),(597,r'wf_nobak.*!= "nobackup"'),
      (621,r'^ensure_machine_salt\(\)'),(636,r'> "\$ems_file"'),
-     (656,r'^http_call\(\)'),(666,r'chmod 600 "\$hc_cfg"'),(694,r'curl --config'),
-     (749,r'^CRED_FILE='),(867,r'^\s+reg_body='),(972,r'ensure_dir "\$YB5_HOME"'),
-     (1019,r'write_file "\$CRED_FILE" 600'),(1039,r'yb5_load_credentials\(\)'),
-     (1102,r'^export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL'),
-     (1108,r'^export CLAUDE_CONFIG_DIR'),(1125,r'^unset ANTHROPIC_API_KEY'),
-     (1128,r'^export CODEX_HOME'),(1131,r'write_file "\$\{YB5_HOME\}/env\.sh" 600'),
-     (1156,r'codex/config\.toml" 600'),(1230,r'INSTALL_INFO" 600 nobackup'),
-     (1250,r'for ll_name in yangble5-claude'),(1265,r'>> ~/\.profile'),
-     (1405,r'http_call GET /health'),(1452,r'"max_tokens":16'),(1467,r'COLD request'),
-     (1489,r'PRINT_KEY" -ne 1'),(1529,r'^print_backups\(\)'),
-     (1540,r'Exempt on purpose'),(1623,r'verification FAILED')]
-bad = [(n, rx, (L[n-1] if 0 < n <= len(L) else "")[:64])
-       for n, rx in A if not re.search(rx, L[n-1] if 0 < n <= len(L) else "")]
-print(f"anchors: {len(A)}  mismatches: {len(bad)}")
+     (656,r'^http_call\(\)'),(662,r'hc_out="\$\{TMPD\}/resp'),
+     (663,r'hc_cfg="\$\{TMPD\}/curlrc'),
+     (666,r'chmod 600 "\$hc_cfg"'),(694,r'curl --config'),
+     (764,r'^CRED_FILE='),(882,r'^\s+reg_body='),(894,r'chmod 600 "\$reg_body"'),
+     (987,r'ensure_dir "\$YB5_HOME"'),
+     (1008,r'cred_tmp="\$\{TMPD\}/credentials'),(1043,r'env_tmp="\$\{TMPD\}/env'),
+     (1150,r'toml_tmp="\$\{TMPD\}/codex'),(1236,r'info_tmp="\$\{TMPD\}/install_info'),
+     (1466,r'v_body="\$\{TMPD\}/probe\.json'),
+     (179,r'^cleanup\(\)'),(578,r'^\s+cat > "\$wf_tmp"'),
+     (682,r'x-api-key: %s'),(683,r'authorization: Bearer %s'),
+     (688,r'output = "%s"'),(1031,r'^\s+\} > "\$cred_tmp"'),
+     (1034,r'write_file "\$CRED_FILE" 600'),(1054,r'yb5_load_credentials\(\)'),
+     (1117,r'^export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL'),
+     (1123,r'^export CLAUDE_CONFIG_DIR'),(1140,r'^unset ANTHROPIC_API_KEY'),
+     (1143,r'^export CODEX_HOME'),(1146,r'write_file "\$\{YB5_HOME\}/env\.sh" 600'),
+     (1171,r'codex/config\.toml" 600'),(1245,r'INSTALL_INFO" 600 nobackup'),
+     (1265,r'for ll_name in yangble5-claude'),(1280,r'>> ~/\.profile'),
+     (1420,r'http_call GET /health'),(1467,r'"max_tokens":16'),(1482,r'COLD request'),
+     (1504,r'PRINT_KEY" -ne 1'),(1544,r'^print_backups\(\)'),
+     (1555,r'Exempt on purpose'),(1638,r'verification FAILED')]
+# install.ps1 is cited by four rows and drifts on its own schedule, so it needs
+# its own anchors — a .sh-only checker reports "0 mismatches" while every
+# Windows row is stale, which is precisely the shape of failure this table is
+# supposed to prevent.
+B = [(129,r'\[switch\] \$ShowKey'),(557,r'Copy-Item -LiteralPath \$Path'),
+     (1073,r'^setlocal'),(1168,r'^set "CLAUDE_CONFIG_DIR'),
+     (1169,r'^set "ANTHROPIC_BASE_URL'),(1181,r'^set "ANTHROPIC_API_KEY="'),
+     (1191,r"yangble5-claude\.cmd'\) -Content"),(1204,r"yangble5-codex\.cmd'\) -Content"),
+     (1235,r'^function Add-Yb5ToPath'),(1236,r'if \(-not \$AddToPath\)'),
+     (1237,r"GetEnvironmentVariable\('Path', 'User'\)"),
+     (1263,r"SetEnvironmentVariable\('Path', \$updated, 'User'\)"),
+     (1266,r'^\}'),(1474,r'if \(-not \$ShowKey\)'),(1486,r'Pass -ShowKey if you'),
+     (1493,r'shown once, and only once'),
+     (1509,r'^function Show-Backups'),(1519,r'restore with:  Copy-Item -LiteralPath')]
+def scan(anchors, lines, tag):
+    bad = [(tag, n, rx, (lines[n-1] if 0 < n <= len(lines) else "")[:64])
+           for n, rx in anchors if not re.search(rx, lines[n-1] if 0 < n <= len(lines) else "")]
+    return bad
+bad = scan(A, L, "install.sh") + scan(B, P, "install.ps1")
+print(f"anchors: {len(A) + len(B)}  mismatches: {len(bad)}")
 for b in bad: print("  MISMATCH", b)
 PY
 ```
 
-Last run: **`anchors: 38  mismatches: 0`**. If it reports mismatches, the numbers moved — re-derive
+Last run: **`anchors: 74  mismatches: 0`**. If it reports mismatches, the numbers moved — re-derive
 them from the diff and update this table. **The claims do not expire when line numbers do.** Only
 change the prose if the *behaviour* changed; a moved line is a bookkeeping fix, a changed behaviour
 is a page edit.
+
+This has already earned its keep once: a fifteen-line comment added to `json_string` moved every
+`install.sh` reference above 694, and the checker reported 28 mismatches in one run. Two lessons
+were paid for there and are worth stating rather than re-learning. **Do not shift these numbers
+with a blind regex** — a `+15` over "every 3-4 digit number" also rewrote `chmod 700` to `chmod
+715` in six places, including inside two of the anchor patterns themselves, which then produced
+*new* mismatches that looked like real drift. Re-derive each one with `grep -n` instead. And
+**line numbers do not belong on the published pages at all**: `index.html` and `verify.html` cite
+function names only, so a drift like that one can make this table stale without making the pages
+lie. A stale line number reads exactly like a correct one; a function name that no longer exists
+does not.
 
 ### How the rows below were verified
 
@@ -375,51 +420,107 @@ Two cautions if you re-run it. The script's `EXIT` trap does `rm -rf "$TMPD"`, s
 NTFS, so **file modes must be read from the `write_file` call sites, not from `ls` output** — the
 mode is the second argument at each call site and is listed per row below.
 
+#### Why the "writes nowhere else" row needs a different method — and what the old one missed
+
+That harness sets `TMPD` by hand and only ever calls `write_config`. It therefore never observes
+what a real run does to the *temp* directory, and for a long time this table certified the
+sentence "writes nowhere except those two locations" with **`find` over the throwaway `$HOME`
+after a run**. That check cannot fail. The temp directory lives under `$TMPDIR` — `/tmp` on most
+systems — which is not under `$HOME`, so a `$HOME`-scoped `find` could not have seen it no matter
+what the installer did. The row was green because the instrument was pointed at the wrong place,
+not because the claim was true. It was not true: a real run creates a `mktemp -d` directory and
+puts ten files in it, four of them containing the API key in plaintext.
+
+The replacement recipe watches the temp directory itself. Files there are created and deleted
+inside the same run, so a `find` afterwards is also useless — it has to be a **concurrent**
+observer:
+
+```sh
+# 1. own the temp root, so nothing else on the machine is in the sample
+export TMPDIR=/tmp/yb5-audit; rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+export HOME=/tmp/yb5-home;   rm -rf "$HOME";   mkdir -p "$HOME"
+
+# 2. record every path that ever exists under it, and keep a copy of the bytes
+python3 - "$TMPDIR" /tmp/yb5-grab &          # poll at ~1ms; see below
+WATCH=$!
+
+# 3. a real end-to-end install
+sh site/install.sh --api "$YB5_TEST_ENDPOINT"
+
+# 4. what did the installer put in the temp directory, and did any of it hold the key?
+wait $WATCH
+grep -rl "$(grep '^YANGBLE5_API_KEY=' "$HOME/.yangble5/credentials" | cut -d= -f2)" /tmp/yb5-grab
+```
+
+The watcher is fifteen lines of `os.walk` + `open()` in a loop; any equivalent works
+(`inotifywait -m -r -e create "$TMPDIR"` on Linux is shorter and does not race). For the
+SIGKILL row, run the same install, wait until `probe.json` appears, `kill -9` the shell, and list
+`$TMPDIR` — nothing has cleaned up, because nothing can.
+
+**What this recipe proves and what it does not.** It proves what *this* run wrote, on *this*
+platform, through *this* code path. It does not prove the set is closed: a path only reached by
+an untaken branch (a `--reinstall`, a registration failure, a BYOK run) is not in the sample. Two
+things narrow that gap rather than close it — every temp path in the script is built from `$TMPD`,
+and `$TMPD` is assigned exactly once (539), so `grep -n '\${TMPD}' site/install.sh` enumerates the
+candidates and the run confirms which of them fire. Combine the two; neither alone is an
+enumeration.
+
+A note on modes, because it bites on Windows checkouts: the watcher's `st_mode` is meaningless on
+NTFS (every file reports `0o666` there, and `chmod 600` followed by `stat` returns `644`). Modes
+must come from the `chmod` calls the run actually executed, which `sh -x` prints:
+`sh -x site/install.sh … 2>&1 | grep -E '^\++ chmod'`. That trace is the source for the "extra
+`chmod`" column in `verify.html`'s temp-file table: exactly two of the ten get one.
+
 ### 1. Isolated directories — no shell profile, no PATH
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| Creates `~/.yangble5/` plus `claude/`, `codex/`, `bin/`, all mode `700` | `write_config` → four `ensure_dir` calls (972–975); `ensure_dir` does `mkdir -p` + `chmod 700` (563–564) | ran `write_config`; the four directories appear and nothing else does |
-| Four symlinks in `~/.local/bin` | `link_launchers` loop over exactly four names (1250–1257); `YB5_LINK_DIR` defined 134 | source read; the loop names are the only four |
-| `--no-bin-link` turns that off | flag 380; guard 1237 | ran with `LINK_BIN=0` → `skipping ~/.local/bin symlinks (--no-bin-link)` |
-| A same-named **non**-symlink there is left alone with a warning | 1252–1255 (`[ -e ] && [ ! -L ]` → `warn` + `continue`) | source read |
-| Writes nowhere except those two locations | every write goes through `write_file` (10 call sites: 1019, 1131, 1156, 1160, 1169, 1184, 1198, 1230, 1272, 1286) or `ensure_machine_salt` (636); all target `$YB5_HOME` (132) or `$YB5_BIN` (133) | enumerated the call sites; `find` over the throwaway `$HOME` after a run shows nothing outside `.yangble5` |
-| Does not look for, read or modify `.bashrc` / `.zshrc` / `.profile` | **absence.** `grep -nE 'bashrc\|zshrc\|\.profile' site/install.sh` → 3 hits, all of them text: header comment 30, banner 455, and the `info` at 1265 that *prints* a suggested line | grep output pasted under Validation below |
-| Does not change `PATH`; only prints the line to add | `link_launchers` 1260 reads `":${PATH}:"`; 1263–1266 `warn`/`info` only | source read — there is no assignment to `PATH` anywhere in the file |
-| Windows only touches the **user** PATH, and only with `-AddToPath` | `install.ps1` `Add-Yb5ToPath` 1198–1229: the no-flag branch 1199–1211 only reads and advises; the single write is 1226, scope `'User'` | source read |
+| Creates `~/.yangble5/` plus `claude/`, `codex/`, `bin/`, all mode `700` | `write_config` → four `ensure_dir` calls (987–990); `ensure_dir` does `mkdir -p` + `chmod 700` (563–564) | ran `write_config`; the four directories appear and nothing else does |
+| Four symlinks in `~/.local/bin` | `link_launchers` loop over exactly four names (1265–1272); `YB5_LINK_DIR` defined 134 | source read; the loop names are the only four |
+| `--no-bin-link` turns that off | flag 380; guard 1252 | ran with `LINK_BIN=0` → `skipping ~/.local/bin symlinks (--no-bin-link)` |
+| A same-named **non**-symlink there is left alone with a warning | 1267–1270 (`[ -e ] && [ ! -L ]` → `warn` + `continue`) | planted a plain file at `~/.local/bin/yangble5-env` and re-ran → `warn … exists and is not a symlink — leaving it alone`, and the planted file's contents were unchanged afterwards |
+| Those two are the locations it **leaves things in** | every *persistent* write goes through `write_file` (10 call sites: 1034, 1146, 1171, 1175, 1184, 1199, 1213, 1245, 1287, 1301) or `ensure_machine_salt` (636); every one of those destinations is `$YB5_HOME` (132) or `$YB5_BIN` (133), and `link_launchers` adds the four symlinks in `$YB5_LINK_DIR` (134) | ran a real install against a stub gateway with a throwaway `$HOME`; `find` afterwards returns exactly 10 files under `.yangble5` plus the 4 links, and nothing else |
+| There is a **third** location, a `mktemp -d` temp directory under `$TMPDIR`, and it is not permanent | `TMPD` assigned once at 539, `chmod 700` at 541; ten paths are built from it — `write.$$` 577, `resp.$$` 662, `curlrc.$$` 663, `curlerr.$$` 694, `register.json` 882, `credentials.$$` 1008, `env.$$` 1043, `codex.$$` 1150, `install_info.$$` 1236, `probe.json` 1466. Note 577: `write_file`'s **own** staging file is in `$TMPD`, so "every write goes through `write_file`, which targets `$YB5_HOME`" was never a closed argument | concurrent watcher over an owned `$TMPDIR` during a real install → **11 paths recorded: 1 directory + exactly those 10 files**, no others |
+| Four of the ten hold the API key in plaintext | `curlrc.$$` gets `header = "x-api-key: %s"` and the `authorization` header (682–683); `resp.$$` is curl's `output` for `/auth/register` (688), i.e. where the key arrives; `credentials.$$` is the staged credentials file (1008–1031); `write.$$` receives its bytes on the way to disk (578) | the watcher kept a copy of every version of every temp file; `grep -l <the key>` over those copies matched **exactly four**: `curlrc`, `resp`, `credentials`, `write`. Confirming the count matters — reading the code suggests two |
+| Only two of the ten get an extra `chmod 600`; the `700` directory is the real boundary | `chmod 600 "$hc_cfg"` (666) and `chmod 600 "$reg_body"` (894). The other eight inherit the process `umask` | `sh -x` trace of a full run: the only `chmod 600` lines naming a `$TMPD` path are those two (real output under Validation) |
+| A `trap` removes the directory on `EXIT HUP INT TERM`, so a normal exit leaves nothing | `cleanup()` 179–183 (`rm -rf "$TMPD"`), `trap` 184 | after a successful run, `find "$TMPDIR" -mindepth 1 \| wc -l` → **0** |
+| `SIGKILL` (and power loss) defeats it, and what is left can contain the key | `SIGKILL` is uncatchable; `register.json` and `probe.json` additionally have no per-file `rm -f` at all, so only the trap ever deletes them | `kill -9` during an in-flight HTTP call → **4 files left** (`curlrc`, `curlerr`, `register.json`, `probe.json`), and `grep` finds the full key in `curlrc`. Real output under Validation |
+| Does not look for, read or modify `.bashrc` / `.zshrc` / `.profile` | **absence.** `grep -nE 'bashrc\|zshrc\|\.profile' site/install.sh` → 3 hits, all of them text: header comment 30, banner 455, and the `info` at 1280 that *prints* a suggested line | grep output pasted under Validation below |
+| Does not change `PATH`; only prints the line to add | `link_launchers` 1275 reads `":${PATH}:"`; 1278–1281 `warn`/`info` only | source read — there is no assignment to `PATH` anywhere in the file |
+| Windows only touches the **user** PATH, and only with `-AddToPath` | `install.ps1` `Add-Yb5ToPath` 1235–1266: the no-flag branch 1236–1248 only reads and advises; the single write is 1263, and every one of the three `[Environment]` calls in the function passes scope `'User'` (1237, 1254, 1263) | source read |
 
 ### 2. The key is not printed
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| **(hero `cmd-foot`)** The installer does not print the API key by default | `PRINT_KEY=0` (151); `print_key_once` 1489–1506 takes the "NOT printed" branch | ran `print_key_once` — real output pasted under Validation |
-| Key is written to `~/.yangble5/credentials`, mode `0600` | `CRED_FILE` 749; `write_file "$CRED_FILE" 600` (1019) | ran `write_config`; the file contains the four `YANGBLE5_*` lines and nothing else |
-| What is printed is the path, not the key | 1494–1497, which also prints the `grep '^YANGBLE5_API_KEY=' …` line | in the captured output |
-| `--show-key` / `-ShowKey` opts back in, with a warning about the agent transcript | 381 / 1509–1523; `install.ps1` 129, 1437, 1456–1466 | source read |
+| **(hero `cmd-foot`)** The installer does not print the API key by default | `PRINT_KEY=0` (151); `print_key_once` 1504–1521 takes the "NOT printed" branch | ran `print_key_once` — real output pasted under Validation |
+| Key is written to `~/.yangble5/credentials`, mode `0600` | `CRED_FILE` 764; `write_file "$CRED_FILE" 600` (1034) | ran `write_config`; the file contains the four `YANGBLE5_*` lines and nothing else |
+| What is printed is the path, not the key | 1509–1512, which also prints the `grep '^YANGBLE5_API_KEY=' …` line | in the captured output |
+| `--show-key` / `-ShowKey` opts back in, with a warning about the agent transcript | 381 / 1524–1538; `install.ps1` 129, 1474, 1486, 1493 | ran the POSIX side with `--show-key`: the key is printed under `Your yangble5 API key — shown once, and only once (--show-key)`, followed by `You asked for this with --show-key. If an AI agent ran the installer, that key is now in its transcript.` The Windows equivalent is source-read |
 | The key never appears in `argv`; curl reads it from a `0600` config file | `http_call` 656–691: `chmod 600 "$hc_cfg"` (666), headers written into the file (682–683), `curl --config "$hc_cfg"` (694) | source read — the key is never an argument to any command |
 
 ### 3. Eleven exports and one unset
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| `~/.yangble5/env.sh` exports **eleven** variables and unsets one | generated 1028–1132: 1102 (3 names on one line), 1108–1111 (4), 1119–1121 (3), 1128 (1) = 11; `unset` at 1125 | generated the real file and counted: **`exports total: 11`, `unsets total: 1`** (output under Validation) |
+| `~/.yangble5/env.sh` exports **eleven** variables and unsets one | generated 1043–1147: 1117 (3 names on one line), 1123–1126 (4), 1134–1136 (3), 1143 (1) = 11; `unset` at 1140 | generated the real file and counted: **`exports total: 11`, `unsets total: 1`** (output under Validation) |
 | The eleven break down 3 `YANGBLE5_*` / 4 Claude Code / 3 numeric / 1 `CODEX_HOME` | same lines, in that order | the ordered name list is pasted under Validation |
-| Values live only in the launcher's process | launchers source `env.sh` then `exec` (1175+1181, 1190+1195); they are never appended to any rc file | source read |
-| `ANTHROPIC_API_KEY` is unset because it outranks `ANTHROPIC_AUTH_TOKEN` | 1123–1125 | source read |
-| Windows uses the same names split across two `.cmd` launchers under `setlocal` | `install.ps1` 1069 (`setlocal`), 1131–1144 (claude), 1158 (codex), 1144 clears `ANTHROPIC_API_KEY` | source read |
-| **(verify.html)** `YANGBLE5_KEY_ID` is assigned but not exported, so it is not one of the eleven | assigned 1058, absent from the `export` at 1102 | in the generated file: it appears in `yb5_load_credentials`, not in any `export` line |
-| **(verify.html)** `credentials` is parsed as `KEY=VALUE`, never sourced | `yb5_load_credentials` 1039–1062 (`while IFS= read -r`) | in the generated file |
-| **(verify.html)** three of those values are re-checked against the same allow-lists, exit `6` on failure | 1068–1100: `YANGBLE5_API` (twice), `YANGBLE5_MODEL`, `YANGBLE5_API_KEY` (twice) — `YANGBLE5_KEY_ID` is **not** re-checked | counted in the generated file. The page said "four" during drafting and was corrected to "three" by this row |
+| Values live only in the launcher's process | launchers source `env.sh` then `exec` (1190+1196, 1205+1210); they are never appended to any rc file | source read |
+| `ANTHROPIC_API_KEY` is unset because it outranks `ANTHROPIC_AUTH_TOKEN` | 1138–1140 | source read |
+| Windows uses the same names split across two `.cmd` launchers under `setlocal` | `install.ps1` 1073 (`setlocal`), 1168–1181 (the shared body: `CLAUDE_CONFIG_DIR` 1168, `ANTHROPIC_BASE_URL` 1169), written out at 1191 (claude) and 1204 (codex); 1181 clears `ANTHROPIC_API_KEY` with `set "ANTHROPIC_API_KEY="` | source read |
+| **(verify.html)** `YANGBLE5_KEY_ID` is assigned but not exported, so it is not one of the eleven | assigned 1073, absent from the `export` at 1117 | in the generated file: it appears in `yb5_load_credentials`, not in any `export` line |
+| **(verify.html)** `credentials` is parsed as `KEY=VALUE`, never sourced | `yb5_load_credentials` 1054–1077 (`while IFS= read -r`) | in the generated file |
+| **(verify.html)** three of those values are re-checked against the same allow-lists, exit `6` on failure | 1083–1115: `YANGBLE5_API` (twice), `YANGBLE5_MODEL`, `YANGBLE5_API_KEY` (twice) — `YANGBLE5_KEY_ID` is **not** re-checked | counted in the generated file. The page said "four" during drafting and was corrected to "three" by this row |
 
 ### 4. Its own Codex config — not yours
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| Writes `~/.yangble5/codex/config.toml` (mode `600`) | 1135–1156 | generated file inspected |
-| Sets `model_provider`, `base_url`, context/output ceilings, `env_key` | 1143, 1150, 1147, 1148, 1152 | all five appear in the generated TOML |
-| Points Codex at it with `CODEX_HOME` | 1128 | in the generated `env.sh` |
-| **Does not open, read or modify `~/.codex/config.toml`** | **absence.** `grep -nE '~/\.codex\|~/\.claude' site/install.sh` → 6 hits, all of them prose in comments or printed text (25, 452, 1107, 1139, 1164, 1320). No file operation names either path | grep output pasted under Validation |
-| Plain `claude` keeps your login because `CLAUDE_CONFIG_DIR` is separate | 1108, plus the `claude/README.txt` marker 1160–1166 | generated file inspected |
+| Writes `~/.yangble5/codex/config.toml` (mode `600`) | 1150–1171 | generated file inspected |
+| Sets `model_provider`, `base_url`, context/output ceilings, `env_key` | 1158, 1165, 1162, 1163, 1167 | all five appear in the generated TOML |
+| Points Codex at it with `CODEX_HOME` | 1143 | in the generated `env.sh` |
+| **Does not open, read or modify `~/.codex/config.toml`** | **absence.** `grep -nE '~/\.codex\|~/\.claude' site/install.sh` → 6 hits, all of them prose in comments or printed text (25, 452, 1122, 1154, 1179, 1335). No file operation names either path | grep output pasted under Validation |
+| Plain `claude` keeps your login because `CLAUDE_CONFIG_DIR` is separate | 1123, plus the `claude/README.txt` marker 1175–1181 | generated file inspected |
 
 ### 5. Backups, and the one deliberate exemption
 
@@ -427,30 +528,31 @@ mode is the second argument at each call site and is listed per row below.
 |---|---|---|
 | Existing file with different content → `cp -p` to `<file>.bak-<timestamp>` | `write_file` 591–603; `timestamp()` 556 (`date +%Y%m%d-%H%M%S`) | ran `write_config` twice with changed values; two real `.bak-…` files were produced |
 | Identical content → prints `unchanged`, no backup | 592–595 | in the captured second-run output |
-| Every backup is printed at the end with the exact restoring command | `print_backups` 1529–1543, called from `next_steps` 1548 | real output pasted under Validation — one `restore with: cp -p "…" "…"` line per backup |
-| Nothing backed up → says so instead of staying silent | 1530–1533 | ran `print_backups` with `BACKUPS=""` → `no existing file was overwritten, so nothing was backed up` |
-| `INSTALL_INFO` is the **only** file exempt from backup, and the script says so | `write_file`'s third argument (571–572, 597); `grep -c 'nobackup'` on the call sites → the single site is 1230; the exemption text is printed at 1540–1542 | the second run rewrote `INSTALL_INFO` and it is **absent** from the printed backup list, with the exemption paragraph printed underneath |
+| Every backup is printed at the end with the exact restoring command | `print_backups` 1544–1558, called from `next_steps` 1563 | real output pasted under Validation — one `restore with: cp -p "…" "…"` line per backup |
+| Nothing backed up → says so instead of staying silent | 1545–1548 | ran `print_backups` with `BACKUPS=""` → `no existing file was overwritten, so nothing was backed up` |
+| `INSTALL_INFO` is the **only** file exempt from backup, and the script says so | `write_file`'s third argument (571–572, 597); `grep -c 'nobackup'` on the call sites → the single site is 1245; the exemption text is printed at 1555–1557 | the second run rewrote `INSTALL_INFO` and it is **absent** from the printed backup list, with the exemption paragraph printed underneath |
 | `machine-id` is created once and never overwritten, so it is never a backup candidate | `ensure_machine_salt` 621–638 returns early at 624–628 when the file exists | source read |
-| Windows prints `Copy-Item -LiteralPath … -Destination … -Force` | `install.ps1` `Show-Backups` 1472–1486 | source read |
+| Windows prints `Copy-Item -LiteralPath … -Destination … -Force` | `install.ps1` `Show-Backups` 1509; the restore line is emitted at 1519 (the backup itself is taken at 557) | source read |
 
 ### 6. One real call, honestly reported
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| `GET /health` → `GET /v1/models` → `POST /v1/messages` with `max_tokens` 16 | `verify()` 1405, 1430, 1451–1456 (`"max_tokens":16` at 1452) | source read |
-| On success it prints the status and time **and says the call was cold, 0%** | 1462–1470; the cold-cache disclosure is 1467–1468 | source read |
-| On failure it does not call it a success; exit code 8 | 1473–1478; `EX_VERIFY=8` (127); `main` 1623–1626 | source read |
+| `GET /health` → `GET /v1/models` → `POST /v1/messages` with `max_tokens` 16 | `verify()` 1420, 1445, 1466–1471 (`"max_tokens":16` at 1467) | source read |
+| On success it prints the status and time **and says the call was cold, 0%** | 1477–1485; the cold-cache disclosure is 1482–1483 | source read |
+| On failure it does not call it a success; exit code 8 | 1488–1493; `EX_VERIFY=8` (127); `main` 1638–1641 | pointed the installer at a stub answering `/auth/register`, `/health` and `/v1/models` with `200` and `/v1/messages` with `500` → `exit=8`, and the output says `the config was written, but the stack did NOT answer. Not calling this a success.` |
 | Server text is stripped of ANSI/control bytes, flattened, capped, prefixed `server says>` | `sanitize_remote` 274–292, `print_remote` 295–301 | unit-tested by `tests/test_installer_validation.py` against this same file |
 
 ### The "never" list
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| Refuses to run as root or under `sudo`, exit 2 | `refuse_root` 404–425 (`id -u` = 0 or `$SUDO_USER` set) | source read |
+| Refuses to run as root or under `sudo`, exit 2 | `refuse_root` 404–425 (`id -u` = 0 or `$SUDO_USER` set) | ran with `SUDO_USER=someone` → `exit=2`, ending `If you are an AI agent: do not retry this with sudo. Drop privileges instead.` The `id -u` half is source-read: this harness cannot be root |
 | No background service, autostart or daemon | **absence.** `grep -nE 'systemd\|launchd\|launchctl\|crontab' site/install.sh` → no matches | grep output pasted under Validation |
 | Downloads and executes no extra code; no `eval` | **absence.** `grep -nE '\beval\b' site/install.sh` → 2 hits, both comments (70, 707). The only network calls are `http_call`, whose URL is always `$YB5_API` + a fixed path | grep output pasted under Validation |
-| Registration sends only the fingerprint, a label made of its first 32 chars, and any e-mail / invite you passed | `reg_body` 867–878 — a four-field JSON body, two of them optional | source read; the body is built with `printf`, field by field |
-| Does not touch `~/.ssh`, browser data, keychains | follows from the two-destination row in §1 | — |
+| Registration sends only the fingerprint, a label made of its first 32 chars, and any e-mail / invite you passed | `reg_body` 882–893 — a four-field JSON body, two of them optional | source read; the body is built with `printf`, field by field |
+| Does not touch `~/.ssh`, browser data, keychains | **absence** for the tool names (`grep -nE 'security find-generic\|secret-tool\|Keychain\|\.ssh' site/install.sh` → no matches), plus the write enumeration in §1 | planted canary files at `~/.claude/settings.json`, `~/.codex/config.toml` and `~/.ssh/id_ed25519`, ran a full install, re-hashed: all three `sha256` values identical before and after. Real output below |
+| Sends no prompt, code or file contents; registration carries only the two fields | `reg_body` 882–893 | captured the actual request body off the wire during a real run: `{"machine_id":"<64 hex>","label":"installer-<first 32 of it>"}` — no third field, because neither `--email` nor `--invite` was passed |
 
 ---
 
@@ -522,248 +624,362 @@ mode is the second argument at each call site and is listed per row below.
 
 ## Validation
 
-There is no test runner for static files. The check below is the whole of it: stdlib
-`html.parser` only, no dependencies, run from the repo root. It verifies tag balance, duplicate
-ids, resolution of every in-page anchor / `aria-controls` / `aria-labelledby` / `data-copy-*` /
-`getElementById` target, absence of external subresources and inline event handlers, exactly one
-`<style>` and one `<script>` per page, `<html lang>`, `<button type>`, and that every
-3-or-more-digit figure rendered as page text is either in the authoritative measurement record —
-recomputed here, including every derived total the results table prints — or in an explicit
-allow-list where each entry carries its reason. It exits non-zero on any finding.
+There is no test runner for static files, so the checker is one: **`tools/sitecheck.py`**, a
+committed, stdlib-only file that runs in CI on every push (job `published-numbers`) and under
+`pytest` (`tests/test_sitecheck.py`). It verifies tag balance, duplicate ids, resolution of every
+in-page anchor / `aria-controls` / `aria-labelledby` / `data-copy-*` / `getElementById` target,
+absence of external subresources and inline event handlers, exactly one `<style>` and one
+`<script>` per page, `<html lang>`, `<button type>`, that the CSP hashes in `deploy/` and in this
+file are the hashes the current inline scripts actually produce, and that **every figure rendered
+as page text — decimals included — is either recomputed from the authoritative measurement record
+or in an explicit allow-list where each entry carries its reason**.
+
+```
+python tools/sitecheck.py              # self-test, then check the pages
+python tools/sitecheck.py --self-test  # only the checker's own self-test
+python tools/sitecheck.py --inventory  # every figure in scope and where it comes from
+```
+
+Exit codes are three, not two: `0` clean, `1` a page has a finding, **`2` the checker's own
+self-test failed** — in which case no page result is printed at all, because a checker that cannot
+be shown to fail certifies nothing.
+
+### What this section used to say, and why it was false
+
+The paragraph above used to describe a checker that lived **only as a fenced code block in this
+file**. Nothing ever ran it, and its numeral guard could not fail:
 
 ```python
-# save as sitecheck.py at the repo root, then:  python sitecheck.py
-import pathlib, re, sys
-from html.parser import HTMLParser
-
-SITE = pathlib.Path("site")
-FILES = ("index.html", "verify.html")
-
-VOID = {"area","base","br","col","embed","hr","img","input","link","meta",
-        "param","source","track","wbr"}
-
-# ── the authoritative measurement record (the ONLY permitted measurements) ──
-PROMPT = [748918, 748933, 748948, 748963]          # rounds 1-4
-CACHED = [0, 745438, 745430, 745422]               # rounds 1-4
-ROUND_MS = [21410, 10753, 23457, 22381]            # rounds 1-4
-
-MEASURED = {str(n) for n in PROMPT + CACHED + ROUND_MS}
-# every derived total the page prints, recomputed here rather than trusted
-_warm_p = sum(PROMPT[1:]);  _warm_c = sum(CACHED[1:])
-_all_p  = sum(PROMPT);      _all_c  = sum(CACHED)
-for n in (_warm_p, _warm_c, _warm_p - _warm_c,
-          _all_p,  _all_c,  _all_p - _all_c,
-          *[PROMPT[i] - CACHED[i] for i in range(4)]):
-    MEASURED.add(str(n))
-MEASURED |= {
-    "9953", "000", "7460",                         # 99.53%, 0.00%, 74.6%
-    "749",                                         # ~749K prefix
-    "2026",                                        # measurement date 2026-07-21
-    "7123",                                        # CLIProxyAPI 7.1.23
-    "7293",                                        # engine >= 7.2.93
-}
-
-# ── non-measurement numerals that legitimately appear as page text ──────────
-NON_MEASUREMENT = {
-    "1000000": "CLAUDE_CODE_MAX_CONTEXT_TOKENS / model_context_window default written by the installer",
-    "65536":   "CLAUDE_CODE_MAX_OUTPUT_TOKENS default written by the installer",
-    "600000":  "API_TIMEOUT_MS default written by the installer",
-    "1102":    "install.sh line reference (start of the env.sh export block)",
-    "1128":    "install.sh line reference (end of the env.sh export block)",
-    "0600":    "file mode",
-    "0700":    "file mode",
-    "700":     "directory mode",
-    "600":     "file mode",
-    "256":     "SHA256 / sha256",
-    "200":     "HTTP 200",
-    "400":     "HTTP 400",
-    "401":     "HTTP 401",
-    "402":     "HTTP 402",
-    "403":     "HTTP 403",
-    "404":     "HTTP 404",
-    "409":     "HTTP 409",
-    "429":     "HTTP 429",
-    "501":     "HTTP 501",
-    "502":     "HTTP 502",
-    "503":     "HTTP 503",
-    "8320":    "local gateway port in the BYOK example",
-    "8318":    "local engine port",
-    "8319":    "stats sidecar port",
-    "127":     "127.0.0.1",
-    "2193":    "Claude Code v2.1.193 (env var availability)",
-    "193":     "Claude Code v2.1.193 (env var availability)",
-    "443":     "TLS port",
-    "360":     "360px viewport note",
-    "2023":    "anthropic-version: 2023-06-01",
-    "2024":    "quoted wrong answer from the Gemini upstream (no live web search)",
-    "2025":    "quoted wrong answer from the Grok upstream (no live web search)",
-}
-
-class Doc(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.stack, self.errors = [], []
-        self.ids, self.dupes = set(), []
-        self.refs = []          # (kind, target)
-        self.external = []
-        self.inline_handlers = []
-        self.styles = self.scripts = 0
-        self.lang = None
-        self.buttons_no_type = 0
-        self.text = []
-        self._skip = 0
-
-    def handle_starttag(self, tag, attrs):
-        a = dict(attrs)
-        if tag == "html":
-            self.lang = a.get("lang")
-        if tag == "style":
-            self.styles += 1
-        if tag == "script":
-            self.scripts += 1
-            if a.get("src"):
-                self.external.append(f"script src={a['src']}")
-        if tag in ("style", "script"):
-            self._skip += 1
-        if tag == "button" and "type" not in a:
-            self.buttons_no_type += 1
-        if a.get("id"):
-            if a["id"] in self.ids:
-                self.dupes.append(a["id"])
-            self.ids.add(a["id"])
-        for k, v in a.items():
-            if k.startswith("on"):
-                self.inline_handlers.append(f"<{tag} {k}=>")
-        for k in ("aria-controls", "aria-labelledby", "data-copy-target",
-                  "data-copy-status"):
-            if a.get(k):
-                for tok in a[k].split():
-                    self.refs.append((k, tok))
-        href = a.get("href", "")
-        if href.startswith("#") and len(href) > 1:
-            self.refs.append(("href", href[1:]))
-        # only *subresources* count: a canonical/alternate <link> and ordinary
-        # <a href> are navigations, not fetches the browser makes for us.
-        subresource = tag in ("img", "script", "iframe", "source", "video", "audio") or (
-            tag == "link" and a.get("rel", "").lower() not in ("canonical", "alternate", "author", "license"))
-        for k in ("src", "href"):
-            v = a.get(k, "")
-            if subresource and re.match(r"^(https?:)?//", v):
-                self.external.append(f"<{tag} {k}={v}>")
-        if tag not in VOID:
-            self.stack.append((tag, self.getpos()))
-
-    def handle_endtag(self, tag):
-        if tag in VOID:
-            return
-        if tag in ("style", "script"):
-            self._skip -= 1
-        if not self.stack:
-            self.errors.append(f"line {self.getpos()[0]}: stray </{tag}>")
-            return
-        if self.stack[-1][0] == tag:
-            self.stack.pop()
-        else:
-            t, p = self.stack[-1]
-            self.errors.append(f"line {self.getpos()[0]}: </{tag}> closes <{t}> opened line {p[0]}")
-
-    def handle_data(self, data):
-        if self._skip == 0:
-            self.text.append(data)
-
-def check(fname):
-    src = (SITE / fname).read_text(encoding="utf-8")
-    d = Doc(); d.feed(src); d.close()
-    problems = []
-
-    problems += d.errors
-    problems += [f"<{t}> never closed (line {p[0]})" for t, p in d.stack]
-    problems += [f"duplicate id: {i}" for i in d.dupes]
-
-    for kind, target in d.refs:
-        if target not in d.ids:
-            problems.append(f"{kind}=\"{target}\" has no matching id")
-
-    for m in re.finditer(r'getElementById\(\s*"([^"]+)"\s*\)', src):
-        if m.group(1) not in d.ids:
-            problems.append(f'getElementById("{m.group(1)}") has no matching id')
-
-    problems += [f"external subresource: {e}" for e in d.external]
-    problems += [f"inline event handler: {h}" for h in d.inline_handlers]
-    for m in re.finditer(r"@import|url\(\s*['\"]?https?:", src):
-        problems.append(f"external CSS reference: {m.group(0)}")
-
-    if d.styles != 1:
-        problems.append(f"expected exactly 1 <style>, found {d.styles}")
-    if d.scripts != 1:
-        problems.append(f"expected exactly 1 <script>, found {d.scripts}")
-    if not d.lang:
-        problems.append("<html> has no lang attribute")
-    if d.buttons_no_type:
-        problems.append(f"{d.buttons_no_type} <button> without type=")
-
-    text = "".join(d.text)
-    unknown = {}
-    # A "figure" is a standalone numeral: not glued to a letter (i5-11400H,
-    # shark0120, sha256 are identifiers, not figures) and thousands separators
-    # are part of the number, not a boundary.
-    NUM = re.compile(r"(?<![0-9A-Za-z_.])\d{1,3}(?:,\d{3})+(?![0-9A-Za-z_])"
-                     r"|(?<![0-9A-Za-z_.])\d+(?![0-9A-Za-z_])")
-    for m in NUM.finditer(text):
-        raw = m.group(0)
-        part = raw.replace(",", "")
-        if len(part) < 3:
-            continue
-        bare = part.lstrip("0") or part
-        if part in MEASURED or bare in MEASURED:
-            continue
-        if part in NON_MEASUREMENT or bare in NON_MEASUREMENT:
-            continue
-        unknown.setdefault(part, raw)
-    for n, ctx in sorted(unknown.items()):
-        problems.append(f"unaccounted 3+ digit figure: {n}  (as written: {ctx})")
-
-    return problems
-
-rc = 0
-for f in FILES:
-    p = check(f)
-    if p:
-        rc = 1
-        print(f"{f}: {len(p)} PROBLEM(S)")
-        for x in p:
-            print(f"    - {x}")
-    else:
-        print(f"{f}: OK")
-sys.exit(rc)
+# The pattern this file replaces.  Kept ONLY so the self-test can prove the
+# invariant assertion fires on it.  Never used to check a page.
+HISTORICAL_BROKEN = re.compile(
+    r"(?<![0-9A-Za-z_.])\d{1,3}(?:,\d{3})+(?![0-9A-Za-z_])"
+    r"|(?<![0-9A-Za-z_.])\d+(?![0-9A-Za-z_])"
+)
 ```
 
-Real output, current `site/` contents:
+That negative lookbehind contains `.`, so a decimal was cut in half. In `99.53` it matched `99`
+(discarded as under three digits) and then refused to match `53` because the character before it
+was a `.`. **Every percentage on the site was outside the only automated check over published
+numbers, including the headline 99.53% hit rate** — the class every claim that matters belongs
+to — and the run still printed `OK`.
+
+The tell was in the allow-list. It carried `"9953"`, `"000"` and `"7460"` with the comment
+`# 99.53%, 0.00%, 74.6%` — entries written by someone who assumed the pattern stripped the dot
+rather than split on it. No page text can ever produce those strings. Three unreachable entries
+sat there because nobody had ever watched the guard fail. `749K`, the published prefix size,
+escaped by a different route: it ends in a letter, so the identifier rule waved it through as a
+name.
+
+### Three properties that make it able to fail now
+
+**1. The self-test runs before the check is trusted.** Ten must-fail cases and nine must-pass
+cases, driven through the same `check_page()` the site run calls, against a structurally clean
+synthetic page so the only findings that can appear are numeral findings. A must-fail case that
+does not fail exits `2` and suppresses the page report entirely.
+
+**2. The tokeniser has an invariant, and the invariant is itself tested.**
+*The set of characters consumed must equal the set of characters checked.* `scan_figures` does not
+hunt for number-shaped things; it partitions the page text into maximal `[0-9A-Za-z_.,]` atoms,
+classifies every atom containing a digit, and then asserts that every ASCII digit landed inside an
+atom it produced. A future edit that narrows the pattern cannot silently reopen the hole — the
+digits it stops covering are reported by name, with their offsets. The self-test proves that
+assertion is alive by running the scanner with the broken pattern above and requiring it to
+complain.
+
+```python
+# A digit-leading atom ending in one of these is a figure with a unit, not an
+# identifier.  Without this, `749K` — the published prefix size — would be
+# waved through as a name, which is how it escaped the previous checker.
+UNITS = ("KB", "MB", "GB", "ms", "K", "M", "G", "B", "h", "s", "x")
+
+# Maximal run of identifier/number characters.  Not a number pattern: a
+# partition.  See the module docstring.
+ATOM = re.compile(r"[0-9A-Za-z_](?:[0-9A-Za-z_.,]*[0-9A-Za-z_])?")
+UNIT_FIGURE = re.compile(r"^[0-9][0-9.,]*(" + "|".join(UNITS) + r")$")
+COMMA_FORM = re.compile(r"^[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?$")
+
+# The pattern this file replaces.  Kept ONLY so the self-test can prove the
+# invariant assertion fires on it.  Never used to check a page.
+HISTORICAL_BROKEN = re.compile(
+    r"(?<![0-9A-Za-z_.])\d{1,3}(?:,\d{3})+(?![0-9A-Za-z_])"
+    r"|(?<![0-9A-Za-z_.])\d+(?![0-9A-Za-z_])"
+)
+```
+
+**3. Measurements are recomputed, not listed.** A hit rate is accepted because the arithmetic
+produces it, at the precision the page printed. Nothing rounds to 99.54, so 99.54 cannot pass — it
+is not a string missing from a list, it is a number the record does not contain.
+
+```python
+# ── percentages, recomputed rather than allow-listed ────────────────────────
+# A hit rate is accepted only if some authoritative cached/prompt pair, printed
+# to the same number of decimal places the page used, is exactly that string.
+# No pair rounds to 99.54 at any precision, so 99.54 cannot pass.
+PERCENT: dict[str, str] = {}
+_PAIRS = [(f"round {i + 1}", CACHED[i], PROMPT[i]) for i in range(4)] + [
+    ("warm token-weighted", _WARM_C, _WARM_P),
+    ("all four rounds", _ALL_C, _ALL_P),
+]
+for _label, _c, _p in _PAIRS:
+    _r = 100.0 * _c / _p
+    for _dp in (1, 2):
+        PERCENT.setdefault(f"{_r:.{_dp}f}", f"{_label} hit rate = {_c}/{_p} = {_r:.4f}%")
+```
+
+The allow-list is held to the same standard from the other side: **an entry that nothing on the
+site matches is reported as a finding**. A wish list cannot masquerade as a guard.
+
+### Real output
 
 ```
-$ python sitecheck.py
-index.html: OK
-verify.html: OK
+$ python tools/sitecheck.py --self-test
+self-test: the guard must fail on a bogus figure
+    PASS  must-fail  bogus hit rate 99.54
+              -> unaccounted figure: 99.54  (as written: 99.54)
+    PASS  must-fail  bogus cold hit rate 0.01
+              -> unaccounted figure: 0.01  (as written: 0.01)
+    PASS  must-fail  bogus integer
+              -> unaccounted figure: 12345  (as written: 12345)
+    PASS  must-fail  bogus prompt total
+              -> unaccounted figure: 748919  (as written: 748,919)
+    PASS  must-fail  bogus derived warm cached total
+              -> unaccounted figure: 2236291  (as written: 2,236,291)
+    PASS  must-fail  bogus round-trip ms
+              -> unaccounted figure: 21411  (as written: 21,411)
+    PASS  must-fail  bogus prefix shorthand
+              -> unaccounted figure: 750K  (as written: 750K)
+    PASS  must-fail  bogus context claim
+              -> unaccounted figure: 3M  (as written: 3M)
+    PASS  must-fail  malformed thousands separator
+              -> malformed thousands separator: '74,8918' — grouped digits must be 1-3 then groups of exactly 3
+    PASS  must-fail  full-width digits evade an ASCII scanner
+              -> INVARIANT: non-ASCII digit '９' (U+FF19) in page text at offset 2; the figure scanner only understands ASCII digits, so this numeral would never be checked
+self-test: the guard must pass on the authoritative record
+    PASS  must-pass  authoritative warm hit rate
+    PASS  must-pass  authoritative cold hit rate
+    PASS  must-pass  authoritative all-four hit rate
+    PASS  must-pass  authoritative prompt/cached/ms
+    PASS  must-pass  prefix shorthand
+    PASS  must-pass  config figures
+    PASS  must-pass  versions
+    PASS  must-pass  identifiers are not figures
+    PASS  must-pass  short bare integers are not figures
+self-test: the consumed-equals-checked invariant must itself fail when the tokeniser narrows
+    PASS  invariant  historical pattern flagged
+              -> INVARIANT VIOLATED: the set of characters consumed is not the set checked — 2 digit(s) fell outside every token the scanner produced: '5' at offset 7 
+self-test: an unmatched allow-list entry must be reported
+    PASS  stale-allow  all 20 entries reported when nothing matches them
+self-test: a stale or missing CSP hash must be reported
+    PASS  csp  correct
+    PASS  csp  a bare hash in prose is not a directive
+    PASS  csp  stale hash beside the right one
+              -> cfg: stale inline-script hash sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= — no page produces it, so the deployed CSP would block the script it names
+    PASS  csp  hash missing entirely
+              -> cfg: missing the current index.html inline-script hash sha256-bhHHL3z2vDgxUt0W3dWQOrprscmda2Y5pLsLg4GF+pI= — recompute and update this file
+self-test: 99.54 must not be reachable from the record at any printed precision
+    PASS  record  99.53 provenance: round 2 hit rate = 745438/748933 = 99.5333%
+self-test: OK
+$ echo exit=$?
 exit=0
 ```
 
-Two things that check cannot see, and how they were covered:
+```
+$ python tools/sitecheck.py --quiet
+index.html: OK
+verify.html: OK
+CSP hashes: OK
+allow-list: OK (20 entries, all matched)
+$ echo exit=$?
+exit=0
+```
+
+The negative control, which CI runs on every push. It copies `site/` to a temp directory, plants
+`99.54%` in the copy, and requires a red run naming it. The copy is why there is no restore step —
+`git checkout -- site/index.html` as cleanup silently discards whatever else was uncommitted in
+that file, which is a destructive way to run a read-only check.
+
+```
+$ work="$(mktemp -d)/site"; cp -r site "$work"
+$ sed -i '0,/99.53%/s//99.54%/' "$work/index.html"
+$ python tools/sitecheck.py --quiet --site "$work"
+index.html: 1 PROBLEM(S)
+    - unaccounted figure: 99.54  (as written: 99.54)
+verify.html: OK
+allow-list: OK (20 entries, all matched)
+$ echo exit=$?
+exit=1
+```
+
+(`--site` checks a copy, so the CSP row — whose consumers live in `deploy/` and are not copied —
+is skipped there.)
+
+And the other direction: with the historical pattern restored as the default tokeniser, the
+invariant names the exact digits that stopped being checked, and the run refuses to report on the
+pages at all.
+
+```
+$ python tools/sitecheck.py
+...
+SELF-TEST FAILED — the checker is not trustworthy, so no page result is reported.
+  - MUST-PASS CASE FAILED: authoritative warm hit rate: payload '暖輪 99.53% 命中' produced
+    ["INVARIANT VIOLATED: the set of characters consumed is not the set checked — 2 digit(s)
+      fell outside every token the scanner produced: '5' at offset 8 ...; '3' at offset 9 ..."]
+  - MUST-PASS CASE FAILED: prefix shorthand: payload '~749K 前綴' produced
+    ["INVARIANT VIOLATED: ... 3 digit(s) fell outside every token ..."]
+$ echo exit=$?
+exit=2
+```
+
+### What the fixed tokeniser sees that the old one could not
+
+Seven figures were structurally invisible. Six were decimals or dotted versions; the seventh wore
+a unit suffix. Nothing moved the other way — the old pattern invented no tokens the new one
+misses.
+
+| Figure | Where it appears | Why it was invisible | Ruled in by |
+|---|---|---|---|
+| `99.53` | hero, diagram, results table, caveats | lookbehind `.` split it into `99` (too short) + nothing | recomputed: 745438/748933 = 99.5333% |
+| `0.00` | cold row, diagram, caveats | same | recomputed: 0/748918 |
+| `74.6` | all-four-rounds row, caveats | same | recomputed: 2236290/2995762 = 74.6485% |
+| `749K` | hero, mechanism section | ends in a letter, so the identifier rule skipped it | derived: every round's prompt total rounds to 749K |
+| `3.14.3` | measurement conditions | same as the decimals | allow-listed: the Python the run was made on |
+| `7.1.23` | mechanism, measurement conditions | same | allow-listed: the engine version under test |
+| `7.2.93` | claims table | same | allow-listed: the version that retired the shim workaround |
+
+**A second hole, found by the self-test rather than by reading.** `"".join(text_nodes)` fused the
+end of one text node against the start of the next, so a figure opening a node glued onto the
+previous node's last letter and was reclassified as a name. The self-test's own scaffold page
+tripped it: `<title>t</title>` followed by `12345` became the atom `t12345`, and six must-fail
+cases came back clean. On the real pages it was hiding only a one-digit `5`, so nothing published
+was affected — but the mechanism is the same consumed-is-not-checked failure in a different place,
+and it was present in the version being replaced. Text nodes are now joined with a separator:
+splitting a figure produces a loud unaccounted fragment, fusing one produces silence.
+
+### Reconciliation: every figure now in scope
+
+`python tools/sitecheck.py --inventory` prints this. It exists because *0 problems* is also what a
+checker that examined nothing prints, and looking at what was examined is the only way to tell
+those two apart.
+
+```
+figure       as written     page                   ruled in by
+--------------------------------------------------------------------------------------------------------------
+1M           1M             index                  the 1,000,000-token context window the page is about
+12h          12h            index                  session-affinity TTL written as 12h
+256          256            index,verify           shasum -a 256 / sha256
+400          400            index                  quoted upstream error 'API Error: 400'
+402          402            index                  HTTP 402 returned by the gateway when the shared pool is exhausted
+443          443            index                  80/443, the ports a pre-existing web server may already hold
+600          600            index,verify           chmod 600, a file mode
+700          700            index,verify           directory mode 700
+0.00         0.00           index                  round 1 hit rate = 0/748918 = 0.0000%
+0600         0600           index,verify           file mode 0600 as printed in the verify listing
+0700         0700           verify                 file mode 0700 as printed in the verify listing
+200K         200K           index                  the 200K window a client assumes for an unrecognised model name
+2024         2024           index                  quoted wrong answer from the Gemini upstream (no live web search)
+2025         2025           index                  quoted wrong answer from the Grok upstream (no live web search)
+2026         2026           index                  2026-07-21, the measurement date
+3495         3,495          index                  round 2 uncached tail = 748933 - 745438
+3518         3,518          index                  round 3 uncached tail = 748948 - 745430
+3541         3,541          index                  round 4 uncached tail = 748963 - 745422
+74.6         74.6           index                  all four rounds hit rate = 2236290/2995762 = 74.6485%
+749K         749K           index                  prefix shorthand for 748,918 tokens
+10554        10,554         index                  warm uncached tail = warm prompt - warm cached
+10753        10,753         index                  round 2 round-trip ms
+21410        21,410         index                  round 1 round-trip ms
+22381        22,381         index                  round 4 round-trip ms
+23457        23,457         index                  round 3 round-trip ms
+65536        65536          verify                 CLAUDE_CODE_MAX_OUTPUT_TOKENS default
+99.53        99.53          index                  round 2 hit rate = 745438/748933 = 99.5333%
+3.14.3       3.14.3         index                  Python 3.14.3 — the interpreter the run was made on
+600000       600000         index,verify           --prefix-tokens 600000 in the bench command, and the API_TIMEOUT_MS default
+7.1.23       7.1.23         index                  CLIProxyAPI 7.1.23 — the engine version under test
+7.2.93       7.2.93         index                  engine 7.2.93 — the version that made the shim workaround unnecessary
+745422       745,422        index                  round 4 tokens read from cache
+745430       745,430        index                  round 3 tokens read from cache
+745438       745,438        index                  round 2 tokens read from cache
+748918       748,918        index                  round 1 prompt tokens
+748933       748,933        index                  round 2 prompt tokens
+748948       748,948        index                  round 3 prompt tokens
+748963       748,963        index                  round 4 prompt tokens
+759472       759,472        index                  all-four uncached tail
+1000000      1000000        verify                 CLAUDE_CODE_MAX_CONTEXT_TOKENS / model_context_window default
+2236290      2,236,290      index                  warm cached total = rounds 2+3+4
+2246844      2,246,844      index                  warm prompt total = rounds 2+3+4
+2995762      2,995,762      index                  all-four prompt total
+
+43 distinct figures in scope.
+```
+
+Nothing on the pages needed correcting: all 43 are in the authoritative record, derived from it by
+arithmetic the checker redoes, or allow-listed with a reason. The permitted measurements are
+exactly the four rounds in `PROMPT` / `CACHED` / `ROUND_MS` at the top of `tools/sitecheck.py`.
+**Two of the three warm rounds were slower than the cold round, so no latency-improvement claim is
+permitted and none is made** — the results table labels rounds 3 and 4 「比冷輪慢」 and the note
+under it calls that column anecdote, not conclusion.
+
+### Audit: can each of the other recipes in this file fail?
+
+The numeral guard was the third verification-that-cannot-fail found in this project. The other two
+were a `$HOME`-scoped `find` certifying a claim about `/tmp`, and a secret-scan regex whose
+branches fused into an impossible literal. Three is a pattern, not three accidents, so every
+remaining recipe here was re-read with one question: **can this method observe a violation of the
+claim it certifies?**
+
+| Recipe | Can it fail? | Reasoning |
+|---|---|---|
+| Numeral guard (`tools/sitecheck.py`) | **Yes, demonstrated** | Ten must-fail cases run before every check; CI plants `99.54%` on every push. Was **no** until this pass. |
+| CSP hashes (§CSP hashes after this change) | **Was effectively no — now yes** | The recipe printed the recomputed hash and then `grep -c`'d for a hash *spelled out in this file's prose*. Edit an inline script and the recompute prints something new while the grep, still carrying the old literal, reports `1 / 1 / 2` and looks green; the comparison only ever happened in the reader's head, and the symptom is a browser silently blocking the script. `sitecheck.csp_problems()` now makes the recomputed value the needle and reports any *other* script hash in a consumer as stale — the case a presence-only grep structurally cannot see. Proven by editing a script for real. |
+| Line anchors (§transparency, claim by claim) | **Yes, demonstrated** | Reported 28 mismatches after a comment moved every reference past line 694. Out-of-range lines yield `""` and mismatch rather than crash, and the anchor count is printed, so an emptied list is visible rather than silently green. Limit: it certifies that a cited line still matches a pattern, not that the sentence beside it is still true. |
+| Absence greps (§the four absence claims) | **Yes, but blind on one axis** | A grep can observe the string arriving, so it can fail. It runs over `site/install.sh` only, while the claims cover Windows too — the same `.sh`-only shape this file already warns about for the anchor table, where every Windows row can go stale while the checker reports zero. Run today over `install.ps1`, all four patterns plus the PowerShell equivalents (`$PROFILE`, `Register-ScheduledTask`, `HKCU:`/`HKLM:`, `Invoke-Expression`) match nothing outside comments, so there is no live discrepancy — the gap is that nothing would catch one tomorrow. |
+| Canary hashes before/after (§the four absence claims) | **Yes, with a caveat** | Differing digests would show a modification. If the canary directories did not exist, `find` would print nothing and before/after would match vacuously — the recipe prints the three hashes, so a vacuous run is visible on the page instead of hidden in an exit code. It covers modification, not reading; the reading claim rests on the grep row above and inherits its `.sh`-only limit. |
+| Temp-directory watcher (§the temp directory) | **Yes, demonstrated** | It is what falsified the `$HOME`-scoped `find`: eleven paths, ten files, four holding the key. A concurrent observer is required because the files are created and deleted inside one run, so any `find` afterwards is as blind as the one it replaced. Bounds stated in place: one platform, one code path, and MSYS signal emulation explicitly excluded from any `SIGTERM`/`SIGINT` conclusion. |
+| Eleven-exports diff (§the eleven-exports claim) | **Yes, weakly** | A real diff of the generated file against the rendered DOM. Two extractions that both matched nothing would diff clean, which is why the recipe prints the line counts (`real=10 rendered=10`) — a `0 = 0` is visible. Manual, not wired into CI. |
+| Contrast sweep (below) | **Yes, demonstrated twice** | Both of its false answers are documented in place: unparsed `color(srgb …)` produced 12 false failures, and sampling without a reload after a scheme switch produced a false 2.09:1. The instrument is self-tested against a known `color(srgb …)` value before any ratio is trusted, and an unparseable colour is a loud skip rather than a silent zero. |
+
+Two of these — the line anchors and the eleven-exports diff — are still copy-paste recipes rather
+than committed code, so they run when someone remembers to run them. That is exactly the condition
+the numeral guard was in, and it is why the numeral guard stayed broken.
+
+
+### Two things `sitecheck.py` cannot see, and how they were covered
+
+Neither is reachable from a static parse: both need a real browser. They are listed here so the
+boundary of the automated check is explicit — a reader should know what "index.html: OK" does
+*not* cover.
 
 - **Contrast** was re-measured in a real browser after this change, over every element that owns a
   visible text node, in both themes, compositing alpha backgrounds down the ancestor chain (an
   audit that ignores alpha reports false failures on `color-mix(… / .1)` pills and false passes on
   accent buttons — both were observed while writing this):
 
-  | Page | Theme | Text-bearing elements | Below AA (4.5:1) | Worst pair |
+  | Page | Theme | Text-bearing elements | Below AA (4.5:1) | Tightest pair |
   |---|---|---|---|---|
-  | `index.html` | dark | 490 | **0** | 6.16:1 (results-table `<th>`) |
-  | `index.html` | light | 490 | **0** | 5.40:1 (results-table `<th>`) |
-  | `verify.html` | dark | 174 | **0** | 6.61:1 (`<h3>` 對不上怎麼辦) |
-  | `verify.html` | light | 174 | **0** | 5.53:1 (GitHub issues link) |
+  | `index.html` | dark | 511 | **0** | 6.16:1 (results-table `<th>`) |
+  | `index.html` | light | 511 | **0** | 5.40:1 (results-table `<th>`) |
+  | `verify.html` | dark | 287 | **0** | 6.16:1 (temp-file table `<th>`) |
+  | `verify.html` | light | 287 | **0** | 5.40:1 (temp-file table `<th>`) |
 
-  Reload the page after switching the emulated colour scheme before trusting any number: a
-  scheme change without a reload leaves part of the tree styled from the previous theme's custom
-  properties, and produces convincing-looking failures that vanish on reload.
+  **Two ways this sweep lies, both of which produced a confident wrong answer during this pass.**
+  Neither is hypothetical; both were caught only because a failure that made no design sense was
+  chased instead of reported.
+
+  1. **Parse `color(srgb …)`, not just `rgb()`.** A regex that grabs "the numbers" out of
+     `color(srgb 0.951922 0.925412 0.935529)` yields `0.95, 0.93, 0.94` — it reads a near-white
+     surface as near-black. That produced **12 false AA failures on `verify.html` in light theme**,
+     including a `1.12:1` on dark text over a white warning box. Modern themes emit that syntax
+     from `color-mix()`, so any sweep here will hit it. Self-test the parser on one known
+     `color(srgb …)` value before trusting a single ratio, and make an unparseable colour a loud
+     skip rather than a silent zero.
+  2. **Reload after switching the emulated colour scheme.** `.tab` has
+     `transition: background-color .15s, color .15s`. Flipping the scheme at runtime left those two
+     buttons computing the *previous* theme's `--muted` indefinitely — `getComputedStyle` returned
+     the dark `#98abbf` while `:root` and every untransitioned sibling had already moved to the
+     light `#4e5f72`. That reads as a real **2.09:1** light-theme regression in the hero. It
+     survives repeated sampling, so "wait and re-measure" does not clear it; only a reload does.
+     The tell is that only transitioned properties are wrong. After a fresh load under the light
+     scheme the same element measures correctly and the failure is gone.
 
 - **Behaviour** was verified in a browser against a mock gateway covering all three status states
   (healthy-without-capacity, exhausted, capacity-present), both copy paths (success and
@@ -775,21 +991,34 @@ Two things that check cannot see, and how they were covered:
   matching how `index.html` exposes its scrollable tables, so the horizontal scroll they need at
   narrow widths is reachable from the keyboard. Console is clean on both pages.
 
+  The temp-file table added to `verify.html` `#tmp` follows the same pattern and was checked the
+  same way: at 360 px its `.tablewrap` measures 328 px wide against a 640 px `scrollWidth`, so it
+  scrolls **inside itself** while the document stays at 360 — and the wrapper is `role="region"`,
+  `aria-label`led, and reachable at tab position 13, so that scroll is not mouse-only. The
+  「含金鑰」 column says 「是」/「否」 in text; the red is redundant, never the only carrier.
+  The rendered rows were then diffed against the run evidence rather than proofread — the check
+  asserts that the four 「是」 rows are exactly `curlrc`/`resp`/`credentials`/`write`, that the two
+  `600` rows are exactly `curlrc`/`register.json`, and that the two trap-only rows are exactly
+  `register.json`/`probe.json`. It caught one transcription error on first run (`probe.json` had
+  the deletion value duplicated into the `chmod` column) and reports `mismatchesVsRunEvidence: []`
+  now. A table of facts is worth exactly as much as its weakest cell, and eyes do not catch a
+  wrong cell in a ten-row grid.
+
 ### The greps behind the four absence claims
 
 ```
 $ grep -nE "bashrc|zshrc|\.profile" site/install.sh
 30:#   * It does NOT edit .bashrc, .zshrc, .profile or your PATH.
 455:    - modify your PATH, .bashrc, .zshrc or .profile
-1265:            info "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+1280:            info "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
 
 $ grep -nE "~/\.codex|~/\.claude" site/install.sh
 25:#     your ~/.claude directory and your existing subscription are untouched.
 452:    - touch your existing Claude Code login or ~/.claude (a separate
-1107:# damage the credentials in ~/.claude.
-1139:# Your normal ~/.codex is untouched.
-1164:here is separate from your real ~/.claude. Deleting this directory logs out
-1320:printf '\nIt will NOT touch ~/.claude, ~/.codex, your shell rc files, or anything\n'
+1122:# damage the credentials in ~/.claude.
+1154:# Your normal ~/.codex is untouched.
+1179:here is separate from your real ~/.claude. Deleting this directory logs out
+1335:printf '\nIt will NOT touch ~/.claude, ~/.codex, your shell rc files, or anything\n'
 
 $ grep -nE "systemd|launchd|launchctl|crontab" site/install.sh
 (no matches)
@@ -799,10 +1028,153 @@ $ grep -nE "\beval\b" site/install.sh
 707:# Deliberately dumb: no eval, no shell expansion of server data, and every
 ```
 
-Every hit is a comment or a string that gets *printed*. `install.sh:1265` is the `info` line that
+Every hit is a comment or a string that gets *printed*. `install.sh:1280` is the `info` line that
 shows the user the `>> ~/.profile` command to run themselves; it is not executed. There is no
 `systemd` / `launchd` / `launchctl` / `crontab` match at all, and both `eval` matches are prose in
 comments.
+
+An absence claim that is only a grep is one rename away from being wrong, so the two that matter
+most were also checked positively — canary files planted in the three directories the page
+promises not to touch, then a full install on top of them:
+
+```
+$ grep -nE "security find-generic|secret-tool|Keychain|\.ssh" site/install.sh
+(no matches)
+
+$ (cd $HOME && find .claude .codex .ssh -type f -exec sha256sum {} \;) | sort   # before
+605b7927ae2b2d04e7eaa0148151f0b6c267185706623129f5c4b293aa251e60  .codex/config.toml
+833a3cf8a88533f95f4b290c59c7c71f007a21dce763919624ac4fc714f7b21f  .claude/settings.json
+e89440086e51169b97161032cb64d88cc5b138f7efa2a47836edc1f32c38b082  .ssh/id_ed25519
+
+$ sh site/install.sh --api "$YB5_TEST_ENDPOINT"
+installer exit=0
+
+$ ...same command                                                              # after
+605b7927ae2b2d04e7eaa0148151f0b6c267185706623129f5c4b293aa251e60  .codex/config.toml
+833a3cf8a88533f95f4b290c59c7c71f007a21dce763919624ac4fc714f7b21f  .claude/settings.json
+e89440086e51169b97161032cb64d88cc5b138f7efa2a47836edc1f32c38b082  .ssh/id_ed25519
+```
+
+And the registration body, captured off the wire rather than read out of `reg_body`'s `printf`
+block — the point of the row is what leaves the machine, so that is what was sampled:
+
+```
+{"machine_id":"e5c9dc62cbaad51154dd33fd29933c09ffcb2d09756e77cf6e78be3fe20c790c",
+ "label":"installer-e5c9dc62cbaad51154dd33fd29933c09"}
+```
+
+Two fields, because no `--email` and no `--invite` were passed. The label is the first 32
+characters of the same fingerprint, so it carries nothing the first field does not.
+
+### The temp directory: what a real run puts there, and what survives
+
+This is the evidence for the temp-directory rows in §1 and for `verify.html` `#tmp`. It replaces a
+`$HOME`-scoped `find` that could not, by construction, have seen any of it. A stub gateway answers
+`/auth/register`, `/health`, `/v1/models` and `/v1/messages` so the whole path runs; `$HOME` and
+`$TMPDIR` are throwaway directories. Paths shortened to `/home/you` and `/tmp/yb5-audit`; pids and
+the `mktemp` suffix collapsed to `$$` / `XXXXXXXX`; nothing else edited.
+
+```
+########## A. concurrent watcher over an owned $TMPDIR, one full install ##########
+installer exit=0
+recorded 11 paths, 39 content snapshots
+  tmp.XXXXXXXX/
+    tmp.XXXXXXXX/codex.$$
+    tmp.XXXXXXXX/credentials.$$
+    tmp.XXXXXXXX/curlerr.$$
+    tmp.XXXXXXXX/curlrc.$$
+    tmp.XXXXXXXX/env.$$
+    tmp.XXXXXXXX/install_info.$$
+    tmp.XXXXXXXX/probe.json
+    tmp.XXXXXXXX/register.json
+    tmp.XXXXXXXX/resp.$$
+    tmp.XXXXXXXX/write.$$
+
+paths recorded: 11
+
+########## B. which of them held the API key (grep over the byte copies) ##########
+$ grep -rl "$KEY" /tmp/yb5-grab | sed 's/\.v[0-9]*$//' | sort -u
+  credentials.$$
+  curlrc.$$
+  resp.$$
+  write.$$
+matched: 4 of 10
+
+########## C. every chmod the run actually executed (sh -x) ##########
+        4 + chmod 600 $TMPD/curlrc.$$
+        1 + chmod 600 $TMPD/register.json
+        1 + chmod 600 /home/you/.yangble5/INSTALL_INFO
+        1 + chmod 600 /home/you/.yangble5/claude/README.txt
+        1 + chmod 600 /home/you/.yangble5/codex/config.toml
+        1 + chmod 600 /home/you/.yangble5/credentials
+        1 + chmod 600 /home/you/.yangble5/env.sh
+        1 + chmod 600 /home/you/.yangble5/machine-id
+        1 + chmod 700 $TMPD
+        6 + chmod 700 /home/you/.yangble5
+        5 + chmod 700 /home/you/.yangble5/bin
+        1 + chmod 700 /home/you/.yangble5/bin/yangble5-claude
+        1 + chmod 700 /home/you/.yangble5/bin/yangble5-codex
+        1 + chmod 700 /home/you/.yangble5/bin/yangble5-env
+        1 + chmod 700 /home/you/.yangble5/bin/yangble5-uninstall
+        2 + chmod 700 /home/you/.yangble5/claude
+        2 + chmod 700 /home/you/.yangble5/codex
+        1 + chmod 700 /home/you/.yangble5/uninstall.sh
+
+########## D. $TMPDIR and $HOME after that NORMAL exit ##########
+$ find $TMPDIR -mindepth 1 | wc -l
+0
+$ find $HOME -mindepth 1 | sort
+  ~/.local/bin/yangble5-claude      ~/.yangble5/INSTALL_INFO
+  ~/.local/bin/yangble5-codex       ~/.yangble5/bin/yangble5-claude
+  ~/.local/bin/yangble5-env         ~/.yangble5/bin/yangble5-codex
+  ~/.local/bin/yangble5-uninstall   ~/.yangble5/bin/yangble5-env
+                                    ~/.yangble5/bin/yangble5-uninstall
+                                    ~/.yangble5/claude/README.txt
+                                    ~/.yangble5/codex/config.toml
+                                    ~/.yangble5/credentials
+                                    ~/.yangble5/env.sh
+                                    ~/.yangble5/machine-id
+                                    ~/.yangble5/uninstall.sh
+
+########## E. kill -9 during an in-flight HTTP call ##########
+$ find $TMPDIR -mindepth 1 | sort
+  /tmp/yb5-audit/tmp.XXXXXXXX
+  /tmp/yb5-audit/tmp.XXXXXXXX/curlerr.$$
+  /tmp/yb5-audit/tmp.XXXXXXXX/curlrc.$$
+  /tmp/yb5-audit/tmp.XXXXXXXX/probe.json
+  /tmp/yb5-audit/tmp.XXXXXXXX/register.json
+$ grep -o 'x-api-key: yb5_.*' $TMPDIR/tmp.*/curlrc.*
+  x-api-key: yb5_0123456789abcdef_TRACK2CA…<the rest of the key>
+```
+
+Five things to read out of that, in order of how much they change what the pages may say:
+
+1. **A is the enumeration.** Eleven paths, one of them the directory. Ten files, not two. `D` shows
+   the `$HOME` side is exactly what `#files` already listed, so the old row was right about what it
+   looked at and wrong about where it looked.
+2. **B contradicts the reading of the code.** `curlrc` and `write` are the two you predict from
+   reading; `resp` (the register response — the key's *first* landing place on disk) and
+   `credentials` are the two you miss. Four, not two. This is why the row is certified by grep over
+   captured bytes and not by reading `http_call`.
+3. **C is the mode evidence.** Two `chmod 600` inside `$TMPD`, both visible above; the other eight
+   files inherit the `umask`. The directory's `700` is the boundary that matters, and the pages now
+   say so instead of implying every temp file is `0600`.
+4. **D is the trap working.** Zero paths left after a normal exit. `EXIT HUP INT TERM` all reach
+   `cleanup()`, so Ctrl-C is covered too.
+5. **E is the honest limit.** `kill -9` is not catchable, and what it leaves is not harmless: the
+   curl config file holds the key until the call it belongs to returns, which under `kill -9` is
+   never. `register.json` and `probe.json` are worse in one narrow sense — they have no per-file
+   `rm -f` anywhere, so *only* the trap ever removes them — but neither contains a secret.
+
+**Caveat on the harness, stated because it bounds what E proves.** These runs are on a Windows
+checkout under MSYS, with a `uname` shim reporting `Linux/x86_64` so the platform gate (518–527)
+takes the Linux branch. Two consequences. Modes cannot be measured there at all — `chmod 600`
+followed by `stat` returns `644`, which is why C reads the `chmod` calls from the trace rather than
+the filesystem. And MSYS's signal emulation does not run shell traps for `SIGTERM`/`SIGINT`: a
+five-line control script with `trap cleanup EXIT HUP INT TERM; sleep 30` also fails to clean up
+there, so **no conclusion about `SIGTERM`/`SIGINT` may be drawn from this box** — the D result
+(normal `EXIT`) and the E result (`SIGKILL`, uncatchable by definition on every POSIX system) are
+the two that carry. Re-run A–E on Linux or macOS before adding any signal claim beyond those.
 
 ### The counts behind the eleven-exports claim
 
@@ -905,23 +1277,37 @@ notice the gap.
 ### CSP hashes after this change
 
 The inline scripts were **not** modified by the transparency rewrite, so both hashes are unchanged
-and `deploy/Caddyfile` and `deploy/nginx/yangble5.com.conf.example` need no edit. Verified rather
-than assumed:
+and `deploy/Caddyfile` and `deploy/nginx/yangble5.com.conf.example` need no edit.
+
+**This used to be certified by a check that could not fail.** The recipe printed the recomputed
+hash and then ran `grep -c` for a hash *written out in this file's prose* — so if an inline script
+had changed, the recompute would print something new while the grep, still carrying the old
+literal, reported `1 / 1 / 2` and looked green. The comparison only ever happened in the reader's
+head, and the failure it is supposed to catch is invisible until a browser blocks the script.
+
+It is now `sitecheck.csp_problems()`, which runs on every push. The recomputed value *is* the
+needle, so nothing is transcribed, and any *other* script hash present in a consumer is reported
+as stale — the case a presence-only grep structurally cannot see.
 
 ```
-$ python recompute-csp.py   # the parser-based snippet above
-index.html     'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c='
-verify.html    'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='
-
-$ grep -c "sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=" deploy/Caddyfile deploy/nginx/yangble5.com.conf.example site/README.md
-deploy/Caddyfile:1
-deploy/nginx/yangble5.com.conf.example:1
-site/README.md:2
-$ grep -c "sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI=" deploy/Caddyfile deploy/nginx/yangble5.com.conf.example site/README.md
-deploy/Caddyfile:1
-deploy/nginx/yangble5.com.conf.example:1
-site/README.md:2
+$ python tools/sitecheck.py --quiet
+index.html: OK
+verify.html: OK
+CSP hashes: OK
+allow-list: OK (20 entries, all matched)
 ```
 
-`site/README.md:2` is expected: this file carries each hash twice, once in the nginx block and
-once in the CSP-hashes list. All three files agree, which is the property that matters.
+Proven to fail, by editing an inline script for real
+(`tests/test_sitecheck.py::test_editing_an_inline_script_turns_the_csp_check_red`):
+
+```
+deploy/Caddyfile: stale inline-script hash sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=
+    — no page produces it, so the deployed CSP would block the script it names
+deploy/Caddyfile: missing the current index.html inline-script hash
+    sha256-GyuNCIQSb5jUyd1Yit6M+UCOS+dADGKCxrmq4iHQF4g= — recompute and update this file
+```
+
+Three files are checked: both deploy configs and this one, which carries each hash twice (the
+nginx block and the CSP-hashes list). Only the CSP source-expression form — quoted, `'sha256-…='`
+— counts as a directive; a bare hash in running prose, such as the self-test output quoted under
+Validation above, is text and is ignored. That distinction is itself a self-test case.

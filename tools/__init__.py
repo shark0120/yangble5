@@ -6,4 +6,4 @@ machine on its own. The package exists mainly so the pure, side-effect-free
 helpers can be imported and unit-tested without a running proxy.
 """
 
-__all__ = ["cache_bench", "cache_stats_sidecar", "claude_shim"]
+__all__ = ["cache_bench", "cache_stats_sidecar", "claude_shim", "sitecheck"]
