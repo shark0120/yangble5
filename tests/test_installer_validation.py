@@ -157,7 +157,13 @@ INVALID_URLS = [
     "ftp://yangble5.com",  # wrong scheme
     "file:///etc/passwd",
     "https://",  # no host
-    "https://user@evil.com",  # userinfo
+    # Userinfo. Written as the shape the attack actually takes: the userinfo is
+    # made to look like the host the reader expects, so the URL reads as
+    # yangble5.com while the request goes to the host after the '@'. The host
+    # here is a reserved domain on purpose - CI asserts every address in this
+    # tree is at one, and a fixture is not a good enough reason to make that
+    # assertion negotiable.
+    "https://yangble5.com@example.com",
     "https://example.com/$(touch /tmp/pwned)",  # sh command substitution
     "https://example.com/`touch /tmp/pwned`",  # sh backticks
     "https://example.com;touch /tmp/pwned",  # sh command separator

@@ -32,6 +32,11 @@
 1.2.3.4
 5.6.7.8
 5.6.7.9
+# Entries a hostile client PREPENDS to X-Forwarded-For in the gateway's
+# client-attribution tests. They have to look like ordinary public addresses,
+# because the whole point of those tests is that a caller-supplied hop is
+# indistinguishable from a real one and must therefore never be trusted.
+2.2.2.2
 
 # --- deliberately-wrong values. Each sits just outside a reserved range so
 #     the classifier in deploy/preflight.sh has a negative case to fail on,
@@ -66,3 +71,8 @@
 104.16.0.1
 172.67.1.1
 188.114.96.5
+# A Cloudflare edge node as it appears in the gateway's client-attribution
+# tests: Caddy appends its own peer -- the edge -- to X-Forwarded-For, so the
+# TAIL of that header names Cloudflare rather than the user. Those tests exist
+# to prove the gateway does not attribute traffic to this address.
+172.68.44.7

@@ -81,19 +81,29 @@ python -m pytest -q
 ### 3.2 Secrets and operator paths
 
 ```bash
-# The same shapes CI's `no-secrets` job rejects. The management-key and
-# Windows-path fragments are written as character classes so that this file does
-# not trip the scan it documents - and so it stays a superset of CI's pattern
-# (any drive letter, not just C:).
-git grep -nIE 'sk-[A-Za-z0-9]{16,}|yang[-]admin[-]|[A-Za-z]:\\Users\\|BEGIN [A-Z ]*PRIVATE KEY' \
-    -- . ':!.github/workflows/ci.yml'
+# There is ONE copy of this pattern, in the `no-secrets` job of
+# .github/workflows/ci.yml, and everything else lifts it out. This file used to
+# carry its own four-shape version described as "a superset of CI's pattern"; it
+# was a small subset of it, and it missed every key shape with a hyphen in it.
+# `sed` rather than `grep -oP`: no PCRE required, and no locale in which the
+# extraction silently yields an empty pattern.
+pattern=$(sed -n "s/.*git grep -nIE '\([^']*\)'.*/\1/p" .github/workflows/ci.yml | head -1)
+[ -n "$pattern" ] || { echo "could not lift the pattern out of the workflow"; exit 1; }
+
+git grep -nIE "$pattern" -- . ':!.github/workflows/ci.yml' ':!CONTRIBUTING.md' \
+        ':!RELEASING.md' ':!SECURITY.md' ':!scripts/make_history.sh' \
+  | grep -viE 'fake|dummy|example|placeholder|changeme|redacted|not[-_]a[-_]real|__GENERATE__|<[A-Z_]+>'
 ```
 
-- [ ] Zero hits. `.github/workflows/ci.yml` is excluded because it defines the patterns
-      literally and therefore always matches itself.
-- [ ] `bash scripts/make_history.sh --dry-run` reports **SECRET SCAN: PASS**. It runs the same
-      scan over the candidate file set, including files that are still untracked - which
-      `git grep` alone would miss.
+- [ ] Zero hits. The exclusions are CI's own: those paths quote or document the pattern and
+      therefore always match themselves. The trailing filter is CI's too - it drops lines that
+      announce themselves as fixtures.
+- [ ] `bash scripts/make_history.sh --dry-run` reports **SECRET SCAN: PASS**. It lifts the same
+      one pattern and runs it over the candidate file set, including files that are still
+      untracked - which `git grep` alone would miss, and which is the whole reason this step
+      exists in addition to the command above. It also **self-tests the pattern first**, against
+      a sample of every shape, and refuses to report PASS if the pattern has stopped matching
+      them; a scan that cannot be shown to catch anything must not be allowed to reassure you.
 - [ ] No `.env`, `config.yaml`, `auth/`, `*.pem`, `*.key` or `gateway/data/` in the tree:
       `git ls-files | grep -nE '(^|/)(auth/|\.env$|config\.yaml$)|\.(pem|key)$'`
 - [ ] `deploy/engine-bin/` contains only its `README.md`. The CLIProxyAPI binary is never

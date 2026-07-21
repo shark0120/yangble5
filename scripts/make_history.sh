@@ -423,26 +423,113 @@ done < <(git ls-files -z --cached --others --exclude-standard)
 N_TRACKED="$(git ls-files | wc -l | tr -d ' ')"
 N_UNTRACKED="$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')"
 
-# 4b. Secret scan over the candidate set - the same shapes CI's `no-secrets` job
-#     rejects, slightly broadened (any drive letter, not just C:).
-#     The pattern is assembled from fragments so that this file does not match
-#     its own scan; that is what lets the script scan itself instead of joining
-#     ci.yml on an exclusion list that only ever grows.
-SECRET_RE="$(printf '%s' \
-  'sk-[A-Za-z0-9]{16,}' \
-  '|yang-' 'admin-' \
-  '|[A-Za-z]:' '\\Us' 'ers\\' \
-  '|BEGIN [A-Z ]*PRIVATE KEY')"
+# 4b. Secret scan over the candidate set.
+#
+#     THE PATTERN IS NOT DEFINED HERE. There is exactly one authoritative copy,
+#     in the `no-secrets` job of .github/workflows/ci.yml, and this script lifts
+#     it out - the same lift CONTRIBUTING.md documents for running the scan by
+#     hand. This file used to carry its own four-shape pattern and describe it as
+#     "the same shapes CI rejects, slightly broadened". It was neither: CI knows
+#     about two dozen shapes, and the local copy missed every OpenAI-style key
+#     with a hyphen in it (sk-ant-api03-, sk-or-v1-, sk-proj-) as well as
+#     forward-slash operator paths. That is what a second copy does - it does not
+#     announce that it has drifted, it just quietly stops covering things.
+#
+#     What this script adds over CI's `git grep` is REACH, not a different
+#     pattern: the candidate set below includes UNTRACKED files, which is exactly
+#     where a credential copied in from somewhere else sits before anybody has
+#     decided to commit it. RELEASING.md 3.2 leans on that reach, so the pattern
+#     it reaches with had better be the real one.
+#
+#     `sed` rather than `grep -oP`: PCRE is not available on every grep this
+#     script has to run under (BSD/macOS has none), and CONTRIBUTING.md already
+#     records that under Git Bash a locale-less `grep -oP` yields an EMPTY
+#     pattern silently - which would turn this scan into a no-op. Both lifts are
+#     therefore checked for emptiness, and then the self-test below proves the
+#     lifted pattern actually matches things before anything relies on it.
+CI_WORKFLOW=".github/workflows/ci.yml"
+[ -f "$CI_WORKFLOW" ] \
+  || die "$CI_WORKFLOW is missing - it holds the only copy of the secret-scan pattern, so the scan cannot run"
+
+SECRET_RE="$(sed -n "s/.*git grep -nIE '\([^']*\)'.*/\1/p" "$CI_WORKFLOW" | head -1)"
+[ -n "$SECRET_RE" ] \
+  || die "could not lift the secret-scan pattern out of $CI_WORKFLOW (the 'git grep -nIE' line changed shape?)"
+
+# The same trailing filter CI applies: drop lines that announce themselves as
+# fixtures. A leaked credential does not contain the word "fake"; a test fixture
+# that says FAKE four times is not a leak, and reporting it every run is how a
+# check stops being read.
+FIXTURE_RE="$(sed -n "s/.*grep -viE '\([^']*\)'.*/\1/p" "$CI_WORKFLOW" | head -1)"
+[ -n "$FIXTURE_RE" ] \
+  || die "could not lift the fixture filter out of $CI_WORKFLOW (the 'grep -viE' line changed shape?)"
+
+# 4b-i. SELF-TEST - run BEFORE the pattern is trusted with anything.
+#
+#     A scanner that has never been shown to catch anything is a decoration, and
+#     a silently-broken one is worse than none: it converts "we scan for this"
+#     into a false assurance that a release checklist then rests on. So: assert
+#     the lifted pattern matches a known sample of every shape this repository
+#     has actually been at risk of, and assert it does NOT match an ordinary
+#     line. The negative case is not decoration either - an empty or over-broad
+#     lift would sail through every positive assertion.
+#
+#     The samples are assembled from ADJACENT QUOTED FRAGMENTS ('PRIV''ATE') so
+#     the bytes of this file never spell out the strings it hunts. That is the
+#     technique ci.yml already uses on itself, and it is safe here only because
+#     the assertions below fail loudly if the assembly ever breaks - which is
+#     precisely the failure this whole block exists to make impossible.
+self_test_secret_re() {
+  local label sample entry rc=0
+  local -a POSITIVE=(
+    "openai key|sk-""proj-AbCdEfGhIjKlMnOpQrSt_1234-5678"
+    "anthropic key|sk-""ant-api03-AAbbCCddEEffGGhh_iiJJkkLL-mmNN"
+    "openrouter key|sk-""or-v1-0123456789abcdef0123456789abcdef"
+    "google api key|AIza""SyA0000000000000000000000000000000a"
+    "oauth token|ya29"".A0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "github token|ghp""_000000000000000000000000000000000000"
+    "aws key id|AKIA""0000000000000000"
+    "slack token|xoxb""-0000000000-abcdefghij"
+    "bcrypt hash|\$2b\$12\$0000000000000000000000000000000000000000000000000000a"
+    "private key|-----BEGIN OPENSSH PRIV""ATE KEY-----"
+    "private key (bare)|-----BEGIN PRIV""ATE KEY-----"
+    "legacy mgmt key|yang-""admin-0123456789"
+    "operator path (backslash)|C:\\Us""ers\\Someone\\Desktop\\notes.txt"
+    "operator path (forward slash)|C:/Us""ers/Someone/Desktop/notes.txt"
+  )
+  for entry in "${POSITIVE[@]}"; do
+    label="${entry%%|*}"
+    sample="${entry#*|}"
+    if ! printf '%s\n' "$sample" | grep -qIE "$SECRET_RE"; then
+      say "  SELF-TEST FAIL: the secret pattern does not match a $label sample."
+      rc=1
+    fi
+  done
+  # Negative: an ordinary line must NOT match, or the pattern is matching
+  # everything and every "PASS" it prints is meaningless.
+  if printf '%s\n' "a perfectly ordinary line of prose with no credential in it" \
+      | grep -qIE "$SECRET_RE"; then
+    say "  SELF-TEST FAIL: the secret pattern matches ordinary text - it is too broad to mean anything."
+    rc=1
+  fi
+  return "$rc"
+}
+
+self_test_secret_re \
+  || die "the secret-scan self-test failed (see above). The scan is broken, so its result cannot be trusted. Refusing to continue."
+
 SCAN_HITS=""
 for f in "${FILES[@]}"; do
-  # ci.yml defines these patterns literally, so it cannot be scanned with them.
+  # These four quote the pattern (or document it) and so always match themselves.
+  # This is the same exclusion list ci.yml uses, minus this script: the fragment
+  # trick above means this file has nothing to hide from its own scan, which is
+  # the property the exclusion list is there to work around.
   case "$f" in
-    .github/workflows/ci.yml) continue ;;
+    .github/workflows/ci.yml|CONTRIBUTING.md|RELEASING.md|SECURITY.md) continue ;;
   esac
   [ -f "$f" ] || continue
-  # NOTE: the exit status of a pipeline is `head`'s, which is 0 even when grep
-  # matched nothing - so test the captured text, not the status.
-  hit="$(grep -nIE "$SECRET_RE" -- "$f" 2>/dev/null | head -3 || true)"
+  # NOTE: the exit status of a pipeline is the LAST command's, which is 0 even
+  # when grep matched nothing - so test the captured text, not the status.
+  hit="$(grep -nIE "$SECRET_RE" -- "$f" 2>/dev/null | grep -viE "$FIXTURE_RE" | head -3 || true)"
   if [ -n "$hit" ]; then
     SCAN_HITS="${SCAN_HITS}${f}:
 ${hit}

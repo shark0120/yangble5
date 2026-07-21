@@ -85,7 +85,7 @@ it hunts (`yang[-]admin[-]`, `Us[e]rs`, `PRIVATE[ ]KEY`), which is what lets the
 its own scan. Run the same check locally by lifting the pattern out of the workflow:
 
 ```bash
-pattern=$(grep -oP "(?<=git grep -nIE ')[^']+" .github/workflows/ci.yml)
+pattern=$(sed -n "s/.*git grep -nIE '\([^']*\)'.*/\1/p" .github/workflows/ci.yml | head -1)
 [ -n "$pattern" ] || { echo "could not lift the pattern out of the workflow"; exit 1; }
 
 git grep -nIE "$pattern" -- . ':!.github/workflows/ci.yml' ':!CONTRIBUTING.md' \
@@ -95,9 +95,20 @@ git grep -nIE "$pattern" -- . ':!.github/workflows/ci.yml' ':!CONTRIBUTING.md' \
 
 The trailing filter is the one CI applies too: it drops lines that announce themselves as
 fixtures. Without it the command reports the handful of deliberately-fake keys in `tests/` on
-every run, and a check that always prints three hits is a check nobody reads. (`grep -oP` needs
-a UTF-8 locale; under Git Bash, `export LC_ALL=C.UTF-8` first or the extraction silently yields
-an empty pattern that matches every line in the repository.)
+every run, and a check that always prints three hits is a check nobody reads.
+
+The extraction uses `sed`, not `grep -oP`, for two reasons that both end in a scan that looks
+like it ran: PCRE is not compiled into every `grep` (BSD and macOS have none, so the lift fails
+outright), and under Git Bash without a UTF-8 locale `grep -oP` silently yields an EMPTY
+pattern - which then matches every line in the repository. `sed -n 's/...//p'` needs neither.
+
+`scripts/make_history.sh` performs the same lift rather than carrying its own copy, and adds
+the one thing a lifted pattern still needs: it **self-tests** the pattern against a sample of
+every shape before trusting it, and refuses to run if any of them stops matching. That is what
+turns a silently-rotted regex into a loud failure. It previously carried a private four-shape
+copy advertised as "the same shapes CI rejects"; it was a subset, and it matched no key shape
+containing a hyphen (`sk-ant-api03-`, `sk-or-v1-`, `sk-proj-`) and no forward-slash operator
+path. If you ever find yourself pasting this pattern into a third place, lift it instead.
 
 or simply push to a branch and let CI answer.
 
