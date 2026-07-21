@@ -9,7 +9,7 @@
 # pydantic and starlette are NOT listed: they arrive as fastapi's own pinned
 # dependencies, and pinning them separately here would let the two drift.
 
-fastapi>=0.110,<1.0
+fastapi>=0.139.2,<1.0
 httpx>=0.27,<1.0
 
 # OPTIONAL, intentionally commented out. Uncomment only if you set
