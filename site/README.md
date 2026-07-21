@@ -833,12 +833,18 @@ unsets  total: 1
 ```
 $ diff -u real_env_sh_lines.txt rendered_by_verify_html.txt
 IDENTICAL — 0 differences
+
+line counts: real=10  rendered=10
 ```
 
-The rendered text was read out of the live DOM (`pre` under `#env`), not copied from the source
-file, so the comparison covers HTML escaping as well as content. Nine `export` lines carry eleven
-names — the first line exports three at once — which is why the page says *eleven variables*
-rather than *eleven lines*.
+Normalise line endings before diffing (`tr -d '\r'`). A CRLF checkout makes every line look
+changed while the text is identical — a false positive that is easy to mistake for a real drift,
+and was hit once while writing this.
+
+The rendered side was also read out of the live DOM (`pre` under `#env`) as well as out of the
+file, so the comparison covers HTML escaping, not just content. Ten lines carry eleven names plus
+the unset — the first `export` names three variables at once — which is why the page says *eleven
+variables*, never *eleven lines*.
 
 ### The backup and key-printing behaviour, as actually printed
 
