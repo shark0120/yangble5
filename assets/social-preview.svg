@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="cardTitle cardDesc">
+  <title id="cardTitle">yangble5 - cache-correct proxy config and measurement harness</title>
+  <desc id="cardDesc">Dark social preview card. Headline numbers: 99.53 percent prompt-cache hit rate on warm rounds only, a 748,918-token prompt processed with no truncation, and 0 percent on round 1 of every session because the first request is always a cold cache write. Measured once on one Windows 11 machine on 2026-07-21. Built on CLIProxyAPI, a third-party MIT Go project.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="0.55" stop-color="#0f1620"/>
+      <stop offset="1" stop-color="#111b2a"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2f81f7"/>
+      <stop offset="0.5" stop-color="#3fb950"/>
+      <stop offset="1" stop-color="#0d1117" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    .f { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif; }
+    .mono { font-family: 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace; }
+    .title { font-size: 104px; font-weight: 700; fill: #e6edf3; letter-spacing: -2px; }
+    .hook { font-size: 31px; font-weight: 600; fill: #c9d1d9; }
+    .sub { font-size: 26px; font-weight: 400; fill: #8b949e; }
+    .stat { font-size: 58px; font-weight: 700; }
+    .qual { font-size: 19px; font-weight: 600; fill: #adbac7; }
+    .qual2 { font-size: 18px; font-weight: 400; fill: #8b949e; }
+    .foot { font-size: 20px; font-weight: 400; fill: #7d8590; }
+  </style>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1280" height="6" fill="url(#rule)"/>
+
+  <!-- wordmark + honest one-line hook -->
+  <text class="f title" x="72" y="150">yangble5</text>
+  <text class="f hook" x="72" y="205">A cache-correct proxy config and measurement harness</text>
+  <text class="f sub" x="72" y="245">for 1M-context coding agents. Not a model. Bring your own upstream.</text>
+
+  <!-- three verified numbers, each with the qualifier that makes it honest -->
+  <g>
+    <rect x="72" y="292" width="362" height="176" rx="14" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+    <text class="mono stat" x="98" y="366" fill="#3fb950">99.53%</text>
+    <text class="f qual" x="98" y="404">prompt-cache hit rate</text>
+    <text class="f qual2" x="98" y="430">token-weighted,</text>
+    <text class="f qual2" x="98" y="452">WARM rounds only (2-4 of 4)</text>
+  </g>
+
+  <g>
+    <rect x="459" y="292" width="362" height="176" rx="14" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+    <text class="mono stat" x="485" y="366" fill="#2f81f7">748,918</text>
+    <text class="f qual" x="485" y="404">tokens in one prompt</text>
+    <text class="f qual2" x="485" y="430">ingested with no truncation.</text>
+    <text class="f qual2" x="485" y="452">Recall at that size: not tested</text>
+  </g>
+
+  <g>
+    <rect x="846" y="292" width="362" height="176" rx="14" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+    <text class="mono stat" x="872" y="366" fill="#d29922">0%</text>
+    <text class="f qual" x="872" y="404">round 1, every session</text>
+    <text class="f qual2" x="872" y="430">the first request is always</text>
+    <text class="f qual2" x="872" y="452">a cold write. No config fixes it</text>
+  </g>
+
+  <line x1="72" y1="516" x2="1208" y2="516" stroke="#21262d" stroke-width="1.5"/>
+
+  <text class="f foot" x="72" y="556">Measured 2026-07-21 on ONE Windows 11 machine, one run per config. No repetitions, no error bars.</text>
+  <text class="f foot" x="72" y="588">Built on CLIProxyAPI (third-party, MIT) - go star it first. No live web search through this proxy.</text>
+</svg>

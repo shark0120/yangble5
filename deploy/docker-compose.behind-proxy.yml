@@ -1,0 +1,360 @@
+# yangble5 — REVERSE-PROXY MODE (for hosts that already run a web server)
+# ===========================================================================
+#   internet ──80/443──▶ YOUR nginx/apache ──127.0.0.1:8081──▶ gateway ──▶ engine ──▶ upstream LLM APIs
+#                        (not managed here)
+#
+# USE THIS FILE WHEN something else already owns ports 80 and 443 — an
+# aaPanel/BT/cPanel/Plesk nginx, an existing Apache vhost, a Traefik you did
+# not install. The sibling `docker-compose.yml` publishes Caddy on 0.0.0.0:80
+# and :443; starting it on such a host makes every OTHER site on that box
+# return connection-refused until you stop it again. That is not a theoretical
+# risk — it is what happens, immediately, on `docker compose up -d`.
+#
+# See README.md ("Which file do I use?") and AAPANEL.md.
+#
+# WHAT IS DIFFERENT FROM THE STANDALONE FILE
+#
+#  * No `caddy` service at all. TLS, HTTP/2+3, HSTS, compression, the static
+#    site and the /v0/* block are your existing web server's job now. The
+#    nginx equivalent of every Caddyfile rule is in
+#    nginx/yangble5.com.conf.example — including the streaming settings, which
+#    are the ones that silently break.
+#
+#  * The gateway is the only service with a `ports:` key, and it publishes to
+#    127.0.0.1 ONLY. Docker installs a DNAT rule for the loopback address, so
+#    the port is reachable from the host (your nginx) and from nowhere else.
+#    This also sidesteps the usual Docker/UFW trap: Docker's DOCKER-USER chain
+#    bypasses UFW, so `ufw deny 8081` would NOT protect a port published on
+#    0.0.0.0. Binding to loopback is what makes it safe, not the firewall.
+#
+#  * The engine still has no `ports:` key. Nothing changes there: it is
+#    reachable from the gateway container and from nothing else.
+#
+# INTERLOCK: the container names and the bridge name below are deliberately
+# IDENTICAL to the standalone file's. Docker refuses to create a second
+# container with an existing name, so trying to run both stacks at once fails
+# loudly instead of silently double-binding the engine's auth volume.
+#
+# The two files share a project directory, so they also share named volumes:
+# switching between standalone and behind-proxy keeps your SQLite database and
+# your engine OAuth tokens. Stop the old stack first:
+#
+#     docker compose -f docker-compose.yml down
+#     docker compose -f docker-compose.behind-proxy.yml up -d
+#
+# Better: put this line in deploy/.env so every later `docker compose ...`,
+# including every command in runbook.md, targets the right file without -f:
+#
+#     COMPOSE_FILE=docker-compose.behind-proxy.yml
+#
+# Requires Docker Compose v2 (`docker compose`). `deploy.resources.limits` is
+# honoured by Compose v2 outside Swarm and silently ignored by v1.
+# ===========================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &default-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  # ── GATEWAY (the FastAPI service in ../gateway) ─────────────────────────
+  gateway:
+    <<: *default-hardening
+    image: ${GATEWAY_IMAGE:-yangble5/gateway:local}
+    build:
+      # Build context is the REPO ROOT so the image can copy ../gateway.
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    container_name: yangble5-gateway
+    user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
+    # ── THE ONE PUBLISHED PORT, AND IT IS LOOPBACK ONLY ──────────────────
+    #
+    # Host and container port are the same number on purpose: GATEWAY_PORT is
+    # also passed into the container below, so there is exactly one value to
+    # keep in sync with `proxy_pass` in your nginx config. Changing it in .env
+    # changes both ends at once.
+    #
+    # 8081 is the default because it was free on the reference host. If your
+    # panel already uses it, pick anything free and update proxy_pass to match.
+    #
+    # DO NOT change this to "8081:8081" or "0.0.0.0:8081:8081". That publishes
+    # an unauthenticated-to-the-network... no: the gateway does authenticate,
+    # but it would then be reachable from the internet WITHOUT your nginx's
+    # TLS, rate limits and /v0/* block, and with X-Forwarded-For under the
+    # caller's control while YANGBLE5_TRUST_PROXY_HEADERS is true — which is
+    # exactly how per-IP limits get bypassed.
+    #
+    # IPv6 note: this binds 127.0.0.1 only, not [::1]. Point nginx at the
+    # literal 127.0.0.1, never at `localhost` — on a dual-stack host the
+    # resolver may hand nginx ::1 and every proxied request fails with
+    # "Connection refused" while the port is demonstrably open.
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8081}:${GATEWAY_PORT:-8081}"
+    # Every name here is a real setting read by gateway/config.py. If you add
+    # one, check it against Settings.from_env() first — an unknown variable is
+    # silently ignored, which is the worst possible failure mode for a budget
+    # cap you believed you had set.
+    environment:
+      # -- upstream engine --
+      YANGBLE5_ENGINE_URL: ${YANGBLE5_ENGINE_URL:-http://engine:8318}
+      YANGBLE5_ENGINE_API_KEY: ${YANGBLE5_ENGINE_API_KEY:?set YANGBLE5_ENGINE_API_KEY in .env}
+      YANGBLE5_ENGINE_MANAGEMENT_KEY: ${YANGBLE5_ENGINE_MANAGEMENT_KEY:-}
+      YANGBLE5_UPSTREAM_TIMEOUT_SECONDS: ${YANGBLE5_UPSTREAM_TIMEOUT_SECONDS:-900}
+      YANGBLE5_UPSTREAM_CONNECT_TIMEOUT_SECONDS: ${YANGBLE5_UPSTREAM_CONNECT_TIMEOUT_SECONDS:-10}
+      # -- storage --
+      YANGBLE5_DB_PATH: ${YANGBLE5_DB_PATH:-/data/yangble5.db}
+      # -- registration --
+      YANGBLE5_REGISTRATION_MODE: ${YANGBLE5_REGISTRATION_MODE:-invite}
+      YANGBLE5_ADMIN_API_KEY: ${YANGBLE5_ADMIN_API_KEY:?set YANGBLE5_ADMIN_API_KEY in .env}
+      YANGBLE5_ALLOW_MULTIPLE_KEYS_PER_EMAIL: ${YANGBLE5_ALLOW_MULTIPLE_KEYS_PER_EMAIL:-false}
+      YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY: ${YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY:-5}
+      # -- budgets --
+      YANGBLE5_DAILY_TOKEN_BUDGET: ${YANGBLE5_DAILY_TOKEN_BUDGET:-2000000}
+      YANGBLE5_DAILY_COST_USD_BUDGET: ${YANGBLE5_DAILY_COST_USD_BUDGET:-2.0}
+      YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET: ${YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET:-0}
+      YANGBLE5_GLOBAL_MONTHLY_TOKEN_BUDGET: ${YANGBLE5_GLOBAL_MONTHLY_TOKEN_BUDGET:-0}
+      YANGBLE5_GLOBAL_BUDGET_WARN_RATIO: ${YANGBLE5_GLOBAL_BUDGET_WARN_RATIO:-0.9}
+      YANGBLE5_PRICE_TABLE_FILE: ${YANGBLE5_PRICE_TABLE_FILE:-}
+      # -- crypto --
+      YANGBLE5_KEY_PEPPER: ${YANGBLE5_KEY_PEPPER:?set YANGBLE5_KEY_PEPPER in .env}
+      YANGBLE5_KEY_HASH_SCHEME: ${YANGBLE5_KEY_HASH_SCHEME:-scrypt}
+      # -- rate limits --
+      # These carry MORE weight here than in standalone mode: the Caddyfile's
+      # rate_limit zones do not exist in this deployment, and a stock nginx has
+      # no request limiting until you add limit_req (see the nginx example —
+      # limit_req_zone only works at http level, which on a panel host means
+      # editing a file the panel may rewrite). Until you do, the gateway's own
+      # limits are the only ones.
+      YANGBLE5_RATE_LIMIT_RPM: ${YANGBLE5_RATE_LIMIT_RPM:-60}
+      YANGBLE5_RATE_LIMIT_CONCURRENCY: ${YANGBLE5_RATE_LIMIT_CONCURRENCY:-4}
+      YANGBLE5_AUTH_RPM_PER_IP: ${YANGBLE5_AUTH_RPM_PER_IP:-10}
+      YANGBLE5_AUTH_FAIL_LOCKOUT_THRESHOLD: ${YANGBLE5_AUTH_FAIL_LOCKOUT_THRESHOLD:-8}
+      YANGBLE5_AUTH_FAIL_LOCKOUT_SECONDS: ${YANGBLE5_AUTH_FAIL_LOCKOUT_SECONDS:-300}
+      YANGBLE5_AUTH_CACHE_TTL_SECONDS: ${YANGBLE5_AUTH_CACHE_TTL_SECONDS:-300}
+      # -- abuse signals --
+      YANGBLE5_ABUSE_DISTINCT_IP_THRESHOLD: ${YANGBLE5_ABUSE_DISTINCT_IP_THRESHOLD:-8}
+      YANGBLE5_ABUSE_IP_WINDOW_HOURS: ${YANGBLE5_ABUSE_IP_WINDOW_HOURS:-24}
+      YANGBLE5_ABUSE_AUTO_SUSPEND: ${YANGBLE5_ABUSE_AUTO_SUSPEND:-false}
+      # -- transport --
+      # true because the port is loopback-only, so the ONLY peer that can
+      # reach it is a process on this host — your nginx. Without it every
+      # client looks like 127.0.0.1 and per-IP limits become per-host limits.
+      #
+      # HOPS: this must match how your nginx writes X-Forwarded-For.
+      #   nginx sets  X-Forwarded-For $remote_addr           -> HOPS=1  (recommended)
+      #   nginx sets  X-Forwarded-For $proxy_add_x_forwarded_for
+      #               behind Cloudflare, no real_ip module   -> HOPS=2
+      # gateway/app.py::client_ip reads the entry HOPS-from-the-END, so a wrong
+      # value here silently rate-limits the Cloudflare edge instead of the user.
+      # nginx/yangble5.com.conf.example has the full table.
+      YANGBLE5_TRUST_PROXY_HEADERS: ${YANGBLE5_TRUST_PROXY_HEADERS:-true}
+      YANGBLE5_TRUSTED_PROXY_HOPS: ${YANGBLE5_TRUSTED_PROXY_HOPS:-1}
+      # Must not exceed nginx's `client_max_body_size`, or nginx returns 413
+      # before the gateway ever sees the request. 33554432 == nginx `32m`.
+      YANGBLE5_MAX_REQUEST_BYTES: ${YANGBLE5_MAX_REQUEST_BYTES:-33554432}
+      YANGBLE5_MAX_USAGE_PARSE_BYTES: ${YANGBLE5_MAX_USAGE_PARSE_BYTES:-2097152}
+      # -- misc --
+      YANGBLE5_LOG_LEVEL: ${YANGBLE5_LOG_LEVEL:-INFO}
+      GATEWAY_PORT: ${GATEWAY_PORT:-8081}
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - gateway_data:/data
+    # Immutable root filesystem: the app can only write to /data and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - backend
+    depends_on:
+      engine:
+        condition: service_started
+    healthcheck:
+      # ── HEALTHCHECK PATH CONTRACT ────────────────────────────────────────
+      # `/health` is the path gateway/app.py actually registers
+      # (`@app.get("/health")` — it is the ONLY health route in the codebase),
+      # the path smoke_test.sh probes, and the path GO_LIVE.md curls.
+      #
+      # docker-compose.yml AND this file MUST use the same path. They are two
+      # deployments of one application; if they disagree, the odd one out never
+      # reaches `healthy` — urllib raises HTTPError on a 404, the check exits
+      # non-zero forever, and anything with `condition: service_healthy` on it
+      # waits for a container that will never be ready. Change one, change both.
+      #
+      # python is guaranteed present in this image; curl/wget are not.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,urllib.request; p=os.environ.get('GATEWAY_PORT','8081'); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+p+'/health', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    pids_limit: 512
+    deploy:
+      resources:
+        limits:
+          # Limits matter MORE on a shared host: without them a runaway gateway
+          # competes for CPU with the other sites on this box, and the symptom
+          # shows up as unrelated websites getting slow.
+          cpus: "${GATEWAY_CPUS:-1.00}"
+          memory: ${GATEWAY_MEM:-512M}
+
+  # ── ENGINE (CLIProxyAPI — OPERATOR-SUPPLIED) ────────────────────────────
+  #
+  # We do not vendor, redistribute or auto-download CLIProxyAPI (MIT,
+  # Luis Pater / Router-For.ME). Supply it yourself, one of two ways:
+  #
+  #   (a) put a linux/amd64 `cli-proxy-api` binary in ./engine-bin/ and run
+  #       `docker compose -f docker-compose.behind-proxy.yml build engine`; or
+  #   (b) set ENGINE_IMAGE=<your image> in .env and delete the `build:` key.
+  #
+  # You also supply ./engine/config.yaml — see docker-compose.yml's comment and
+  # deploy/engine/config.example.yaml. Nothing about the engine's configuration
+  # changes in reverse-proxy mode.
+  #
+  # `host: "0.0.0.0"` in that config still means "reachable from the backend
+  # Docker network", because this service has no published port either.
+  engine:
+    <<: *default-hardening
+    image: ${ENGINE_IMAGE:-yangble5/engine:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: yangble5-engine
+    user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
+    environment:
+      YANGBLE5_ENGINE_API_KEY: ${YANGBLE5_ENGINE_API_KEY}
+      YANGBLE5_ENGINE_MANAGEMENT_KEY: ${YANGBLE5_ENGINE_MANAGEMENT_KEY:-}
+    volumes:
+      # Read-only: the engine has no business rewriting its own config, and a
+      # config write is the shortest path from "compromised engine" to
+      # "attacker-controlled upstream".
+      - ./engine/config.yaml:/config/config.yaml:ro
+      # OAuth credential store — MUST be writable. CLIProxyAPI refreshes and
+      # rewrites OAuth tokens here; mounting it :ro breaks token refresh
+      # silently, hours later, in production. Do not "harden" this to :ro.
+      - engine_auth:/auth
+    networks:
+      - backend
+    healthcheck:
+      # A 401 here means YANGBLE5_ENGINE_API_KEY does not match the api-keys
+      # list in engine/config.yaml.
+      #
+      # `$$` is escaped so Compose passes a literal `$` to the container's
+      # shell, which expands the variable from the container's OWN environment.
+      # Writing `${...}` instead would bake the key into the container config
+      # where `docker inspect` — and anything that can read it — would see it.
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null --header="Authorization: Bearer $$YANGBLE5_ENGINE_API_KEY" http://127.0.0.1:8318/v1/models || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging: *default-logging
+    pids_limit: 512
+    deploy:
+      resources:
+        limits:
+          cpus: "${ENGINE_CPUS:-1.50}"
+          memory: ${ENGINE_MEM:-2G}
+
+  # ── SHIM (optional, ONLY for CLIProxyAPI < 7.2.93) ──────────────────────
+  #
+  #     gateway ──▶ shim:8320 ──▶ engine:8318
+  #
+  # Rewrites mid-conversation `role: "system"` messages to `role: "user"`,
+  # which is what upstream CLIProxyAPI 7.2.93 does natively. Without it, a
+  # Claude Code >= 2.1.x client streaming through a 7.1.23 engine gets
+  # `400 Request contains an invalid argument` from Gemini — intermittently,
+  # because the non-streaming path tolerates the same message.
+  #
+  # ENABLE:  set YANGBLE5_ENGINE_URL=http://shim:8320 in .env, then
+  #          docker compose -f docker-compose.behind-proxy.yml --profile shim up -d
+  # RETIRE:  after upgrading the engine past 7.2.93, set the URL back to
+  #          http://engine:8318 and drop --profile shim. It holds no state.
+  #
+  # This is a workaround for an old engine, not a feature of yangble5.
+  shim:
+    <<: *default-hardening
+    profiles: ["shim"]
+    image: ${GATEWAY_IMAGE:-yangble5/gateway:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    container_name: yangble5-shim
+    user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
+    # Reuses the gateway image purely because it already has a Python runtime.
+    # The shim itself is standard library only — no dependency of its own.
+    command:
+      - python
+      - -m
+      - tools.claude_shim
+      - --listen-host=0.0.0.0
+      - --listen-port=8320
+      - --upstream=http://engine:8318
+    working_dir: /app
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    networks:
+      - backend
+    depends_on:
+      engine:
+        condition: service_started
+    healthcheck:
+      # The shim proxies whatever it is given, so the cheapest liveness signal
+      # is "is the port accepting connections".
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket,sys; s=socket.create_connection(('127.0.0.1',8320),3); s.close()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "${SHIM_CPUS:-0.25}"
+          memory: ${SHIM_MEM:-256M}
+
+networks:
+  # One network, because there is no edge container to keep off it. The
+  # gateway<->engine isolation that mattered in the standalone file is
+  # unchanged: the engine has no published port, so the only thing that can
+  # reach it is another container on this network.
+  #
+  # Not `internal: true` — that also blocks OUTBOUND traffic, and the engine
+  # must reach the upstream provider APIs.
+  #
+  # The bridge name matches the standalone file's on purpose; see INTERLOCK in
+  # the header.
+  backend:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: yb5-back
+
+volumes:
+  # Same names as docker-compose.yml, so switching modes in the same project
+  # directory keeps the database and the engine's OAuth tokens.
+  gateway_data:
+  engine_auth:

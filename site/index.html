@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yangble5 — 台灣人的 AI token 自由</title>
+<meta name="description" content="yangble5 是一個開源的 AI 閘道設定與量測工具組:把 1M 上下文接進 Claude Code 與 Codex,並用可重現的腳本證明快取真的有命中。它是代理,不是模型。">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<link rel="canonical" href="https://yangble5.com/">
+<meta property="og:title" content="yangble5 — 台灣人的 AI token 自由">
+<meta property="og:description" content="一行指令,把 1M 上下文接進你的 coding agent。開源、可重現、講清楚做不到什麼。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://yangble5.com/">
+<meta property="og:locale" content="zh_TW">
+<style>
+/* ---------------------------------------------------------------------------
+   yangble5.com — single-file landing page.
+   No external requests: no CDN, no webfonts, no analytics, no trackers.
+   Dark by default, light honoured via prefers-color-scheme.
+   --------------------------------------------------------------------------- */
+:root{
+  --bg:#0b0f14; --bg2:#121820; --bg3:#18202a; --bg4:#1e2833;
+  --fg:#e8eef5; --muted:#9fb0c0; --border:#243040;
+  --accent:#4da3ff; --accent-ink:#06111f;
+  --good:#3fb950; --warn:#e0a02a; --bad:#ff6b61;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+  --radius:10px;
+  --maxw:1080px;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#ffffff; --bg2:#f5f8fb; --bg3:#eaf0f6; --bg4:#dfe7ef;
+    --fg:#0f151c; --muted:#4d5b6a; --border:#cfd9e3;
+    --accent:#0a58ca; --accent-ink:#ffffff;
+    --good:#1a7f37; --warn:#8a6100; --bad:#b62324;
+  }
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--sans); font-size:17px; line-height:1.7;
+  overflow-wrap:break-word;
+}
+h1,h2,h3{line-height:1.25; margin:0 0 .5em; font-weight:650; letter-spacing:-.01em}
+h1{font-size:clamp(1.9rem,5.2vw,3.1rem); letter-spacing:-.025em}
+h2{font-size:clamp(1.35rem,3.4vw,1.9rem); margin-top:0}
+h3{font-size:1.06rem}
+p{margin:0 0 1em}
+a{color:var(--accent); text-decoration-thickness:1px; text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+code,kbd,samp{font-family:var(--mono); font-size:.92em}
+:where(a,button,summary,[tabindex]):focus-visible{
+  outline:3px solid var(--accent); outline-offset:2px; border-radius:4px;
+}
+.wrap{max-width:var(--maxw); margin-inline:auto; padding-inline:20px}
+section{padding-block:clamp(44px,7vw,76px); border-top:1px solid var(--border)}
+section:first-of-type{border-top:0}
+.eyebrow{
+  font-family:var(--mono); font-size:.76rem; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--muted); margin:0 0 .9em;
+}
+.lede{font-size:clamp(1rem,2.2vw,1.16rem); color:var(--muted); max-width:62ch}
+.skip{
+  position:absolute; left:-9999px; top:0; background:var(--accent);
+  color:var(--accent-ink); padding:10px 16px; z-index:99; border-radius:0 0 var(--radius) 0;
+}
+.skip:focus{left:0}
+
+/* ---------- header ---------- */
+header.site{border-bottom:1px solid var(--border); background:var(--bg)}
+header.site .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-block:14px}
+.brand{font-family:var(--mono); font-weight:700; font-size:1.05rem; color:var(--fg); text-decoration:none; letter-spacing:-.02em}
+.brand span{color:var(--accent)}
+.tagline{color:var(--muted); font-size:.86rem; margin-inline-end:auto}
+header.site nav{display:flex; gap:14px; flex-wrap:wrap; font-size:.88rem}
+header.site nav a{color:var(--muted); text-decoration:none}
+header.site nav a:hover,header.site nav a:focus-visible{color:var(--fg); text-decoration:underline}
+
+/* ---------- hero ---------- */
+.hero{padding-top:clamp(38px,6vw,64px)}
+.hero h1{max-width:19ch}
+.hero .lede{margin-bottom:1.6em}
+.claim-strip{
+  display:flex; flex-wrap:wrap; gap:8px; margin:0 0 2em; padding:0; list-style:none;
+}
+.claim-strip li{
+  font-family:var(--mono); font-size:.78rem; color:var(--muted);
+  border:1px solid var(--border); border-radius:999px; padding:4px 11px; background:var(--bg2);
+}
+.claim-strip li b{color:var(--fg); font-weight:600}
+
+/* ---------- copy box ---------- */
+.cmdcard{
+  background:var(--bg2); border:1px solid var(--border);
+  border-radius:14px; overflow:hidden;
+}
+.cmdcard-head{
+  display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center;
+  padding:12px 16px; border-bottom:1px solid var(--border); background:var(--bg3);
+}
+.tablist{display:flex; gap:6px; flex-wrap:wrap}
+.tablist[data-kind="os"]{margin-inline-start:auto}
+.tab{
+  font:inherit; font-size:.85rem; font-weight:550;
+  background:transparent; color:var(--muted); border:1px solid transparent;
+  padding:6px 13px; border-radius:8px; cursor:pointer;
+}
+.tab:hover{color:var(--fg); background:var(--bg4)}
+.tab[aria-selected="true"]{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+.tablist[data-kind="os"] .tab{font-family:var(--mono); font-size:.78rem}
+.cmd-body{padding:18px 16px 16px}
+.cmd-hint{font-size:.85rem; color:var(--muted); margin:0 0 12px}
+.cmd-row{display:flex; gap:12px; align-items:stretch; flex-wrap:wrap}
+.cmd{
+  flex:1 1 340px; min-width:0; margin:0;
+  background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; font-family:var(--mono);
+  font-size:clamp(.82rem,2.4vw,1.02rem); line-height:1.55;
+  overflow-x:auto; white-space:pre; color:var(--fg);
+}
+.cmd::selection,.cmd *::selection{background:var(--accent); color:var(--accent-ink)}
+.copybtn{
+  flex:0 0 auto; font:inherit; font-weight:600; font-size:.95rem;
+  background:var(--accent); color:var(--accent-ink); border:1px solid var(--accent);
+  border-radius:var(--radius); padding:0 22px; min-height:56px; cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+}
+.copybtn:hover{filter:brightness(1.1)}
+.copybtn:active{transform:translateY(1px)}
+.copybtn[data-state="ok"]{background:var(--good); border-color:var(--good); color:#fff}
+.copybtn[data-state="fail"]{background:var(--bad); border-color:var(--bad); color:#fff}
+.copy-status{
+  min-height:1.5em; margin:10px 0 0; font-size:.85rem; font-family:var(--mono); color:var(--good);
+}
+.copy-status:empty{margin:0}
+.cmd-foot{
+  margin:14px 0 0; padding-top:14px; border-top:1px dashed var(--border);
+  font-size:.83rem; color:var(--muted);
+}
+.cmd-foot a{color:var(--accent)}
+
+/* ---------- two-column honesty ---------- */
+.two{display:grid; gap:18px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.panel{border:1px solid var(--border); border-radius:var(--radius); padding:20px 22px; background:var(--bg2)}
+.panel.is{border-inline-start:4px solid var(--good)}
+.panel.isnot{border-inline-start:4px solid var(--bad)}
+.panel h3{margin-top:0; display:flex; align-items:baseline; gap:9px; font-size:1.12rem}
+.panel h3 .mark{font-family:var(--mono); font-weight:700}
+.panel.is h3 .mark{color:var(--good)}
+.panel.isnot h3 .mark{color:var(--bad)}
+.panel ul{margin:0; padding-inline-start:1.15em}
+.panel li{margin-bottom:.75em}
+.panel li:last-child{margin-bottom:0}
+.panel li b{font-weight:650}
+
+/* ---------- pool status ---------- */
+.pool{
+  border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--bg2); padding:22px;
+}
+.pool-head{display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; margin-bottom:14px}
+.dot{width:11px; height:11px; border-radius:50%; background:var(--muted); flex:0 0 auto}
+.dot[data-s="ok"]{background:var(--good); box-shadow:0 0 0 4px color-mix(in srgb,var(--good) 22%,transparent)}
+.dot[data-s="full"]{background:var(--warn); box-shadow:0 0 0 4px color-mix(in srgb,var(--warn) 22%,transparent)}
+.dot[data-s="unknown"]{background:var(--muted)}
+.pool-state{font-weight:650; font-size:1.06rem}
+.pool-sub{font-size:.85rem; color:var(--muted); font-family:var(--mono); margin-inline-start:auto}
+.bar{
+  height:12px; border-radius:999px; background:var(--bg4);
+  overflow:hidden; border:1px solid var(--border); margin:4px 0 8px;
+}
+.bar > i{display:block; height:100%; background:var(--good); width:0}
+.pool dl{display:grid; grid-template-columns:auto 1fr; gap:4px 14px; margin:14px 0 0; font-size:.88rem}
+.pool dt{color:var(--muted)}
+.pool dd{margin:0; font-family:var(--mono)}
+.pool-note{font-size:.83rem; color:var(--muted); margin:14px 0 0}
+.byok{margin-top:18px; padding-top:18px; border-top:1px dashed var(--border)}
+.byok[hidden]{display:none}
+.byok h3{margin-bottom:.35em}
+.mini-cmd{display:flex; gap:10px; flex-wrap:wrap; align-items:stretch; margin-top:12px}
+.mini-cmd pre{
+  flex:1 1 260px; min-width:0; margin:0; background:var(--bg); border:1px solid var(--border);
+  border-radius:8px; padding:11px 13px; font-family:var(--mono); font-size:.84rem;
+  overflow-x:auto; white-space:pre;
+}
+.mini-cmd .copybtn{min-height:44px; font-size:.85rem; padding:0 16px}
+
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg2)}
+table{border-collapse:collapse; width:100%; min-width:620px; font-size:.9rem}
+caption{text-align:start; padding:14px 16px 0; color:var(--muted); font-size:.85rem}
+th,td{padding:11px 14px; text-align:start; border-bottom:1px solid var(--border); vertical-align:top}
+thead th{background:var(--bg3); font-weight:600; font-size:.8rem; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td.num{font-family:var(--mono); white-space:nowrap; font-weight:600}
+td code{background:var(--bg3); padding:2px 6px; border-radius:5px; display:inline-block; word-break:break-all}
+.nm{color:var(--muted); font-weight:500}
+
+/* ---------- steps ---------- */
+ol.steps{counter-reset:s; list-style:none; margin:0; padding:0}
+ol.steps > li{
+  counter-increment:s; position:relative; padding-inline-start:46px; margin-bottom:1.15em;
+}
+ol.steps > li::before{
+  content:counter(s); position:absolute; inset-inline-start:0; top:1px;
+  width:30px; height:30px; border-radius:8px; background:var(--bg3); border:1px solid var(--border);
+  color:var(--accent); font-family:var(--mono); font-weight:700; font-size:.86rem;
+  display:flex; align-items:center; justify-content:center;
+}
+ol.steps b{font-weight:650}
+.never{border:1px solid var(--bad); border-radius:var(--radius); padding:18px 20px; background:color-mix(in srgb,var(--bad) 8%,var(--bg2)); margin-top:22px}
+.never h3{margin-top:0; color:var(--bad)}
+.never ul{margin:0; padding-inline-start:1.15em}
+.never li{margin-bottom:.4em}
+
+/* ---------- faq ---------- */
+details.faq{border:1px solid var(--border); border-radius:var(--radius); background:var(--bg2); margin-bottom:10px}
+details.faq > summary{
+  cursor:pointer; padding:15px 18px; font-weight:600; list-style:none;
+  display:flex; align-items:center; gap:12px;
+}
+details.faq > summary::-webkit-details-marker{display:none}
+details.faq > summary::before{content:"+"; font-family:var(--mono); color:var(--accent); font-weight:700; flex:0 0 auto}
+details.faq[open] > summary::before{content:"\2212"}
+details.faq > summary:hover{background:var(--bg3)}
+.faq-body{padding:0 18px 16px 42px; color:var(--muted)}
+.faq-body p:last-child{margin-bottom:0}
+.faq-body strong{color:var(--fg)}
+
+/* ---------- footer ---------- */
+footer.site{border-top:1px solid var(--border); background:var(--bg2); padding-block:34px; font-size:.87rem; color:var(--muted)}
+footer.site .wrap{display:grid; gap:18px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+footer.site h3{font-size:.78rem; text-transform:uppercase; letter-spacing:.11em; color:var(--muted); margin-bottom:.7em}
+footer.site ul{list-style:none; margin:0; padding:0}
+footer.site li{margin-bottom:.4em}
+.disclaimer{grid-column:1/-1; border-top:1px solid var(--border); padding-top:16px; font-size:.82rem}
+
+@media (max-width:420px){
+  body{font-size:16px}
+  .wrap{padding-inline:15px}
+  .copybtn{width:100%}
+  .cmd{flex-basis:100%}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important; animation:none!important}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">跳到主要內容</a>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="/">yangble<span>5</span></a>
+    <span class="tagline">台灣人做的 AI 閘道工具</span>
+    <nav aria-label="主要導覽">
+      <a href="#what">這是什麼</a>
+      <a href="#status">共用池狀態</a>
+      <a href="#results">實測數字</a>
+      <a href="#installer">腳本做了什麼</a>
+      <a href="#faq">常見問題</a>
+      <a href="https://github.com/shark0120/yangble5">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ══════════════════ HERO ══════════════════ -->
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">開源 · MIT · 可自己重現每一個數字</p>
+    <h1>讓每個人都用得起 1M 上下文。</h1>
+    <p class="lede">
+      yangble5 是一組<strong>開源的 AI 閘道設定、相容層與量測工具</strong>。它把 Gemini / Grok / GPT
+      這些第三方模型,整理成一個給 Claude Code 和 Codex 用的端點,並且處理掉一個會讓
+      prompt cache 幾乎全滅的設定陷阱。<br>
+      這是<strong>存取的自由</strong> —— 不是我們訓練了一個模型。
+    </p>
+
+    <ul class="claim-strip">
+      <li><b>99.53%</b> 暖輪快取命中(~749K 前綴)</li>
+      <li><b>748,918</b> tokens 未被截斷</li>
+      <li><b>1</b> 個端點,Claude Code + Codex 共用</li>
+      <li class="nm">單機、單次執行 · 2026-07-21</li>
+    </ul>
+
+    <!-- ---------- the one-line copy box ---------- -->
+    <div class="cmdcard">
+      <div class="cmdcard-head">
+        <div class="tablist" role="tablist" aria-label="貼上位置" data-kind="target">
+          <button type="button" class="tab" role="tab" id="tab-agent"
+                  aria-selected="true" aria-controls="cmdpanel" data-target="agent">貼進 Claude Code / Codex</button>
+          <button type="button" class="tab" role="tab" id="tab-term"
+                  aria-selected="false" tabindex="-1" aria-controls="cmdpanel" data-target="term">貼進終端機</button>
+        </div>
+        <div class="tablist" role="tablist" aria-label="作業系統" data-kind="os">
+          <button type="button" class="tab" role="tab" id="tab-unix"
+                  aria-selected="true" aria-controls="cmdpanel" data-os="unix">macOS / Linux</button>
+          <button type="button" class="tab" role="tab" id="tab-win"
+                  aria-selected="false" tabindex="-1" aria-controls="cmdpanel" data-os="win">Windows</button>
+        </div>
+      </div>
+
+      <div class="cmd-body" id="cmdpanel" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
+        <p class="cmd-hint" id="cmdHint">
+          直接把這行貼給你的 agent,它會替你執行並完成設定。
+        </p>
+        <div class="cmd-row">
+          <pre class="cmd" id="cmdText">curl -fsSL https://yangble5.com/install.sh | sh</pre>
+          <button type="button" class="copybtn" id="copyMain"
+                  data-copy-target="cmdText" data-label="複製指令">複製指令</button>
+        </div>
+        <p class="copy-status" id="copyStatus" role="status" aria-live="polite"></p>
+        <p class="cmd-foot">
+          管線安裝要求你信任這個網域。所以我們把腳本做的每一件事都
+          <a href="#installer">逐條列在下面</a>,原始碼在
+          <a href="https://github.com/shark0120/yangble5">GitHub</a> 公開,
+          校驗方式在 <a href="verify.html">verify.html</a>。
+          不想管線?先下載、讀完、再執行 —— 我們反而希望你這樣做。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ IS / IS NOT ══════════════════ -->
+<section id="what">
+  <div class="wrap">
+    <p class="eyebrow">先講清楚</p>
+    <h2>這是什麼 / 這不是什麼</h2>
+    <p class="lede" style="margin-bottom:1.8em">
+      右邊那欄跟左邊一樣重要。如果右邊有任何一條讓你覺得不能接受,請不要裝 —— 這樣對大家都好。
+    </p>
+
+    <div class="two">
+      <div class="panel is">
+        <h3><span class="mark" aria-hidden="true">✓</span>你會得到</h3>
+        <ul>
+          <li><b>真正用得到的 1M 上下文視窗。</b>客戶端對不認得的模型名稱會自己假設 200K
+            並提早壓縮對話;我們設定官方環境變數
+            <code>CLAUDE_CODE_MAX_CONTEXT_TOKENS</code>(Codex 則是
+            <code>model_context_window</code>)把這個天花板打開。實測送進 <b>748,918</b> tokens 沒有被截斷。</li>
+          <li><b>不會被打壞的 prompt cache。</b>底層引擎有個看起來很合理的 model pool 設定,
+            會用一個全域計數器逐請求輪替上游、無視你設的路由策略與 session 綁定,
+            把快取命中壓在約 50%。改成 1:1 別名之後,暖輪實測 <b>99.53%</b>(~749K 前綴)。</li>
+          <li><b>一個端點,兩個 agent。</b>Claude Code 與 Codex 指向同一個閘道,同一組設定。</li>
+          <li><b>可以打自己臉的量測工具。</b><code>tools/cache_bench.py</code> 與
+            <code>tools/cache_stats_sidecar.py</code> 會照實印出上游回報的 token 數 ——
+            我們自己不估算任何一個數字。你可以拿它去量你自己的上游,量出不一樣的結果請開 issue。</li>
+        </ul>
+      </div>
+
+      <div class="panel isnot">
+        <h3><span class="mark" aria-hidden="true">✕</span>這不是</h3>
+        <ul>
+          <li><b>這不是一個模型,更不是「台灣自己訓練的模型」。</b>
+            yangble5 是一個<b>代理與設定</b>,背後跑的是 Gemini / Grok / GPT 等第三方模型。
+            沒有訓練、沒有微調,一個權重都不是我們的。</li>
+          <li><b>沒有即時網路搜尋。</b>經過這個代理的任何東西都不會真的上網查。
+            2026-07-21 實測:問「現在是哪一年」,Gemini 上游答 <b>2024</b>、Grok 上游答 <b>2025</b>。
+            拿到的全部是訓練截止日之前的記憶。需要即時資訊請用別的工具。</li>
+          <li><b>共用池的量真的很小,而且先搶先贏。</b>營運者用自己的帳號出錢,
+            目前只有<b>一個</b>健康的上游帳號。用完就是用完,不會有無限額度,
+            我們也不會承諾有。上限到了頁面會直接叫你去綁自己的帳號。</li>
+          <li><b>99.53% 是暖輪數字。</b>每個 session 的第一個請求都是冷寫入、命中率 <b>0%</b>。
+            前綴越小命中率越低(~91K 前綴只有 94.00%)。單機、單次執行,沒有重複實驗、沒有誤差棒。</li>
+          <li><b>核心引擎不是我們寫的。</b>
+            <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a>
+            是別人的優秀作品(MIT)。我們寫的是 <code>tools/</code>、<code>gateway/</code>、
+            <code>deploy/</code> 與 <code>docs/</code>。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ LIVE POOL STATUS ══════════════════ -->
+<section id="status">
+  <div class="wrap">
+    <p class="eyebrow">即時狀態</p>
+    <h2>共用池現在還有沒有</h2>
+    <p class="lede" style="margin-bottom:1.6em">
+      這一塊直接讀本站閘道的 <code>/api/health</code>。讀不到就寫「狀態未知」,
+      我們不會在這裡放一個好看的假數字。
+    </p>
+
+    <div class="pool" id="pool">
+      <div class="pool-head">
+        <span class="dot" id="poolDot" data-s="loading" aria-hidden="true"></span>
+        <span class="pool-state" id="poolState" role="status" aria-live="polite">查詢中…</span>
+        <span class="pool-sub" id="poolSub"></span>
+      </div>
+
+      <!-- The bar renders ONLY when the endpoint actually returns a number. -->
+      <div id="poolMeter" hidden>
+        <div class="bar" role="img" aria-labelledby="poolPct"><i id="poolFill"></i></div>
+        <p id="poolPct" style="margin:0;font-family:var(--mono);font-weight:600"></p>
+      </div>
+
+      <dl>
+        <dt>服務狀態</dt><dd id="fState">—</dd>
+        <dt>是否收單</dt><dd id="fAccept">—</dd>
+        <dt>開放註冊</dt><dd id="fReg">—</dd>
+        <dt>剩餘額度</dt><dd id="fCap">—</dd>
+        <dt>額度重置</dt><dd id="fReset">—</dd>
+      </dl>
+
+      <p class="pool-note" id="poolNote">
+        本站閘道的 <code>/health</code> 是未經驗證的公開端點,依設計<strong>不會</strong>吐出
+        花費金額或帳號數量。若營運者沒有另外公開數值容量欄位,上面的「剩餘額度」就會是
+        <em>未提供</em> —— 那是真的沒有這個數字,不是載入失敗。
+      </p>
+
+      <!-- Shown when the pool is exhausted or not accepting. -->
+      <div class="byok" id="byok" hidden>
+        <h3>共用池滿了 —— 綁你自己的帳號,一樣能用</h3>
+        <p style="color:var(--muted);font-size:.92rem;margin-bottom:0">
+          yangble5 全部開源。你可以在自己的機器上跑同一套設定,接自己的上游帳號,
+          共用池的額度限制就跟你完全無關了。這條路徑永遠不會滿。
+        </p>
+        <div class="mini-cmd">
+          <pre id="byokCmd">git clone https://github.com/shark0120/yangble5</pre>
+          <button type="button" class="copybtn" data-copy-target="byokCmd"
+                  data-label="複製">複製</button>
+        </div>
+        <p style="font-size:.83rem;color:var(--muted);margin:10px 0 0">
+          自架步驟見 repo 的 README 與 <code>deploy/</code>。注意:請使用<strong>可合法對外提供服務的付費金鑰</strong>,
+          個人 OAuth 帳號只能自己用,拿去分享會被停權。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ RESULTS ══════════════════ -->
+<section id="results">
+  <div class="wrap">
+    <p class="eyebrow">實測數字</p>
+    <h2>每一個數字,都附上重現指令</h2>
+    <p class="lede" style="margin-bottom:1.6em">
+      沒量過的東西一律寫「未量測」。我們寧可表格難看,也不要你裝完才發現被騙。
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>2026-07-21,一台 Windows 11 機器,每個設定各跑一次,上游為 CLIProxyAPI 7.1.23 的 <code>antigravity</code> OAuth 通道接 Gemini。</caption>
+        <thead>
+          <tr><th scope="col">量測項目</th><th scope="col">數值</th><th scope="col">怎麼重現</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Prompt 快取命中率(暖輪、token 加權)</th>
+            <td class="num">99.53%</td>
+            <td><code>python tools/cache_bench.py --model yangble5 --prefix-tokens 600000 --rounds 4</code></td>
+          </tr>
+          <tr>
+            <th scope="row">單一 prompt 處理上限(未被截斷)</th>
+            <td class="num">748,918 tokens</td>
+            <td>同上,第 1 輪會印出 prompt 大小</td>
+          </tr>
+          <tr>
+            <th scope="row">冷輪命中率(每個 session 的第一個請求)</th>
+            <td class="num">0%</td>
+            <td>同上,第 1 輪</td>
+          </tr>
+          <tr>
+            <th scope="row">延遲:冷輪 → 最快的暖輪</th>
+            <td class="num">21.3 s → 10.7 s</td>
+            <td>同上,第 1 輪 vs 第 2 輪</td>
+          </tr>
+          <tr>
+            <th scope="row">延遲:暖輪第 3、4 輪</th>
+            <td class="num">23.4 s / 22.3 s</td>
+            <td>同上 —— 命中快取<strong>並沒有</strong>穩定地讓它變快</td>
+          </tr>
+          <tr>
+            <th scope="row">較小前綴(~91K)的命中率</th>
+            <td class="num">94.00%</td>
+            <td><code>python tools/cache_bench.py --prefix-tokens 75000 --rounds 5</code></td>
+          </tr>
+          <tr>
+            <th scope="row">7.1.23 執行檔中確實存在 <code>nextModelPoolOffset</code></th>
+            <td class="num">是</td>
+            <td><code>strings cli-proxy-api.exe | grep -E 'nextModelPoolOffset|conductor\.go'</code></td>
+          </tr>
+          <tr>
+            <th scope="row">Claude Code 走完整條鏈路可用</th>
+            <td class="num nm">人工確認</td>
+            <td class="nm">沒有自動化重現腳本;這是操作觀察,不是 benchmark</td>
+          </tr>
+          <tr>
+            <th scope="row">超過 748,918 tokens 的上下文</th>
+            <td class="num nm">未量測</td>
+            <td class="nm">—</td>
+          </tr>
+          <tr>
+            <th scope="row">長上下文的<em>記憶/召回</em>品質</th>
+            <td class="num nm">未量測</td>
+            <td class="nm">沒有做 needle-in-a-haystack 測試</td>
+          </tr>
+          <tr>
+            <th scope="row">與其他供應商的比較</th>
+            <td class="num nm">未量測</td>
+            <td class="nm">工具開源,歡迎你自己量出來</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="never" style="border-color:var(--border);background:var(--bg2)">
+      <h3 style="color:var(--fg)">量測條件(請連這段一起引用)</h3>
+      <ul style="color:var(--muted)">
+        <li><b>單機、單次執行。</b>Windows 11、Intel i5-11400H、Python 3.14.3,2026-07-21 一個下午。沒有重複實驗,沒有誤差棒。</li>
+        <li><b>99.53% 只是暖輪。</b>把冷輪算進去這一次是 74.6%,而那個數字完全取決於你選擇跑幾輪 —— 所以我們分開列。</li>
+        <li><b>99.53% 不是通用數字。</b>它是這個上游在 ~749K 前綴的快取粒度下的表現;~91K 前綴只有 94.00%,工具預設值更低。</li>
+        <li><b>延遲不是穩定的勝利。</b>一輪變快兩倍,兩輪比冷輪還慢。快取能穩定省的是<b>成本</b>,不是<b>時間</b>。</li>
+        <li><b>約 50% 的天花板是讀原始碼推論出來的</b>,不是 A/B 實測。</li>
+        <li><b>上游會變。</b>供應商隨時會改快取粒度、配額與路由。2026 年 7 月量到的數字,8 月不一定還在。</li>
+      </ul>
+      <p style="margin:14px 0 0;font-size:.88rem">
+        完整方法論與逐輪原始紀錄:<a href="https://github.com/shark0120/yangble5/blob/main/docs/BENCHMARK.md">docs/BENCHMARK.md</a>
+        與 <a href="https://github.com/shark0120/yangble5/blob/main/docs/FINDINGS.md">docs/FINDINGS.md</a>。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ INSTALLER TRANSPARENCY ══════════════════ -->
+<section id="installer">
+  <div class="wrap">
+    <p class="eyebrow">透明度</p>
+    <h2>安裝腳本到底做了什麼</h2>
+    <p class="lede" style="margin-bottom:1.6em">
+      你正要把一行指令貼給一個<strong>有工具權限的 AI agent</strong> 去執行。
+      這件事本來就該讓你緊張。以下是腳本被允許做的全部事情,以及它<strong>絕對不會</strong>做的事。
+    </p>
+
+    <ol class="steps">
+      <li><b>偵測平台與既有設定。</b>判斷 macOS / Linux / Windows,找出你的 shell profile
+        與 Codex 的 <code>config.toml</code> 位置。</li>
+      <li><b>向你要一把 API key(或帶你去註冊)。</b>金鑰只寫進你自己的設定檔,
+        <strong>不會</strong>當成命令列參數傳遞 —— <code>argv</code> 在多數系統上其他使用者讀得到,
+        而且會進 shell 歷史紀錄。</li>
+      <li><b>寫入 Claude Code 需要的環境變數。</b>就是這四個,沒有別的:
+        <code>ANTHROPIC_BASE_URL</code>、<code>ANTHROPIC_AUTH_TOKEN</code>、
+        <code>ANTHROPIC_MODEL</code>、<code>CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000</code>。</li>
+      <li><b>寫入 Codex 的 <code>config.toml</code> 區塊。</b>設定
+        <code>model_provider</code>、<code>base_url</code>、
+        <code>model_context_window = 1000000</code>,金鑰用 <code>env_key</code> 間接引用。</li>
+      <li><b>修改前先備份。</b>任何被改到的檔案都會留下一份帶時間戳的備份,並印出還原指令。</li>
+      <li><b>做一次連線測試,然後印出它改了哪些檔案。</b>結束前把完整的變更清單列給你看。</li>
+    </ol>
+
+    <div class="never">
+      <h3>腳本不會做的事</h3>
+      <ul>
+        <li>不需要、也不會要求 <code>sudo</code> / 系統管理員權限。</li>
+        <li>不安裝背景服務、不設開機自動啟動、不裝任何常駐程式。</li>
+        <li>不會把你的金鑰、prompt、程式碼或任何檔案內容送到 yangble5.com 或任何地方。</li>
+        <li>不會動你 <code>~/.ssh</code>、瀏覽器資料、鑰匙圈或憑證管理員裡的任何東西。</li>
+        <li>不會安裝遙測或分析。這個網站本身也沒有:沒有 cookie、沒有第三方請求。</li>
+      </ul>
+    </div>
+
+    <h3 style="margin-top:34px">不想相信我們?那就別相信 —— 自己核對</h3>
+    <p style="color:var(--muted)">
+      這是推薦做法。先把腳本抓下來、對完雜湊、自己讀一遍,再決定要不要執行。
+    </p>
+    <div class="mini-cmd">
+      <pre id="verifyCmd">curl -fsSL https://yangble5.com/install.sh -o install.sh
+shasum -a 256 install.sh        # macOS / Linux
+# certutil -hashfile install.sh SHA256   (Windows)
+less install.sh                 # 讀完再執行
+sh install.sh</pre>
+      <button type="button" class="copybtn" data-copy-target="verifyCmd" data-label="複製">複製</button>
+    </div>
+    <p style="margin-top:14px">
+      目前公告的 SHA256:
+      <code id="shaValue" style="background:var(--bg3);padding:3px 8px;border-radius:5px">讀取中…</code>
+      <span id="shaNote" style="color:var(--muted);font-size:.85rem"></span>
+    </p>
+    <p style="font-size:.9rem">
+      對照用的完整說明在 <a href="verify.html">verify.html</a>;
+      腳本原始碼與這個網站的原始碼都在
+      <a href="https://github.com/shark0120/yangble5">github.com/shark0120/yangble5</a>。
+      雜湊對不上,<strong>就不要執行</strong>,並請開 issue 告訴我們。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════ FAQ ══════════════════ -->
+<section id="faq">
+  <div class="wrap">
+    <p class="eyebrow">常見問題</p>
+    <h2>你大概會想問的五件事</h2>
+
+    <details class="faq">
+      <summary>需要付錢嗎?</summary>
+      <div class="faq-body">
+        <p><strong>軟體本身完全免費,MIT 授權,永遠不會收費。</strong></p>
+        <p>共用池是營運者<strong>自掏腰包</strong>用自己的帳號撐起來的,所以量很小、先搶先贏、
+          隨時可能滿。它是一個讓你先試試看的入口,不是一個承諾。</p>
+        <p>要穩定使用,就綁自己的上游帳號(自架或用自己的金鑰)。那樣的話,
+          每一個 token 都是計費在<strong>你自己</strong>設定的帳號上,跟我們無關。
+          我們不轉售額度,也不會給你任何「免費額度」的數字承諾。</p>
+      </div>
+    </details>
+
+    <details class="faq">
+      <summary>我打的字會被看到嗎?</summary>
+      <div class="faq-body">
+        <p><strong>閘道只記錄中繼資料,從不記錄 prompt 或回覆內容。</strong>
+          實際寫進日誌的欄位就是這些:金鑰 ID、端點路徑、模型名稱、HTTP 狀態、
+          token 數量、快取命中率、花費、延遲。程式碼在
+          <a href="https://github.com/shark0120/yangble5/blob/main/gateway/app.py">gateway/app.py</a>,
+          你可以自己搜 <code>request.completed</code> 核對。</p>
+        <p>但是請把這件事聽完:<strong>任何代理,在技術上都看得到經過它的明文內容。</strong>
+          我們的政策與程式碼是不記錄,而政策不等於物理隔離。真正敏感的東西,
+          不要送進任何你不是自己在營運的代理 —— 包含這一個。</p>
+        <p>另外,你的內容一定會送到<strong>上游供應商</strong>(Google / xAI / OpenAI),
+          適用的是他們的條款,不是我們的。</p>
+      </div>
+    </details>
+
+    <details class="faq">
+      <summary>額度用完怎麼辦?</summary>
+      <div class="faq-body">
+        <p>共用池滿的時候,閘道會回 <code>402</code> 並停止把請求送去上游 ——
+          它不會偷偷降級成別的模型,也不會給你一個假的回答。上面的<a href="#status">狀態區塊</a>
+          也會同步切換成綁自己帳號的說明。</p>
+        <p>兩條路:等重置,或者<strong>綁自己的上游帳號</strong>。第二條路永遠不會滿,
+          而且整套東西開源,自架跟共用池跑的是同一份程式碼。</p>
+      </div>
+    </details>
+
+    <details class="faq">
+      <summary>可以自己架嗎?</summary>
+      <div class="faq-body">
+        <p><strong>可以,而且我們希望你這樣做。</strong>repo 裡的 <code>deploy/</code> 有完整的
+          Docker Compose、Caddy 設定、系統加固腳本與營運 runbook。</p>
+        <p>如果你要開給別人用,請先讀
+          <a href="https://github.com/shark0120/yangble5/blob/main/docs/OPERATING_A_PUBLIC_SERVICE.md">docs/OPERATING_A_PUBLIC_SERVICE.md</a>
+          和 <a href="https://github.com/shark0120/yangble5/blob/main/SECURITY.md">SECURITY.md</a>:
+          先設好全域花費上限再開放註冊、絕不要把引擎連接埠暴露到公網、
+          並且使用<strong>可合法對外服務的付費金鑰</strong>(個人 OAuth 帳號拿去分享會被停權)。</p>
+      </div>
+    </details>
+
+    <details class="faq">
+      <summary>跟直接用官方有什麼差別?</summary>
+      <div class="faq-body">
+        <p><strong>如果你付得起官方、而且需要即時搜尋跟最好的模型,那就用官方。</strong>
+          我們不會說 yangble5 比較強 —— 它跑的就是別人的模型,不可能比較強。</p>
+        <p>yangble5 解決的是另外三件事:
+          把便宜的 1M 上下文模型接進你已經在用的 coding agent;
+          修好一個會讓 prompt cache 幾乎全滅、因此讓長 session 貴上好幾倍的設定陷阱;
+          以及讓 Claude Code 和 Codex 共用同一個端點與同一份設定。</p>
+        <p>代價寫在上面那張表和<a href="#what">「這不是什麼」</a>那一欄:沒有即時搜尋、
+          共用池很小、延遲沒有變好、而且所有數字都只是單機單次的量測。</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <div>
+      <h3>專案</h3>
+      <ul>
+        <li><a href="https://github.com/shark0120/yangble5">GitHub 原始碼</a></li>
+        <li><a href="https://github.com/shark0120/yangble5/blob/main/LICENSE">授權條款(MIT)</a></li>
+        <li><a href="https://github.com/shark0120/yangble5/blob/main/SECURITY.md">安全性政策</a></li>
+        <li><a href="https://github.com/shark0120/yangble5/issues">回報問題</a></li>
+      </ul>
+    </div>
+    <div>
+      <h3>證據</h3>
+      <ul>
+        <li><a href="https://github.com/shark0120/yangble5/blob/main/docs/BENCHMARK.md">量測方法論</a></li>
+        <li><a href="https://github.com/shark0120/yangble5/blob/main/docs/FINDINGS.md">逐項發現與原始數據</a></li>
+        <li><a href="verify.html">安裝腳本校驗</a></li>
+      </ul>
+    </div>
+    <div>
+      <h3>致謝</h3>
+      <ul>
+        <li>核心引擎 <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a>(MIT)
+          是他人的作品,不是我們寫的。</li>
+      </ul>
+    </div>
+    <p class="disclaimer">
+      yangble5 是一個<strong>社群開源專案</strong>,與 Anthropic、Google、OpenAI、xAI
+      或任何模型供應商<strong>沒有任何從屬、贊助或合作關係</strong>,也未經其背書。
+      所有商標屬於各自的擁有者。yangble5 <strong>不是模型</strong>,是一個連到第三方模型的代理與工具組。
+      本站沒有 cookie、沒有分析追蹤、沒有第三方請求。
+    </p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ===================================================================
+   * 1. Command matrix. Two axes: paste target x operating system.
+   *    The installer track owns the scripts these URLs point at.
+   * =================================================================== */
+  var CMD = {
+    unix: "curl -fsSL https://yangble5.com/install.sh | sh",
+    win:  "irm https://yangble5.com/install.ps1 | iex"
+  };
+  var HINT = {
+    agent: "直接把這行貼給你的 agent,它會替你執行並完成設定。",
+    term:  "貼進終端機執行。建議先看過下面「安裝腳本做了什麼」再按 Enter。"
+  };
+
+  var state = { target: "agent", os: "unix" };
+
+  var cmdText = document.getElementById("cmdText");
+  var cmdHint = document.getElementById("cmdHint");
+  var panel   = document.getElementById("cmdpanel");
+
+  /* ---- OS detection -------------------------------------------------
+   * userAgentData first (not spoofed by the classic UA freeze), then a
+   * conservative UA sniff. Anything we cannot identify stays on unix,
+   * which is the safer default: a curl line pasted into PowerShell fails
+   * loudly, whereas the reverse can look like it half-worked.
+   * ------------------------------------------------------------------ */
+  function detectOS() {
+    try {
+      var uad = navigator.userAgentData;
+      if (uad && typeof uad.platform === "string" && uad.platform) {
+        return /win/i.test(uad.platform) ? "win" : "unix";
+      }
+    } catch (e) { /* fall through to UA */ }
+    var ua = navigator.userAgent || "";
+    if (/Windows NT|Win64|WOW64/i.test(ua)) return "win";
+    return "unix";
+  }
+
+  function render() {
+    cmdText.textContent = CMD[state.os];
+    cmdHint.textContent = HINT[state.target];
+    var labelledBy = state.target === "agent" ? "tab-agent" : "tab-term";
+    panel.setAttribute("aria-labelledby", labelledBy);
+  }
+
+  /* ---- tablist wiring (mouse + full keyboard support) ---------------- */
+  function wireTablist(list) {
+    var kind = list.getAttribute("data-kind");
+    var tabs = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'));
+
+    function select(tab, focus) {
+      tabs.forEach(function (t) {
+        var on = t === tab;
+        t.setAttribute("aria-selected", on ? "true" : "false");
+        t.tabIndex = on ? 0 : -1;
+      });
+      if (kind === "os") state.os = tab.getAttribute("data-os");
+      else state.target = tab.getAttribute("data-target");
+      render();
+      if (focus) tab.focus();
+    }
+
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener("click", function () { select(tab, false); });
+      tab.addEventListener("keydown", function (ev) {
+        var next = null;
+        if (ev.key === "ArrowRight" || ev.key === "ArrowDown") next = tabs[(i + 1) % tabs.length];
+        else if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") next = tabs[(i - 1 + tabs.length) % tabs.length];
+        else if (ev.key === "Home") next = tabs[0];
+        else if (ev.key === "End") next = tabs[tabs.length - 1];
+        if (next) { ev.preventDefault(); select(next, true); }
+      });
+    });
+
+    list.__select = select;
+    list.__tabs = tabs;
+  }
+
+  var lists = Array.prototype.slice.call(document.querySelectorAll('[role="tablist"]'));
+  lists.forEach(wireTablist);
+
+  // Preselect the detected OS.
+  var osList = document.querySelector('[data-kind="os"]');
+  var detected = detectOS();
+  if (osList && osList.__select) {
+    var wanted = osList.__tabs.filter(function (t) { return t.getAttribute("data-os") === detected; })[0];
+    if (wanted) osList.__select(wanted, false);
+  }
+  render();
+
+  /* ===================================================================
+   * 2. Copy buttons. Async clipboard where available, execCommand
+   *    fallback for non-secure contexts and older browsers. Feedback is
+   *    announced through an aria-live region, not colour alone.
+   * =================================================================== */
+  var statusEl = document.getElementById("copyStatus");
+  var statusTimer = null;
+
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function feedback(btn, ok) {
+    var label = btn.getAttribute("data-label") || "複製";
+    btn.setAttribute("data-state", ok ? "ok" : "fail");
+    btn.textContent = ok ? "已複製 ✓" : "複製失敗";
+    if (statusEl) {
+      statusEl.style.color = ok ? "var(--good)" : "var(--bad)";
+      statusEl.textContent = ok
+        ? "指令已複製到剪貼簿。"
+        : "無法存取剪貼簿,請手動選取上面的指令複製。";
+    }
+    window.clearTimeout(statusTimer);
+    statusTimer = window.setTimeout(function () {
+      btn.removeAttribute("data-state");
+      btn.textContent = label;
+      if (statusEl) statusEl.textContent = "";
+    }, 2600);
+  }
+
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("[data-copy-target]") : null;
+    if (!btn) return;
+    var src = document.getElementById(btn.getAttribute("data-copy-target"));
+    if (!src) return;
+    var text = src.textContent.replace(/\s+$/, "");
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(
+        function () { feedback(btn, true); },
+        function () { feedback(btn, legacyCopy(text)); }
+      );
+    } else {
+      feedback(btn, legacyCopy(text));
+    }
+  });
+
+  /* ===================================================================
+   * 3. Live pool status.
+   *
+   *    HONESTY CONTRACT — read before changing anything here.
+   *    The gateway's /health is public and unauthenticated, and by design
+   *    reports NO spend, NO account counts and NO capacity figure. It
+   *    returns: status, service, version, uptime_seconds,
+   *    accepting_requests, registration.
+   *
+   *    Therefore:
+   *      - The percentage bar renders ONLY if the response genuinely
+   *        carries a numeric capacity field. There is no default, no
+   *        estimate and no interpolation anywhere in this function.
+   *      - No response, bad JSON or a missing field  -> 狀態未知 / 未提供.
+   *      - accepting_requests === false              -> promote BYOK.
+   *    If you ever find yourself writing a number literal into the meter,
+   *    you have broken the one rule this page exists to keep.
+   * =================================================================== */
+  var POOL_ENDPOINTS = ["/api/health", "/health", "/healthz"];
+
+  var el = {
+    dot:    document.getElementById("poolDot"),
+    state:  document.getElementById("poolState"),
+    sub:    document.getElementById("poolSub"),
+    meter:  document.getElementById("poolMeter"),
+    fill:   document.getElementById("poolFill"),
+    pct:    document.getElementById("poolPct"),
+    fState: document.getElementById("fState"),
+    fAccept:document.getElementById("fAccept"),
+    fReg:   document.getElementById("fReg"),
+    fCap:   document.getElementById("fCap"),
+    fReset: document.getElementById("fReset"),
+    byok:   document.getElementById("byok")
+  };
+
+  function setUnknown(reason) {
+    el.dot.setAttribute("data-s", "unknown");
+    el.state.textContent = "狀態未知";
+    el.sub.textContent = reason || "";
+    el.meter.hidden = true;
+    el.fState.textContent = "未知";
+    el.fAccept.textContent = "未知";
+    el.fReg.textContent = "未知";
+    el.fCap.textContent = "未知";
+    el.fReset.textContent = "未知";
+    // Unknown is NOT exhausted. Do not push BYOK on a network blip.
+    el.byok.hidden = true;
+  }
+
+  var REG_LABEL = { open: "開放自助註冊", invite: "需要邀請碼", closed: "已關閉註冊" };
+
+  /* Read a capacity percentage only if it is really there and really a
+     number in [0,100]. Several shapes are accepted so the gateway can add
+     the field without this page needing a redeploy. */
+  function readPct(d) {
+    var candidates = [
+      d.remaining_pct, d.capacity_remaining_pct,
+      d.pool && d.pool.remaining_pct,
+      d.pool && d.pool.remaining_percent
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      var v = candidates[i];
+      if (typeof v === "number" && isFinite(v) && v >= 0 && v <= 100) return v;
+    }
+    return null;
+  }
+
+  function readReset(d) {
+    var v = (d.pool && d.pool.resets_at) || d.resets_at || d.pool_resets_at;
+    return (typeof v === "string" && v) ? v : null;
+  }
+
+  function fmtReset(iso) {
+    var t = new Date(iso);
+    if (isNaN(t.getTime())) return null;
+    try {
+      return new Intl.DateTimeFormat("zh-TW", {
+        month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+        hour12: false, timeZoneName: "short"
+      }).format(t);
+    } catch (e) { return t.toISOString(); }
+  }
+
+  function paint(d) {
+    var accepting = d.accepting_requests === true;
+    var degraded  = d.status === "degraded" || d.accepting_requests === false;
+
+    el.fState.textContent  = typeof d.status === "string" ? d.status : "未知";
+    el.fAccept.textContent = (typeof d.accepting_requests === "boolean")
+      ? (accepting ? "是" : "否") : "未知";
+    el.fReg.textContent    = REG_LABEL[d.registration] || (d.registration || "未知");
+    el.sub.textContent     = d.version ? ("gateway v" + d.version) : "";
+
+    /* --- the bar: only with a real number --- */
+    var pct = readPct(d);
+    if (pct === null) {
+      el.meter.hidden = true;
+      el.fCap.textContent = "未提供(本站不公開數值容量)";
+    } else {
+      var rounded = Math.round(pct);
+      el.meter.hidden = false;
+      el.fill.style.width = rounded + "%";
+      el.fill.style.background = rounded <= 10 ? "var(--bad)"
+                              : rounded <= 30 ? "var(--warn)" : "var(--good)";
+      el.pct.textContent = "剩餘 " + rounded + "%";
+      el.fCap.textContent = "剩餘 " + rounded + "%";
+    }
+
+    var reset = readReset(d);
+    var pretty = reset ? fmtReset(reset) : null;
+    el.fReset.textContent = pretty || (reset ? reset : "未提供");
+
+    if (degraded) {
+      el.dot.setAttribute("data-s", "full");
+      el.state.textContent = "共用池已達上限,目前不收新的請求";
+      el.byok.hidden = false;
+    } else if (accepting) {
+      el.dot.setAttribute("data-s", "ok");
+      el.state.textContent = "服務運作中,共用池開放使用";
+      el.byok.hidden = true;
+    } else {
+      // Reachable, but it did not tell us whether it accepts work.
+      setUnknown("回應缺少 accepting_requests 欄位");
+    }
+  }
+
+  function tryFetch(i) {
+    if (i >= POOL_ENDPOINTS.length) { setUnknown("無法連線到閘道"); return; }
+    var ctl = ("AbortController" in window) ? new AbortController() : null;
+    var timer = window.setTimeout(function () { if (ctl) ctl.abort(); }, 6000);
+
+    fetch(POOL_ENDPOINTS[i], {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      headers: { "Accept": "application/json" },
+      signal: ctl ? ctl.signal : undefined
+    }).then(function (r) {
+      window.clearTimeout(timer);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      if (!d || typeof d !== "object") throw new Error("bad payload");
+      paint(d);
+    }).catch(function () {
+      window.clearTimeout(timer);
+      tryFetch(i + 1);
+    });
+  }
+
+  if ("fetch" in window) { tryFetch(0); }
+  else { setUnknown("瀏覽器不支援 fetch"); }
+
+  /* ===================================================================
+   * 4. Installer SHA256 — fetched live, never hardcoded.
+   *    A checksum baked into HTML is a checksum nobody updates. If the
+   *    file is not published yet, say so plainly.
+   * =================================================================== */
+  var shaEl = document.getElementById("shaValue");
+  var shaNote = document.getElementById("shaNote");
+
+  if (shaEl && "fetch" in window) {
+    fetch("/install.sh.sha256", { cache: "no-store", credentials: "omit" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+      .then(function (txt) {
+        var m = /\b[a-fA-F0-9]{64}\b/.exec(txt || "");
+        if (!m) throw new Error("no digest");
+        shaEl.textContent = m[0].toLowerCase();
+        if (shaNote) shaNote.textContent = "(install.sh,即時讀取自 /install.sh.sha256)";
+      })
+      .catch(function () {
+        shaEl.textContent = "尚未公告";
+        if (shaNote) {
+          shaNote.textContent = "(讀不到 /install.sh.sha256 — 請改用 verify.html 的方式自行核對,不要因為這裡空白就跳過驗證)";
+        }
+      });
+  } else if (shaEl) {
+    shaEl.textContent = "尚未公告";
+  }
+})();
+</script>
+</body>
+</html>

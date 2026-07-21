@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Benchmark result from your own setup
+    url: https://github.com/shark0120/yangble5/issues/new?labels=benchmark&title=Benchmark%20result%3A%20
+    about: "Ran cache_bench.py against your provider? Post the --json output, especially if it contradicts ours."
+  - name: CLIProxyAPI (the upstream engine)
+    url: https://github.com/router-for-me/CLIProxyAPI
+    about: "Bugs in the Go proxy engine itself - OAuth, wire formats, routing - belong upstream, not here."
+  - name: Security vulnerability
+    url: https://github.com/shark0120/yangble5/security/advisories/new
+    about: "Do not open a public issue. Report privately here."

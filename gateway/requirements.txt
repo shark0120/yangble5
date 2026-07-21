@@ -1,0 +1,21 @@
+# Runtime dependencies for the gateway service (deploy/Dockerfile.gateway installs
+# this file, then adds uvicorn[standard] separately).
+#
+# Deliberately short. The gateway is the internet-facing component of this
+# project, so every package listed here is a package whose CVEs become the
+# operator's problem. Storage is stdlib sqlite3, hashing is stdlib hashlib, rate
+# limiting is stdlib threading — none of that appears below on purpose.
+#
+# pydantic and starlette are NOT listed: they arrive as fastapi's own pinned
+# dependencies, and pinning them separately here would let the two drift.
+
+fastapi>=0.110,<1.0
+httpx>=0.27,<1.0
+
+# OPTIONAL, intentionally commented out. Uncomment only if you set
+# BYOK_ENCRYPTION_KEY, which turns on AES-256-GCM encryption at rest for
+# user-supplied upstream credentials. Without it the gateway still runs and
+# BYOK still works, but credentials are stored as-is and the gateway says so
+# to every user who attaches one. Setting BYOK_ENCRYPTION_KEY *without* this
+# installed is a startup error, never a silent downgrade.
+# cryptography>=42

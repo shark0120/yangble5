@@ -1,0 +1,42 @@
+# Code owners.
+#
+# Every file has an owner so no pull request can merge without someone who
+# understands the blast radius looking at it. Later lines win, so the specific
+# entries at the bottom override the catch-all at the top.
+#
+# Ownership here means "must review", not "wrote it". The parts of this
+# repository that can hurt someone are the deployment bundle (runs as root on a
+# public host), the gateway (is the public host), and the claims in docs/ (are
+# quoted by people who will never read the footnotes).
+
+# ---- default -------------------------------------------------------------
+*                                   @shark0120
+
+# ---- things that decide whether a published number is honest -------------
+/README.md                          @shark0120
+/CHANGELOG.md                       @shark0120
+/RELEASING.md                       @shark0120
+/docs/                              @shark0120
+/assets/                            @shark0120
+/site/                              @shark0120
+
+# ---- measurement tooling: changing these changes what the numbers mean ----
+/tools/                             @shark0120
+/tests/                             @shark0120
+
+# ---- anything reachable from the internet --------------------------------
+/gateway/                           @shark0120
+/byok/                              @shark0120
+
+# ---- runs as root on an operator's server --------------------------------
+/deploy/                            @shark0120
+/deploy/harden.sh                   @shark0120
+/deploy/fail2ban/                   @shark0120
+
+# ---- supply chain and release machinery ----------------------------------
+/pyproject.toml                     @shark0120
+/.github/                           @shark0120
+/.github/workflows/                 @shark0120
+/scripts/                           @shark0120
+/SECURITY.md                        @shark0120
+/LICENSE                            @shark0120

@@ -1,0 +1,53 @@
+# ── SECRETS: never commit. The upstream yangble5 install keeps live OAuth
+# tokens and API keys next to the engine; this repo must stay clean. ──
+auth/
+*.oauth
+config.local.yaml
+config.yaml
+.env
+.env.*
+!.env.example
+*secret*
+*credential*
+*token*.json
+!package-lock.json
+gateway/data/
+*.db
+*.sqlite
+*.sqlite3
+certs/
+*.pem
+*.key
+!**/example*.key
+
+# ── deploy: operator-supplied artifacts ──
+# The CLIProxyAPI binary is never committed: we do not redistribute it, and a
+# 40MB binary in git history cannot be taken back out.
+deploy/engine-bin/*
+!deploy/engine-bin/README.md
+# Live Caddy drop-ins are the operator's; only the .example is tracked.
+deploy/caddy/conf.d/*.conf
+# Backups written by harden.sh before it edits a system file.
+*.yangble5.bak-*
+
+# ── runtime / generated ──
+stats.json
+*.tmp
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+logs/
+*.log
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini

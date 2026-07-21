@@ -1,0 +1,66 @@
+# yangble5 gateway (FastAPI) container image.
+# ===========================================================================
+# Build context is the REPO ROOT, not deploy/ — see docker-compose.yml:
+#     docker compose build gateway
+#
+# The gateway source lives in ../gateway. This file only packages it; the
+# gateway's own contract (routes, env vars) is documented in deploy/README.md.
+# ===========================================================================
+
+FROM python:3.12-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Non-root runtime identity. Keep these in sync with YANGBLE5_UID/GID in .env:
+# the /data volume is chowned to this id and SQLite needs write access to both
+# the database file AND its directory (for the -wal and -shm files).
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid "${APP_GID}" app \
+ && useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home --shell /usr/sbin/nologin app
+
+WORKDIR /app
+
+# Dependencies first so edits to gateway source do not invalidate the pip layer.
+COPY gateway/requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+ && python -m pip install --no-cache-dir "uvicorn[standard]>=0.30" \
+ && rm -f /tmp/requirements.txt
+
+COPY gateway/ /app/gateway/
+
+# tools/ rides along so the same image can run the optional `shim` service
+# (`python -m tools.claude_shim`) without a second image to build and patch.
+# It costs a few kB: claude_shim.py, cache_bench.py and cache_stats_sidecar.py
+# are standard-library only and pull in no extra dependency.
+COPY tools/ /app/tools/
+
+# SQLite lives on a named volume mounted here. Created and chowned at build
+# time so the container still starts if the volume is empty on first boot.
+RUN mkdir -p /data && chown -R "${APP_UID}:${APP_GID}" /data /app
+
+USER app:app
+
+ENV GATEWAY_PORT=8000 \
+    GATEWAY_ASGI_APP=gateway.app:app
+
+EXPOSE 8000
+
+# WHY these uvicorn flags:
+#   --proxy-headers + --forwarded-allow-ips
+#       Only Caddy can reach this port (no published port, private Docker
+#       network), so trusting forwarded headers from any peer on that network
+#       is safe and is the only way the app sees the real client IP.
+#   --timeout-keep-alive 75
+#       Longer than Caddy's `keepalive 2m`? No — deliberately SHORTER, so the
+#       idle connection is torn down by the origin, not mid-request by Caddy.
+#   --no-server-header
+#       One less thing advertising the stack; Caddy strips it too.
+#   --workers is NOT set
+#       SQLite plus multiple worker processes is a write-contention foot-gun.
+#       Scale with async concurrency inside one process first; if you truly
+#       need workers, move off SQLite first (see runbook.md).
+CMD ["sh", "-c", "exec python -m uvicorn \"$GATEWAY_ASGI_APP\" --host 0.0.0.0 --port \"$GATEWAY_PORT\" --proxy-headers --forwarded-allow-ips='*' --timeout-keep-alive 75 --no-server-header"]

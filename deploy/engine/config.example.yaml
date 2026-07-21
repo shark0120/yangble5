@@ -1,0 +1,157 @@
+# CLIProxyAPI configuration for a yangble5 public deployment.
+# ===========================================================================
+# Copy to deploy/engine/config.yaml and fill in the two placeholder values
+# below (install.sh does this for you, substituting the same secrets it wrote
+# to .env, which is the single most common thing to get wrong by hand).
+#
+# deploy/engine/config.yaml is gitignored. NEVER commit a filled-in copy.
+#
+# This is NOT the upstream config.example.yaml — it is a trimmed subset
+# covering the settings a public deployment actually needs. Start from the
+# upstream file if you want the exhaustive list; it ships with CLIProxyAPI.
+#
+# Verified against CLIProxyAPI 7.1.23 on 2026-07-21.
+# ===========================================================================
+
+# ── Listener ───────────────────────────────────────────────────────────────
+# 0.0.0.0 INSIDE THE CONTAINER ONLY. The engine service in docker-compose.yml
+# publishes no ports, so this address means "reachable from the backend Docker
+# network" — i.e. from the gateway (and the shim), and from nothing else.
+#
+# If you run the engine directly on the host instead of in Docker, change this
+# to 127.0.0.1. The project's standing rule is that the engine never listens on
+# a public interface; in Docker that is enforced by the absence of a `ports:`
+# key, on the host it is enforced by this line.
+host: "0.0.0.0"
+port: 8318
+
+# TLS is terminated by Caddy at the edge. The engine speaks plaintext HTTP on
+# a private Docker network and must not try to manage certificates.
+tls:
+  enable: false
+  cert: ""
+  key: ""
+
+# ── Management API ─────────────────────────────────────────────────────────
+# /v0/management/* can list and mint credentials, read the usage queue and
+# rewrite this config. Three locks stand between it and the internet:
+#   1. Caddy returns 404 for /v0/* (deploy/Caddyfile)
+#   2. the engine container publishes no port
+#   3. this key
+# Leave `secret` empty to disable the management API entirely (every
+# /v0/management route then 404s). Do that if you never use the sidecar.
+remote-management:
+  # "remote" here means "not the engine's own loopback". The gateway and the
+  # stats sidecar are separate containers, so they count as remote.
+  allow-remote: true
+  # Plaintext here is hashed on startup by the engine.
+  secret: "__ENGINE_MANAGEMENT_KEY__"
+  # The bundled browser control panel has no place on a public host.
+  disable-control-panel: true
+
+# ── Credentials ────────────────────────────────────────────────────────────
+# OAuth token store. Mounted as a WRITABLE named volume (engine_auth) because
+# CLIProxyAPI rewrites refreshed tokens in place. Mounting it read-only breaks
+# token refresh silently, hours later, in production.
+auth-dir: "/auth"
+
+# The key the gateway presents. End users never see it: they authenticate to
+# the gateway with a yb5_ key, and the gateway swaps in this one before
+# talking to the engine (gateway/upstream.py strips every client-supplied
+# credential header first).
+api-keys:
+  - "__ENGINE_API_KEY__"
+
+# ── Logging ────────────────────────────────────────────────────────────────
+# debug: false on a public host. Debug logging includes request detail you do
+# not want on disk when the requests belong to other people.
+debug: false
+logging-to-file: false
+logs-max-total-size-mb: 0
+error-logs-max-files: 10
+
+# pprof exposes a Go profiling surface. Caddy 404s /debug/pprof/* as well, but
+# the correct place to turn it off is here.
+pprof:
+  enabled: false
+
+# ── Usage accounting ───────────────────────────────────────────────────────
+# The usage queue is a CONSUME-ON-READ queue: whoever reads it first gets the
+# records and everyone else gets nothing. Run at most ONE consumer.
+# tools/cache_stats_sidecar.py is that consumer; the gateway does its own
+# accounting from the response bodies it forwards and does not read this queue.
+usage-statistics-enabled: true
+redis-usage-queue-retention-seconds: 3600
+
+# ── Networking ─────────────────────────────────────────────────────────────
+proxy-url: ""
+force-model-prefix: false
+passthrough-headers: false
+
+request-retry: 3
+max-retry-credentials: 0
+max-retry-interval: 30
+disable-cooling: false
+
+# ── Long-task behaviour ────────────────────────────────────────────────────
+# Emit a blank line every N seconds on NON-streaming responses so the
+# connection keeps producing bytes. This is not cosmetic on a public host:
+# Cloudflare gives up on an origin that has sent nothing for ~100 seconds and
+# returns 524. A slow non-streaming generation on a very large prompt can
+# exceed that; the keep-alive is what stops it. See cloudflare.md.
+nonstream-keepalive-interval: 15
+
+# ── Routing ────────────────────────────────────────────────────────────────
+routing:
+  # fill-first: deterministic first-healthy credential. Chosen over
+  # round-robin because the Gemini implicit prompt cache is scoped per
+  # account: after an engine restart the in-memory session-affinity table is
+  # empty, and fill-first re-picks the SAME account (cache still warm) while
+  # round-robin may land on another (cache cold).
+  strategy: "fill-first"
+
+  # Pin a session to one credential. Session IDs are extracted from
+  # metadata.user_id (Claude Code), X-Session-ID / Session_id (Codex) and
+  # several others. Failover on credential loss still applies.
+  session-affinity: true
+  # 12h sliding TTL: a whole working day stays pinned to one account.
+  session-affinity-ttl: "12h"
+
+ws-auth: true
+enable-gemini-cli-endpoint: false
+
+# ── Model aliases ──────────────────────────────────────────────────────────
+# THE IMPORTANT PART. Map each friendly alias to EXACTLY ONE upstream model.
+#
+# WHY 1:1 MATTERS (verified against CLIProxyAPI v7.1.23 source): when a single
+# alias maps to TWO upstream model names in an openai-compatibility pool, the
+# upstream is rotated per request by a GLOBAL counter
+# (conductor.go, nextModelPoolOffset). That counter ignores routing.strategy
+# and it ignores session-affinity. Consecutive requests in one conversation
+# therefore land on alternating upstreams, and since the prompt cache lives on
+# the upstream side, the hit rate is capped at roughly 50% no matter how the
+# rest of the config is tuned. A direct 1:1 alias on the provider channel
+# removes the rotation entirely.
+#
+# Replace the provider keys and model names below with the providers you have
+# actually authenticated. `name` is the real upstream model; `alias` is what
+# your users type. `fork: true` keeps the original name available too.
+#
+# A proxy cannot merge model weights and pooling does not add context. An
+# alias is a name, not a new model.
+oauth-model-alias:
+  antigravity:
+    - name: "gemini-pro-agent"
+      alias: "yangble5"
+      fork: true
+    # Some clients append a context suffix to the model name; give it its own
+    # 1:1 entry rather than letting it fall through to a pool.
+    - name: "gemini-pro-agent"
+      alias: "yangble5[1m]"
+      fork: true
+
+# Models you never want exposed to users (deprecated, experimental, or ones
+# whose quota you are protecting).
+oauth-excluded-models: {}
+#  xai:
+#    - "grok-3-mini"

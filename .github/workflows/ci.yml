@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A force-push while a run is queued should cancel the stale run, not race it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report every broken combination in one run instead of stopping at the
+      # first: "fails on Windows only" is exactly the bug this matrix exists for.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # The tools themselves have zero runtime dependencies (project.dependencies
+        # is empty); the dev extra adds pytest, ruff and the gateway's fastapi/httpx
+        # so the whole suite can be collected.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: python -m ruff check .
+
+      - name: Format check (ruff)
+        # Scoped to the directories that have had `ruff format` applied once.
+        # Widen to "." when the rest follows -- burying a repo-wide reformat
+        # inside an unrelated change makes that change impossible to review.
+        run: python -m ruff format --check tools byok
+
+      - name: Test
+        run: python -m pytest
+
+  tools-are-stdlib-only:
+    # Deliberately a separate job with NOTHING installed. Running this in the
+    # matrix job above would prove nothing, because fastapi and httpx are already
+    # present there -- a stray "import httpx" in tools/ would sail straight
+    # through. A bare interpreter is the only honest way to keep the promise that
+    # any file in tools/ can be copied onto a machine and run as-is.
+    #
+    # byok/setup.py makes the same promise and for a sharper reason: it is the
+    # FIRST thing a new user runs, before they have a virtualenv or any idea what
+    # this project needs. If it cannot start on a bare system Python, the BYOK
+    # path is broken for exactly the people it exists for.
+    name: tools and byok import with no third-party packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Confirm the environment really is bare
+        run: |
+          python -m pip list --format=freeze --exclude-editable | tee installed.txt
+          if grep -qiE '^(fastapi|httpx|pydantic|starlette|requests)==' installed.txt; then
+            echo "::error::the bare-environment check is not bare; it cannot prove anything"
+            exit 1
+          fi
+
+      - name: Import every tool
+        run: |
+          python -c "import tools.cache_bench, tools.cache_stats_sidecar, tools.claude_shim"
+          python -c "import byok.setup"
+
+      - name: Every tool runs as a plain script
+        run: |
+          python tools/cache_bench.py --help
+          python tools/cache_stats_sidecar.py --help
+          python tools/claude_shim.py --help
+          python byok/setup.py --help
+
+  no-secrets:
+    name: no secrets or operator paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan the tree
+        # Cheap, high-value backstop: these tools were ported from an install
+        # whose sources carried a live API key, a management key and absolute
+        # operator paths. This fails the build if any of those shapes come back.
+        # The workflow file itself is excluded, since it contains the patterns.
+        run: |
+          if git grep -nIE 'sk-[A-Za-z0-9]{16,}|yang-admin-|C:\\Users\\' \
+              -- . ':!.github/workflows/ci.yml'; then
+            echo "::error::possible secret or operator path committed"
+            exit 1
+          fi
+          echo "no secret-shaped strings found"

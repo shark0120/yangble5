@@ -1,0 +1,57 @@
+# fail2ban jails for a yangble5 host — TEMPLATE.
+# ===========================================================================
+# harden.sh substitutes the double-at placeholders below and installs the result as
+# /etc/fail2ban/jail.d/yangble5.local. Editing the installed copy is fine;
+# re-running harden.sh will not overwrite it unless you pass --force-fail2ban.
+# ===========================================================================
+
+[DEFAULT]
+# Never ban ourselves, and never ban a Cloudflare edge node — a single edge IP
+# carries many unrelated users, so banning one is both useless against the
+# attacker and an outage for everyone else behind it.
+ignoreip = 127.0.0.1/8 ::1 @@IGNOREIP@@
+
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+
+# Ban repeat offenders for progressively longer. Caps at a week so a bad ban
+# never becomes permanent by accident.
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 1w
+
+backend = auto
+
+
+[sshd]
+enabled  = true
+port     = @@SSH_PORT@@
+maxretry = 4
+bantime  = 2h
+# sshd rules belong in INPUT: sshd runs on the host, so its traffic really
+# does traverse the INPUT chain.
+action   = iptables-multiport[name=sshd, port="@@SSH_PORT@@", protocol=tcp, chain=INPUT]
+
+
+[yangble5-auth]
+enabled  = @@GATEWAY_JAIL_ENABLED@@
+filter   = yangble5-auth
+logpath  = @@CADDY_ACCESS_LOG@@
+# The Caddyfile already rate limits this surface to 10/min per client IP, so
+# 10 failures inside 10 minutes is a script, not a person who forgot a key.
+maxretry = 10
+findtime = 10m
+bantime  = 6h
+
+# chain=DOCKER-USER, NOT the default INPUT.
+#
+# THIS IS THE WHOLE POINT OF THIS BLOCK. Traffic to a Docker-published port is
+# DNAT'd in the nat table and then traverses FORWARD — it never passes through
+# INPUT at all. A jail using the default chain therefore installs rules that
+# look perfectly correct in `iptables -L` and block nothing. DOCKER-USER is the
+# chain Docker guarantees is evaluated before its own FORWARD rules, and it is
+# the supported place for administrator rules.
+#
+# Running the gateway WITHOUT Docker? Change this back to chain=INPUT.
+action = iptables-multiport[name=yangble5-auth, port="http,https", protocol=tcp, chain=DOCKER-USER]

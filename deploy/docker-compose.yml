@@ -1,0 +1,357 @@
+# yangble5 — public deployment stack
+# ===========================================================================
+#   internet ──80/443──▶ caddy ──edge──▶ gateway ──backend──▶ engine ──▶ upstream LLM APIs
+#
+# WHY THIS SHAPE
+#
+#  * caddy is the ONLY service with a `ports:` key. gateway and engine have
+#    none, so Docker never installs a host DNAT rule for them and they cannot
+#    be reached from the internet even if UFW is later misconfigured. That is
+#    the container-native equivalent of the single-machine install's
+#    "engine binds 127.0.0.1 only" guarantee.
+#
+#  * Do NOT try to reproduce that guarantee with `ports: "127.0.0.1:8318:8318"`.
+#    Inside a container 127.0.0.1 is the container's own loopback; publishing
+#    it buys nothing and only widens the surface.
+#
+#  * Neither network is `internal: true`. `internal` also blocks OUTBOUND
+#    traffic, and the engine must reach the upstream provider APIs while caddy
+#    must reach Let's Encrypt. Isolation here comes from not publishing ports.
+#
+#  * Every service is non-root where the upstream image allows it, drops all
+#    capabilities, and gets no-new-privileges. caddy keeps exactly one
+#    capability (NET_BIND_SERVICE) because it binds 80/443.
+#
+# Requires Docker Compose v2 (`docker compose`, not `docker-compose`).
+# `deploy.resources.limits` is honoured by Compose v2 outside Swarm; on v1 it
+# is silently ignored, which is one of several reasons v1 is unsupported here.
+# ===========================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &default-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  # ── EDGE ────────────────────────────────────────────────────────────────
+  caddy:
+    <<: *default-hardening
+    image: ${CADDY_IMAGE:-yangble5/caddy:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: yangble5-caddy
+    # The one and only public surface. Explicit 0.0.0.0 so the intent is
+    # readable; everything else in this file has no ports at all.
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+      - "0.0.0.0:443:443/udp" # HTTP/3
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      YANGBLE5_DOMAIN: ${YANGBLE5_DOMAIN:?set YANGBLE5_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      GATEWAY_PORT: ${GATEWAY_PORT:-8000}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+    volumes:
+      # Config is read-only: a compromised edge must not be able to rewrite
+      # its own routing rules.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/conf.d:/etc/caddy/conf.d:ro
+      # Certificates and ACME account keys. Losing this volume means
+      # re-issuing certs (and hitting Let's Encrypt rate limits).
+      - caddy_data:/data
+      - caddy_config:/config
+      # Access log lives on the host so fail2ban (which runs on the host, not
+      # in a container) can read it. Must be writable.
+      - ${YANGBLE5_LOG_DIR:-./logs}/caddy:/var/log/caddy
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - edge
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      # Caddy's admin API is bound to the container's own loopback (see the
+      # `admin` global option in the Caddyfile) — not reachable from anywhere else.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
+    deploy:
+      resources:
+        limits:
+          cpus: "${CADDY_CPUS:-0.50}"
+          memory: ${CADDY_MEM:-256M}
+
+  # ── GATEWAY (the FastAPI service in ../gateway) ─────────────────────────
+  gateway:
+    <<: *default-hardening
+    image: ${GATEWAY_IMAGE:-yangble5/gateway:local}
+    build:
+      # Build context is the REPO ROOT so the image can copy ../gateway.
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    container_name: yangble5-gateway
+    user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
+    # Every name here is a real setting read by gateway/config.py. If you add
+    # one, check it against Settings.from_env() first — an unknown variable is
+    # silently ignored, which is the worst possible failure mode for a budget
+    # cap you believed you had set.
+    environment:
+      # -- upstream engine --
+      YANGBLE5_ENGINE_URL: ${YANGBLE5_ENGINE_URL:-http://engine:8318}
+      YANGBLE5_ENGINE_API_KEY: ${YANGBLE5_ENGINE_API_KEY:?set YANGBLE5_ENGINE_API_KEY in .env}
+      YANGBLE5_ENGINE_MANAGEMENT_KEY: ${YANGBLE5_ENGINE_MANAGEMENT_KEY:-}
+      YANGBLE5_UPSTREAM_TIMEOUT_SECONDS: ${YANGBLE5_UPSTREAM_TIMEOUT_SECONDS:-900}
+      YANGBLE5_UPSTREAM_CONNECT_TIMEOUT_SECONDS: ${YANGBLE5_UPSTREAM_CONNECT_TIMEOUT_SECONDS:-10}
+      # -- storage --
+      YANGBLE5_DB_PATH: ${YANGBLE5_DB_PATH:-/data/yangble5.db}
+      # -- registration --
+      YANGBLE5_REGISTRATION_MODE: ${YANGBLE5_REGISTRATION_MODE:-invite}
+      # Required in invite mode: without it /admin/invites is disabled, so no
+      # invite can be minted and nobody can register.
+      YANGBLE5_ADMIN_API_KEY: ${YANGBLE5_ADMIN_API_KEY:?set YANGBLE5_ADMIN_API_KEY in .env}
+      YANGBLE5_ALLOW_MULTIPLE_KEYS_PER_EMAIL: ${YANGBLE5_ALLOW_MULTIPLE_KEYS_PER_EMAIL:-false}
+      YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY: ${YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY:-5}
+      # -- budgets --
+      YANGBLE5_DAILY_TOKEN_BUDGET: ${YANGBLE5_DAILY_TOKEN_BUDGET:-2000000}
+      YANGBLE5_DAILY_COST_USD_BUDGET: ${YANGBLE5_DAILY_COST_USD_BUDGET:-2.0}
+      YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET: ${YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET:-0}
+      YANGBLE5_GLOBAL_MONTHLY_TOKEN_BUDGET: ${YANGBLE5_GLOBAL_MONTHLY_TOKEN_BUDGET:-0}
+      YANGBLE5_GLOBAL_BUDGET_WARN_RATIO: ${YANGBLE5_GLOBAL_BUDGET_WARN_RATIO:-0.9}
+      YANGBLE5_PRICE_TABLE_FILE: ${YANGBLE5_PRICE_TABLE_FILE:-}
+      # -- crypto --
+      YANGBLE5_KEY_PEPPER: ${YANGBLE5_KEY_PEPPER:?set YANGBLE5_KEY_PEPPER in .env}
+      YANGBLE5_KEY_HASH_SCHEME: ${YANGBLE5_KEY_HASH_SCHEME:-scrypt}
+      # -- rate limits --
+      YANGBLE5_RATE_LIMIT_RPM: ${YANGBLE5_RATE_LIMIT_RPM:-60}
+      YANGBLE5_RATE_LIMIT_CONCURRENCY: ${YANGBLE5_RATE_LIMIT_CONCURRENCY:-4}
+      YANGBLE5_AUTH_RPM_PER_IP: ${YANGBLE5_AUTH_RPM_PER_IP:-10}
+      YANGBLE5_AUTH_FAIL_LOCKOUT_THRESHOLD: ${YANGBLE5_AUTH_FAIL_LOCKOUT_THRESHOLD:-8}
+      YANGBLE5_AUTH_FAIL_LOCKOUT_SECONDS: ${YANGBLE5_AUTH_FAIL_LOCKOUT_SECONDS:-300}
+      YANGBLE5_AUTH_CACHE_TTL_SECONDS: ${YANGBLE5_AUTH_CACHE_TTL_SECONDS:-300}
+      # -- abuse signals --
+      YANGBLE5_ABUSE_DISTINCT_IP_THRESHOLD: ${YANGBLE5_ABUSE_DISTINCT_IP_THRESHOLD:-8}
+      YANGBLE5_ABUSE_IP_WINDOW_HOURS: ${YANGBLE5_ABUSE_IP_WINDOW_HOURS:-24}
+      YANGBLE5_ABUSE_AUTO_SUSPEND: ${YANGBLE5_ABUSE_AUTO_SUSPEND:-false}
+      # -- transport --
+      # true because Caddy is the only peer that can reach this port; without
+      # it every client is indistinguishable from the Caddy container.
+      YANGBLE5_TRUST_PROXY_HEADERS: ${YANGBLE5_TRUST_PROXY_HEADERS:-true}
+      YANGBLE5_TRUSTED_PROXY_HOPS: ${YANGBLE5_TRUSTED_PROXY_HOPS:-1}
+      YANGBLE5_MAX_REQUEST_BYTES: ${YANGBLE5_MAX_REQUEST_BYTES:-33554432}
+      YANGBLE5_MAX_USAGE_PARSE_BYTES: ${YANGBLE5_MAX_USAGE_PARSE_BYTES:-2097152}
+      # -- misc --
+      YANGBLE5_LOG_LEVEL: ${YANGBLE5_LOG_LEVEL:-INFO}
+      GATEWAY_PORT: ${GATEWAY_PORT:-8000}
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - gateway_data:/data
+    # Immutable root filesystem: the app can only write to /data and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - edge
+      - backend
+    depends_on:
+      engine:
+        condition: service_started
+    healthcheck:
+      # python is guaranteed present in this image; curl/wget are not.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,urllib.request; p=os.environ.get('GATEWAY_PORT','8000'); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+p+'/healthz', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    pids_limit: 512
+    deploy:
+      resources:
+        limits:
+          cpus: "${GATEWAY_CPUS:-1.00}"
+          memory: ${GATEWAY_MEM:-512M}
+
+  # ── ENGINE (CLIProxyAPI — OPERATOR-SUPPLIED) ────────────────────────────
+  #
+  # We do not vendor, redistribute or auto-download CLIProxyAPI. You must
+  # supply it yourself, one of two ways:
+  #
+  #   (a) put a linux/amd64 `cli-proxy-api` binary in ./engine-bin/ and run
+  #       `docker compose build engine` — Dockerfile.engine wraps it; or
+  #   (b) set ENGINE_IMAGE=<your image> in .env and delete the `build:` key.
+  #
+  # You also supply ./engine/config.yaml (start from the upstream
+  # config.example.yaml). It MUST contain, at minimum:
+  #     host: "0.0.0.0"        # inside the container only; no port is published
+  #     port: 8318
+  #     auth-dir: "/auth"
+  #     api-keys: [ "<YANGBLE5_ENGINE_API_KEY from .env>" ]
+  #     remote-management:
+  #       allow-remote: true   # "remote" = the gateway container; Caddy 404s
+  #       secret: "<YANGBLE5_ENGINE_MANAGEMENT_KEY from .env>"
+  #
+  # deploy/engine/config.example.yaml is a ready-made starting point, and
+  # install.sh will copy it into place and substitute both secrets for you.
+  #
+  # `host: "0.0.0.0"` looks alarming next to the project's localhost-only rule.
+  # It is not the same thing: the container has no published port, so 0.0.0.0
+  # here means "reachable from the backend Docker network", i.e. the gateway
+  # and nothing else.
+  engine:
+    <<: *default-hardening
+    image: ${ENGINE_IMAGE:-yangble5/engine:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: yangble5-engine
+    user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
+    environment:
+      YANGBLE5_ENGINE_API_KEY: ${YANGBLE5_ENGINE_API_KEY}
+      YANGBLE5_ENGINE_MANAGEMENT_KEY: ${YANGBLE5_ENGINE_MANAGEMENT_KEY:-}
+    volumes:
+      # Read-only: the engine has no business rewriting its own config, and a
+      # config write is the shortest path from "compromised engine" to
+      # "attacker-controlled upstream".
+      - ./engine/config.yaml:/config/config.yaml:ro
+      # OAuth credential store — MUST be writable. CLIProxyAPI refreshes and
+      # rewrites OAuth tokens here; mounting it :ro breaks token refresh
+      # silently, hours later, in production. Do not "harden" this to :ro.
+      - engine_auth:/auth
+    networks:
+      - backend
+    healthcheck:
+      # Adjust if your build exposes a different liveness path. A 401 here
+      # means YANGBLE5_ENGINE_API_KEY does not match engine/config.yaml.
+      #
+      # `$$` is escaped so Compose passes a literal `$` to the container's
+      # shell, which expands the variable from the container's OWN environment.
+      # Writing `${...}` instead would bake the key into the container config
+      # where `docker inspect` — and anything that can read it — would see it.
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null --header="Authorization: Bearer $$YANGBLE5_ENGINE_API_KEY" http://127.0.0.1:8318/v1/models || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging: *default-logging
+    pids_limit: 512
+    deploy:
+      resources:
+        limits:
+          cpus: "${ENGINE_CPUS:-1.50}"
+          memory: ${ENGINE_MEM:-2G}
+
+  # ── SHIM (optional, ONLY for CLIProxyAPI < 7.2.93) ──────────────────────
+  #
+  # Sits between the gateway and the engine:
+  #     gateway ──▶ shim:8320 ──▶ engine:8318
+  #
+  # It rewrites mid-conversation `role: "system"` messages to `role: "user"`,
+  # which is exactly what upstream CLIProxyAPI 7.2.93 does natively. Without
+  # it, a Claude Code >= 2.1.x client streaming through a 7.1.23 engine gets
+  # `400 Request contains an invalid argument` from Gemini — intermittently,
+  # because the non-streaming path tolerates the same message.
+  #
+  # ENABLE:   set YANGBLE5_ENGINE_URL=http://shim:8320 in .env, then
+  #           docker compose --profile shim up -d
+  # RETIRE:   after upgrading the engine past 7.2.93, set the URL back to
+  #           http://engine:8318 and drop --profile shim. Nothing else
+  #           references it; the shim holds no state.
+  #
+  # Requests that contain no `role: "system"` message are forwarded
+  # byte-for-byte, so leaving it in the path cannot change the cache key of a
+  # conversation that did not need fixing.
+  shim:
+    <<: *default-hardening
+    profiles: ["shim"]
+    image: ${GATEWAY_IMAGE:-yangble5/gateway:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    container_name: yangble5-shim
+    user: "${YANGBLE5_UID:-10001}:${YANGBLE5_GID:-10001}"
+    # Reuses the gateway image purely because it already has a Python runtime.
+    # The shim itself is standard library only — no dependency of its own.
+    command:
+      - python
+      - -m
+      - tools.claude_shim
+      - --listen-host=0.0.0.0
+      - --listen-port=8320
+      - --upstream=http://engine:8318
+    working_dir: /app
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    networks:
+      - backend
+    depends_on:
+      engine:
+        condition: service_started
+    healthcheck:
+      # The shim proxies whatever it is given, so the cheapest liveness signal
+      # is "is the port accepting connections".
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket,sys; s=socket.create_connection(('127.0.0.1',8320),3); s.close()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "${SHIM_CPUS:-0.25}"
+          memory: ${SHIM_MEM:-256M}
+
+networks:
+  # caddy <-> gateway
+  edge:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: yb5-edge
+  # gateway <-> engine. caddy is deliberately NOT on this network, so a
+  # compromised edge cannot talk to the engine directly.
+  backend:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: yb5-back
+
+volumes:
+  caddy_data:
+  caddy_config:
+  gateway_data:
+  engine_auth:

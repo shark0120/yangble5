@@ -1,0 +1,60 @@
+# ACME over Cloudflare DNS-01 — rename to `tls-cloudflare.conf` to activate.
+# ===========================================================================
+# WHEN YOU NEED THIS
+#
+# With the orange cloud ON, Cloudflare terminates TLS at its edge. That breaks
+# the TLS-ALPN-01 challenge outright (the challenge never reaches your origin),
+# and it makes HTTP-01 fragile — "Always Use HTTPS" and some Bot Fight
+# behaviour can intercept /.well-known/acme-challenge/ before it gets to you.
+# DNS-01 sidesteps both: Caddy proves control of the name by writing a TXT
+# record, so nothing depends on inbound traffic reaching the origin at all.
+#
+# REQUIRES
+#   * the custom Caddy build (Dockerfile.caddy bundles caddy-dns/cloudflare);
+#     stock caddy:2 fails with "unrecognized directive: dns"
+#   * CLOUDFLARE_API_TOKEN in .env
+#
+# THE TOKEN
+# Create it at Cloudflare → My Profile → API Tokens → Create Token → custom:
+#     Permissions:    Zone / DNS / Edit
+#     Zone Resources: Include / Specific zone / <your zone only>
+# Do NOT use a Global API Key. A Global Key is your whole account; this token
+# can edit DNS in one zone and nothing else. Rotate it if it ever leaks — see
+# runbook.md.
+# ===========================================================================
+
+tls {
+	dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+
+	# Ask a public resolver directly for the challenge TXT record. Without
+	# this, propagation checks go through the container's resolver, which on
+	# some hosts is a caching resolver that keeps serving NXDOMAIN long enough
+	# for the validation to time out.
+	resolvers 1.1.1.1 8.8.8.8
+}
+
+# ── Optional: Cloudflare Authenticated Origin Pulls (mTLS) ─────────────────
+# Makes the origin refuse any TLS connection that does not present
+# Cloudflare's client certificate, so an attacker who learns your origin IP
+# cannot bypass Cloudflare by connecting to it directly. Free on all plans.
+#
+# Setup:
+#   1. Cloudflare → SSL/TLS → Origin Server → Authenticated Origin Pulls: on
+#   2. Download Cloudflare's origin-pull CA certificate
+#   3. Mount it into the caddy container and point `client_auth` at it
+#
+# VERIFY THE SYNTAX AGAINST YOUR CADDY VERSION before enabling: the
+# `client_auth` sub-directive was renamed between Caddy 2.7 and 2.8
+# (`trusted_ca_cert_file` became `trust_pool file`). `caddy validate` will
+# tell you which one your build wants. Getting this wrong means Caddy refuses
+# to start, which on a live host means an outage.
+#
+# tls {
+# 	client_auth {
+# 		mode require_and_verify
+# 		trusted_ca_cert_file /etc/caddy/cloudflare-origin-pull-ca.pem
+# 	}
+# }
+#
+# Note you cannot have two `tls` blocks in one site. Merge the `client_auth`
+# block into the `tls` block above rather than adding a second one.

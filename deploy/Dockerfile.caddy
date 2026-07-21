@@ -1,0 +1,50 @@
+# Custom Caddy build for yangble5.
+# ===========================================================================
+# WHY a custom build instead of the stock `caddy:2` image:
+#
+#   1. rate_limit  — Caddy has NO built-in rate limiting. The stock image will
+#                    refuse to start on our Caddyfile with
+#                    "unrecognized directive: rate_limit". The only supported
+#                    way to get it is compiling in github.com/mholt/caddy-ratelimit.
+#   2. cloudflare  — if your DNS record stays PROXIED (orange cloud), the
+#                    HTTP-01/TLS-ALPN challenges terminate at Cloudflare rather
+#                    than at your origin. The DNS-01 challenge sidesteps that,
+#                    and needs the caddy-dns/cloudflare module compiled in.
+#                    See cloudflare.md.
+#
+# If you would rather not compile anything, you CAN run stock Caddy:
+#   * set CADDY_IMAGE=caddy:2 in .env
+#   * delete every `rate_limit { ... }` block from the Caddyfile
+#   * do your rate limiting at Cloudflare and in the gateway instead
+# That is a real, supported trade-off — not a downgrade you have to hide.
+#
+# Tags: the floating `caddy:2-*` tags are used so this file keeps building.
+# For a reproducible deployment, pin them (e.g. caddy:2.10.2-builder-alpine)
+# and record the digest — see runbook.md "upgrade".
+# ===========================================================================
+
+FROM caddy:2-builder-alpine AS builder
+
+# xcaddy compiles Caddy plus the listed modules into a single static binary.
+RUN xcaddy build \
+      --with github.com/mholt/caddy-ratelimit \
+      --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2-alpine
+
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+# The access log directory is bind-mounted from the host so fail2ban can read
+# it; create it here so Caddy does not fail on a fresh host where the mount
+# target does not exist yet.
+RUN mkdir -p /var/log/caddy
+
+# Fail fast and loudly if the custom modules did not make it into the binary —
+# far better than discovering it from a 3am "unrecognized directive" crash loop.
+RUN caddy list-modules | grep -q "http.handlers.rate_limit" \
+ && caddy list-modules | grep -q "dns.providers.cloudflare"
+
+EXPOSE 80 443 443/udp
+
+# Runs as root in order to bind 80/443; docker-compose.yml drops every
+# capability except NET_BIND_SERVICE and sets no-new-privileges.

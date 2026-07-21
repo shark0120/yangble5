@@ -1,0 +1,55 @@
+# CLIProxyAPI engine container — OPERATOR-SUPPLIED BINARY.
+# ===========================================================================
+# yangble5 does NOT vendor, redistribute or download CLIProxyAPI. It is a
+# separate Apache-2.0 project (https://github.com/router-for-me/CLIProxyAPI)
+# that we build on top of; shipping someone else's binary inside our image
+# would make upgrades, provenance and licensing our problem and your risk.
+#
+# TO USE THIS FILE:
+#   1. Obtain a linux/amd64 `cli-proxy-api` build (release artifact, or
+#      `go build` it yourself from the tagged source you intend to run).
+#   2. Verify its checksum against the upstream release.
+#   3. Place it at  deploy/engine-bin/cli-proxy-api
+#   4. docker compose build engine
+#
+# deploy/engine-bin/ is gitignored. If you would rather use an image you
+# already trust, set ENGINE_IMAGE in .env and delete the `build:` key from the
+# engine service in docker-compose.yml.
+#
+# VERSION NOTE: this deployment assumes CLIProxyAPI 7.1.23 semantics, which is
+# what every measurement in this repo was taken against. 7.1.23's antigravity
+# STREAMING translator forwards messages[].role verbatim, so a Claude Code
+# client >= 2.1.x that injects a mid-conversation role:"system" message gets a
+# 400 from Gemini. Upstream fixed that in 7.2.93 by mapping system -> user.
+# Until you upgrade past 7.2.93 the stack needs claude_shim.py in front; after
+# you upgrade, retire it. runbook.md has the exact cutover.
+# ===========================================================================
+
+FROM debian:bookworm-slim
+
+# ca-certificates: required — the engine makes outbound TLS calls to the
+#   upstream provider APIs and will fail every request without a trust store.
+# wget: used by the container healthcheck in docker-compose.yml.
+# tzdata: so log timestamps match the host and your incident timeline.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates wget tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid "${APP_GID}" engine \
+ && useradd --uid "${APP_UID}" --gid "${APP_GID}" --no-create-home --shell /usr/sbin/nologin engine
+
+COPY engine-bin/cli-proxy-api /usr/local/bin/cli-proxy-api
+RUN chmod 0755 /usr/local/bin/cli-proxy-api
+
+# /config is mounted read-only; /auth is a writable named volume because
+# CLIProxyAPI rewrites refreshed OAuth tokens in place.
+RUN mkdir -p /config /auth && chown "${APP_UID}:${APP_GID}" /auth
+
+USER engine:engine
+
+EXPOSE 8318
+
+# `-config` (single dash) is the flag this version takes.
+ENTRYPOINT ["/usr/local/bin/cli-proxy-api", "-config", "/config/config.yaml"]

@@ -1,0 +1,174 @@
+# yangble5 BYOK engine config TEMPLATE (CLIProxyAPI)
+# ===========================================================================
+# This file is a TEMPLATE. It contains no credentials and is safe to commit.
+# `python byok/setup.py` renders it into a real config outside this repo
+# (default: ~/.yangble5/byok/config.yaml, mode 0600). Do not hand-edit the
+# rendered copy and then re-run setup without reading the diff it offers you --
+# setup backs the old file up rather than clobbering it, but a config you edited
+# and forgot about is the single most common cause of "it stopped caching".
+#
+# The double-underscore-delimited tokens below are substituted by byok/setup.py.
+# Rendering fails loudly if any token is left over OR if setup.py offers a value
+# this file has no slot for, so a half-filled config can never reach the engine.
+# (Do not write an example token in prose here -- the renderer would try to
+# substitute it and fail. tests/test_byok_setup.py asserts the exact token set.)
+#
+# Schema verified against the config.example.yaml shipped with CLIProxyAPI
+# 7.1.23 (key names differ between minor versions -- `remote-management.secret-key`
+# and `pprof.enable` are the 7.1.23 spellings and are easy to get wrong).
+#
+# CLIProxyAPI is a third-party MIT-licensed Go project by router-for-me and is
+# not our work: https://github.com/router-for-me/CLIProxyAPI
+# ===========================================================================
+
+# ── Listener: loopback ONLY ────────────────────────────────────────────────
+# BYOK means the credential in this file is YOURS and the quota being spent is
+# YOURS. 127.0.0.1 is not a default we picked for tidiness -- the engine has no
+# per-user accounting and no rate limiting of its own, so anything that can
+# reach this port can spend your entire upstream quota anonymously. If you want
+# to expose it to other people, do not do it by editing this line; put the
+# gateway (gateway/) in front of it and read deploy/ first.
+host: __ENGINE_HOST__
+port: __ENGINE_PORT__
+
+# No TLS on loopback. Traffic never leaves the machine, and a self-signed cert
+# here would only teach clients to ignore certificate errors.
+tls:
+  enable: false
+  cert: ""
+  key: ""
+
+# ── Management API: OFF ────────────────────────────────────────────────────
+# /v0/management/* can read and mint credentials and rewrite this config. An
+# empty secret-key disables the whole surface (every route 404s). A single-user
+# BYOK install has no reason to run it; tools/cache_stats_sidecar.py is the only
+# thing in this repo that wants it, and cache_bench.py -- which is what setup
+# uses to verify your install -- reads usage from ordinary response bodies and
+# does not need it.
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+
+# ── Credentials ────────────────────────────────────────────────────────────
+# Where CLIProxyAPI keeps OAuth token files. It REWRITES them in place when a
+# token refreshes, so this directory must stay writable; a read-only mount looks
+# fine for hours and then fails at the first refresh.
+#
+# API-key providers do not use this directory -- their key lives in the provider
+# block below. It still has to exist and be private (setup creates it 0700).
+auth-dir: __AUTH_DIR__
+
+# The key YOUR CLIENT presents to this engine. Generated locally by setup.py
+# with `secrets.token_urlsafe`; it is not an upstream credential and it is worth
+# nothing to anyone off this machine. It exists so that a stray process on the
+# box cannot use your proxy by accident.
+api-keys:
+  - __LOCAL_API_KEY__
+
+# ── Logging ────────────────────────────────────────────────────────────────
+# debug logs include full request bodies -- i.e. your source code. Off by
+# default even locally; turn it on deliberately, for one session, when
+# debugging, and turn it back off.
+debug: false
+logging-to-file: false
+logs-max-total-size-mb: 0
+error-logs-max-files: 10
+
+pprof:
+  enable: false
+  addr: "127.0.0.1:8316"
+
+# ── Usage accounting ───────────────────────────────────────────────────────
+# The engine's usage queue is CONSUME-ON-READ: the first reader gets the records
+# and every other reader gets nothing. Leaving this false keeps the queue out of
+# the picture entirely. cache_bench.py takes its numbers from each response's own
+# `usage` block, so verification works either way. Turn it on only if you intend
+# to run tools/cache_stats_sidecar.py, and then run exactly one consumer.
+usage-statistics-enabled: false
+redis-usage-queue-retention-seconds: 60
+
+# ── Networking ─────────────────────────────────────────────────────────────
+proxy-url: ""
+
+# force-model-prefix would require clients to send "provider/model". Off,
+# because the entire point of the alias below is that the client says one short
+# name and routing is decided here.
+force-model-prefix: false
+
+# Do not forward client-supplied headers upstream. A coding agent sends plenty
+# of headers it has no business leaking to a model provider.
+passthrough-headers: false
+
+request-retry: 3
+max-retry-credentials: 0
+max-retry-interval: 30
+disable-cooling: false
+
+# Emit a blank line every N seconds on NON-streaming responses so a slow, very
+# large generation does not look like a dead connection to an intermediary.
+# Harmless on loopback; keep it for when you put something in front.
+nonstream-keepalive-interval: 15
+
+# ── Routing: the first of the three cache-preserving settings ──────────────
+routing:
+  # WHY fill-first, not the round-robin default:
+  # the upstream prompt cache is scoped PER CREDENTIAL. round-robin spreads
+  # consecutive requests of one conversation across every healthy credential,
+  # and each landing on a different account is a cold cache write. fill-first is
+  # deterministic -- it picks the first healthy credential every time -- so a
+  # session stays on one account and its cache stays warm. With exactly one
+  # credential (the normal BYOK case) the two strategies pick the same account
+  # while everything is healthy; fill-first is what keeps that true after you
+  # add a second key, and after an engine restart clears the affinity table
+  # below.
+  strategy: "fill-first"
+
+  # WHY session-affinity, second of the three:
+  # pins one client session to one credential. IDs are read from
+  # metadata.user_id (Claude Code), X-Session-ID / Session_id (Codex) and
+  # several other client-specific headers. Failover on credential loss still
+  # applies, so this trades nothing away.
+  session-affinity: true
+
+  # A sliding TTL long enough that a working day is one binding. Too short and
+  # a lunch break silently costs you a cold round on return -- which, at a 749K
+  # prefix, is the difference between a ~10s turn and a ~21s one.
+  session-affinity-ttl: __SESSION_AFFINITY_TTL__
+
+ws-auth: true
+enable-gemini-cli-endpoint: false
+
+# ── Provider + alias: the third and most important cache-preserving setting ──
+#
+# THE FINDING THIS WHOLE FILE EXISTS FOR (CLIProxyAPI 7.1.23):
+# an alias that is listed TWICE with two different upstream `name`s becomes an
+# internal model POOL. The upstream for each request is then chosen by a global
+# counter -- `nextModelPoolOffset` in conductor.go -- which is incremented per
+# request across the whole process. That counter ignores `routing.strategy` and
+# it ignores `session-affinity`, both of which are configured above. Consecutive
+# turns of one conversation therefore alternate between upstreams, and because
+# the prompt cache lives on the upstream side, the hit rate is capped at roughly
+# 1/N for an N-model pool no matter what else you tune. Upstream documents the
+# rotation as a feature ("You may repeat the same alias to build an internal
+# model pool"); it is a reasonable feature that is catastrophic for caching.
+#
+# So: ONE alias, ONE upstream model. byok/setup.py refuses to render a config
+# where an alias appears more than once, and tests/test_byok_setup.py holds that
+# refusal in place.
+#
+# Also worth knowing, from the 7.1.23 example config: `oauth-model-alias` does
+# NOT apply to gemini-api-key / codex-api-key / claude-api-key /
+# openai-compatibility / vertex-api-key entries. API-key providers carry their
+# alias in their OWN `models:` list. Putting an API-key provider's alias under
+# oauth-model-alias produces a config that loads cleanly and then 404s the
+# model, which is why setup.py generates this block per provider kind instead of
+# asking you to hand-place it.
+#
+# A pool cannot merge model weights and it cannot add context. An alias is a
+# name, not a new model.
+__PROVIDER_BLOCK__
+
+# Models you never want the client to see (deprecated, experimental, or ones
+# whose quota you would rather protect). Empty by default.
+oauth-excluded-models: {}

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校驗安裝腳本 — yangble5</title>
+<meta name="description" content="yangble5 安裝腳本的 SHA256 校驗方式。即時讀取公告的雜湊值,並提供 macOS / Linux / Windows 的逐步核對指令。">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="index,follow">
+<style>
+:root{
+  --bg:#0b0f14; --bg2:#121820; --bg3:#18202a; --bg4:#1e2833;
+  --fg:#e8eef5; --muted:#9fb0c0; --border:#243040;
+  --accent:#4da3ff; --accent-ink:#06111f;
+  --good:#3fb950; --warn:#e0a02a; --bad:#ff6b61;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+  --radius:10px;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#ffffff; --bg2:#f5f8fb; --bg3:#eaf0f6; --bg4:#dfe7ef;
+    --fg:#0f151c; --muted:#4d5b6a; --border:#cfd9e3;
+    --accent:#0a58ca; --accent-ink:#ffffff;
+    --good:#1a7f37; --warn:#8a6100; --bad:#b62324;
+  }
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--sans); font-size:17px; line-height:1.7; overflow-wrap:break-word;
+}
+.wrap{max-width:820px; margin-inline:auto; padding:0 20px}
+h1,h2,h3{line-height:1.3; margin:0 0 .5em; font-weight:650; letter-spacing:-.015em}
+h1{font-size:clamp(1.7rem,4.6vw,2.4rem)}
+h2{font-size:clamp(1.2rem,3vw,1.5rem); margin-top:2.2em}
+h3{font-size:1.02rem; margin-top:1.6em}
+p{margin:0 0 1em}
+a{color:var(--accent); text-underline-offset:3px}
+code,kbd{font-family:var(--mono); font-size:.92em}
+:where(a,button,summary,[tabindex]):focus-visible{outline:3px solid var(--accent); outline-offset:2px; border-radius:4px}
+.skip{position:absolute; left:-9999px; background:var(--accent); color:var(--accent-ink); padding:10px 16px; z-index:9}
+.skip:focus{left:0}
+header.site{border-bottom:1px solid var(--border)}
+header.site .wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding-block:14px}
+.brand{font-family:var(--mono); font-weight:700; color:var(--fg); text-decoration:none}
+.brand span{color:var(--accent)}
+header.site nav{margin-inline-start:auto; font-size:.88rem}
+main{padding-block:clamp(34px,6vw,56px)}
+.eyebrow{font-family:var(--mono); font-size:.76rem; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); margin:0 0 .8em}
+.lede{color:var(--muted); font-size:1.03rem}
+
+.digest{
+  border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--bg2); padding:20px 22px; margin:26px 0;
+}
+.digest h2{margin:0 0 .5em; font-size:1.06rem}
+.digest-row{display:flex; gap:12px; align-items:stretch; flex-wrap:wrap; margin-top:12px}
+.digest pre{
+  flex:1 1 300px; min-width:0; margin:0; background:var(--bg); border:1px solid var(--border);
+  border-radius:8px; padding:14px 16px; font-family:var(--mono);
+  font-size:clamp(.76rem,2.6vw,.95rem); overflow-x:auto; white-space:pre-wrap; word-break:break-all;
+  line-height:1.5;
+}
+.digest .meta{font-size:.84rem; color:var(--muted); margin:12px 0 0; font-family:var(--mono)}
+.copybtn{
+  flex:0 0 auto; font:inherit; font-weight:600; font-size:.9rem;
+  background:var(--accent); color:var(--accent-ink); border:1px solid var(--accent);
+  border-radius:8px; padding:0 18px; min-height:46px; cursor:pointer;
+}
+.copybtn:hover{filter:brightness(1.1)}
+.copybtn[data-state="ok"]{background:var(--good); border-color:var(--good); color:#fff}
+.copybtn[data-state="fail"]{background:var(--bad); border-color:var(--bad); color:#fff}
+.status{min-height:1.5em; font-family:var(--mono); font-size:.84rem; color:var(--good); margin:.5em 0 0}
+.status:empty{min-height:0; margin:0}
+
+pre.block{
+  background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; overflow-x:auto; font-family:var(--mono); font-size:.86rem;
+  line-height:1.65; margin:0 0 1.2em; white-space:pre;
+}
+pre.block .c{color:var(--muted)}
+.note{
+  border-inline-start:4px solid var(--accent); background:var(--bg2);
+  border-radius:0 var(--radius) var(--radius) 0; padding:14px 18px; margin:0 0 1.3em;
+}
+.warnbox{
+  border:1px solid var(--bad); border-radius:var(--radius);
+  background:color-mix(in srgb,var(--bad) 8%,var(--bg2)); padding:16px 20px; margin:1.4em 0;
+}
+.warnbox h3{margin-top:0; color:var(--bad)}
+.warnbox ul{margin:0; padding-inline-start:1.15em}
+.warnbox li{margin-bottom:.45em}
+ul.plain{padding-inline-start:1.2em}
+ul.plain li{margin-bottom:.55em}
+footer.site{border-top:1px solid var(--border); background:var(--bg2); padding-block:26px; font-size:.86rem; color:var(--muted); margin-top:40px}
+@media (max-width:420px){ body{font-size:16px} .copybtn{width:100%} }
+@media (prefers-reduced-motion:reduce){ *{transition:none!important; animation:none!important} }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">跳到主要內容</a>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="/">yangble<span>5</span></a>
+    <nav aria-label="主要導覽"><a href="/">← 回首頁</a></nav>
+  </div>
+</header>
+
+<main id="main">
+<div class="wrap">
+  <p class="eyebrow">校驗</p>
+  <h1>執行之前,先自己核對</h1>
+  <p class="lede">
+    首頁那一行是 <code>curl … | sh</code>。這種安裝方式的安全性,完全建立在
+    「你信任 yangble5.com 這個網域,而且連線沒有被中間人竄改」之上。
+    這一頁讓你不必只靠信任 —— 你可以自己驗。
+  </p>
+
+  <!-- ── the live digest ───────────────────────────────────────────── -->
+  <div class="digest">
+    <h2>目前公告的 SHA256</h2>
+    <p style="margin:0;color:var(--muted);font-size:.88rem">
+      即時讀取自 <code>/install.sh.sha256</code>,沒有寫死在這個頁面裡。
+    </p>
+
+    <h3 style="margin-top:1.3em;font-size:.9rem">install.sh <span style="color:var(--muted);font-weight:400">(macOS / Linux)</span></h3>
+    <div class="digest-row">
+      <pre id="shaSh">讀取中…</pre>
+      <button type="button" class="copybtn" data-copy-target="shaSh" data-label="複製">複製</button>
+    </div>
+
+    <h3 style="font-size:.9rem">install.ps1 <span style="color:var(--muted);font-weight:400">(Windows)</span></h3>
+    <div class="digest-row">
+      <pre id="shaPs1">讀取中…</pre>
+      <button type="button" class="copybtn" data-copy-target="shaPs1" data-label="複製">複製</button>
+    </div>
+
+    <p class="status" id="copyStatus" role="status" aria-live="polite"></p>
+    <p class="meta" id="fetchedAt"></p>
+  </div>
+
+  <div class="note">
+    <p style="margin:0">
+      <strong>顯示「尚未公告」代表什麼?</strong> 代表這台伺服器上還沒有放校驗檔,
+      <em>不代表</em>腳本是安全的,也不代表可以跳過驗證。這種情況下請直接去
+      <a href="https://github.com/shark0120/yangble5">GitHub 上的原始碼</a>比對,
+      或乾脆不要執行。我們寧可你不裝,也不要你在沒有校驗的情況下裝。
+    </p>
+  </div>
+
+  <!-- ── step by step ─────────────────────────────────────────────── -->
+  <h2>逐步核對</h2>
+
+  <h3>macOS / Linux</h3>
+  <pre class="block"><span class="c"># 1. 下載,先不要執行</span>
+curl -fsSL https://yangble5.com/install.sh -o install.sh
+
+<span class="c"># 2. 算出你手上這份的雜湊</span>
+shasum -a 256 install.sh
+<span class="c">#   沒有 shasum 的話:</span>
+sha256sum install.sh
+
+<span class="c"># 3. 跟上面公告的值逐字元比對。不一樣就停在這裡。</span>
+
+<span class="c"># 4. 或者讓機器幫你比(對就印 OK,不對會直接失敗)</span>
+curl -fsSL https://yangble5.com/install.sh.sha256 -o install.sh.sha256
+shasum -a 256 -c install.sh.sha256
+
+<span class="c"># 5. 自己讀過一遍再執行</span>
+less install.sh
+sh install.sh</pre>
+
+  <h3>Windows(PowerShell)</h3>
+  <pre class="block"><span class="c"># 1. 下載,先不要執行</span>
+irm https://yangble5.com/install.ps1 -OutFile install.ps1
+
+<span class="c"># 2. 算出雜湊</span>
+Get-FileHash .\install.ps1 -Algorithm SHA256
+
+<span class="c"># 3. 跟公告值比對(PowerShell 輸出是大寫,大小寫不影響)</span>
+$expected = '&lt;貼上上面公告的值&gt;'
+$actual = (Get-FileHash .\install.ps1 -Algorithm SHA256).Hash
+if ($actual -ieq $expected) { 'OK - 相符' } else { 'MISMATCH - 不要執行' }
+
+<span class="c"># 4. 自己讀過一遍再執行</span>
+notepad .\install.ps1
+.\install.ps1</pre>
+
+  <h3>用 certutil(不想開 PowerShell 的話)</h3>
+  <pre class="block">certutil -hashfile install.ps1 SHA256</pre>
+
+  <!-- ── mismatch ─────────────────────────────────────────────────── -->
+  <div class="warnbox">
+    <h3>對不上怎麼辦</h3>
+    <ul>
+      <li><strong>不要執行那個檔案。</strong>先做這一件事,其他都之後再說。</li>
+      <li>把下載到的檔案刪掉,不要留著「等一下再看」。</li>
+      <li>可能只是我們發佈了新版而校驗檔還沒同步 —— 但你沒辦法從外面分辨這個和真正的攻擊,
+        所以處理方式相同:先當作有問題。</li>
+      <li>到 <a href="https://github.com/shark0120/yangble5/issues">GitHub issues</a> 回報,
+        附上你算到的雜湊、頁面顯示的雜湊,以及下載時間。</li>
+      <li>如果你是透過公共 Wi-Fi 或不受信任的網路下載的,換一個網路重試一次再下結論。</li>
+    </ul>
+  </div>
+
+  <!-- ── what this does and does not prove ────────────────────────── -->
+  <h2>這個校驗能證明什麼、不能證明什麼</h2>
+  <ul class="plain">
+    <li><strong>能證明:</strong>你手上這份檔案,和我們公告雜湊時的那份檔案,位元組完全一致。
+      傳輸過程沒有被改、沒有下載到一半壞掉。</li>
+    <li><strong>不能證明腳本本身是善意的。</strong>雜湊只保證「一致」,不保證「安全」。
+      如果我們發佈了一份惡意腳本並公告它的雜湊,校驗一樣會過。
+      這就是為什麼首頁把腳本做的每一件事都<a href="/#installer">逐條列出來</a>,
+      而且原始碼公開 —— 校驗和公開原始碼要一起看,單獨任何一個都不夠。</li>
+    <li><strong>不能防護網域本身被攻陷。</strong>如果 yangble5.com 被入侵,
+      攻擊者可以同時換掉腳本和校驗檔。要防這種情況,請直接從
+      <a href="https://github.com/shark0120/yangble5">GitHub repo</a> 取得腳本並核對 commit 歷史。</li>
+    <li><strong>HTTPS 是前提。</strong>如果你是用 <code>http://</code> 讀這一頁的,
+      上面的雜湊值本身就可能已經被竄改了。請確認網址列是
+      <code>https://yangble5.com</code>。</li>
+  </ul>
+
+  <h2>最保險的做法</h2>
+  <p>不用管線,直接從版本控制拿:</p>
+  <pre class="block">git clone https://github.com/shark0120/yangble5
+cd yangble5
+<span class="c"># 讀原始碼、看 commit 歷史,然後自己決定要不要跑</span>
+git log --oneline -20</pre>
+</div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p style="margin:0">
+      <a href="/">yangble5 首頁</a> ·
+      <a href="https://github.com/shark0120/yangble5">GitHub</a> ·
+      <a href="https://github.com/shark0120/yangble5/blob/main/LICENSE">MIT 授權</a> ·
+      <a href="https://github.com/shark0120/yangble5/blob/main/SECURITY.md">安全性政策</a>
+    </p>
+    <p style="margin:.6em 0 0">
+      yangble5 是社群開源專案,與任何模型供應商沒有從屬或合作關係。本站沒有 cookie、沒有追蹤。
+    </p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ------------------------------------------------------------------
+   * Digests are fetched live. Nothing is hardcoded: a checksum baked
+   * into a page is a checksum that goes stale and quietly starts lying.
+   * A missing file renders "尚未公告", never a plausible-looking value.
+   * ------------------------------------------------------------------ */
+  var TARGETS = [
+    { el: "shaSh",  url: "/install.sh.sha256" },
+    { el: "shaPs1", url: "/install.ps1.sha256" }
+  ];
+
+  var stampEl = document.getElementById("fetchedAt");
+  var pending = TARGETS.length;
+  var anyOk = false;
+
+  function done() {
+    if (--pending > 0 || !stampEl) return;
+    if (anyOk) {
+      var now = new Date();
+      var t;
+      try {
+        t = new Intl.DateTimeFormat("zh-TW", {
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+          hour12: false, timeZoneName: "short"
+        }).format(now);
+      } catch (e) { t = now.toISOString(); }
+      stampEl.textContent = "讀取時間:" + t;
+    } else {
+      stampEl.textContent = "沒有讀到任何校驗檔。請改用 GitHub 原始碼核對。";
+    }
+  }
+
+  TARGETS.forEach(function (t) {
+    var node = document.getElementById(t.el);
+    if (!node) { done(); return; }
+    if (!("fetch" in window)) { node.textContent = "尚未公告(瀏覽器不支援 fetch)"; done(); return; }
+
+    fetch(t.url, { cache: "no-store", credentials: "omit" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+      .then(function (txt) {
+        var m = /\b[a-fA-F0-9]{64}\b/.exec(txt || "");
+        if (!m) throw new Error("no digest in file");
+        node.textContent = m[0].toLowerCase();
+        anyOk = true;
+        done();
+      })
+      .catch(function () {
+        node.textContent = "尚未公告";
+        node.style.color = "var(--muted)";
+        done();
+      });
+  });
+
+  /* ---- copy buttons, with a non-secure-context fallback ------------- */
+  var statusEl = document.getElementById("copyStatus");
+  var timer = null;
+
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function feedback(btn, ok) {
+    var label = btn.getAttribute("data-label") || "複製";
+    btn.setAttribute("data-state", ok ? "ok" : "fail");
+    btn.textContent = ok ? "已複製 ✓" : "失敗";
+    if (statusEl) {
+      statusEl.style.color = ok ? "var(--good)" : "var(--bad)";
+      statusEl.textContent = ok ? "已複製到剪貼簿。" : "無法存取剪貼簿,請手動選取複製。";
+    }
+    window.clearTimeout(timer);
+    timer = window.setTimeout(function () {
+      btn.removeAttribute("data-state");
+      btn.textContent = label;
+      if (statusEl) statusEl.textContent = "";
+    }, 2600);
+  }
+
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("[data-copy-target]") : null;
+    if (!btn) return;
+    var src = document.getElementById(btn.getAttribute("data-copy-target"));
+    if (!src) return;
+    var text = src.textContent.replace(/\s+$/, "");
+    if (/讀取中|尚未公告/.test(text)) {
+      feedback(btn, false);
+      if (statusEl) {
+        statusEl.style.color = "var(--warn)";
+        statusEl.textContent = "還沒有可複製的雜湊值。";
+      }
+      return;
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(
+        function () { feedback(btn, true); },
+        function () { feedback(btn, legacyCopy(text)); }
+      );
+    } else {
+      feedback(btn, legacyCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>

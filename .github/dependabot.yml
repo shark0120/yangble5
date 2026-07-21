@@ -1,0 +1,77 @@
+# Dependabot configuration.
+#
+# Scope note, because it is easy to misread what this repository depends on:
+# `project.dependencies` in pyproject.toml is EMPTY on purpose - everything under
+# tools/ is standard-library only so a single file can be copied onto a machine
+# and run. So Dependabot here is watching the *development* and *gateway* extras
+# and the CI actions, not a runtime dependency tree. If Dependabot ever opens a
+# PR that adds a runtime dependency to tools/, that PR is wrong by construction.
+version: 2
+
+updates:
+  # ---- Python: the dev + gateway extras declared in pyproject.toml ----------
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Taipei
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      # One PR for the routine patch/minor churn: reviewing five near-identical
+      # bumps separately is how real ones get rubber-stamped.
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Majors land as their own PR after a human reads the upgrade notes.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ---- Python: the gateway service's pinned requirements -------------------
+  - package-ecosystem: pip
+    directory: "/gateway"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Taipei
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+      - gateway
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      gateway-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---- GitHub Actions ------------------------------------------------------
+  # The workflows use pinned major tags (actions/checkout@v4). Left unattended
+  # those quietly rot, and a stale action is a supply-chain surface on a
+  # repository whose CI holds no secrets but whose badge people trust.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Taipei
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions:
+        patterns: ["*"]

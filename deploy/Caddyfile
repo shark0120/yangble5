@@ -1,0 +1,306 @@
+# yangble5 edge configuration
+# ===========================================================================
+# The single most important thing about this file: it must not break long
+# streams. A coding agent talking to a 1M-context model can hold one HTTP
+# response open for many minutes while tokens trickle out. Almost every
+# default reverse-proxy timeout is tuned for web pages and will guillotine
+# that stream. Every timeout below is set deliberately; read the comments
+# before "tidying" any of them.
+#
+# Requires the custom Caddy build from Dockerfile.caddy (rate_limit +
+# cloudflare DNS modules). Stock `caddy:2` will fail to start on `rate_limit`
+# with "unrecognized directive". See the note above each rate_limit block.
+# ===========================================================================
+
+{
+	email {$ACME_EMAIL}
+
+	# Admin API on the container's own loopback only. It is an unauthenticated
+	# config-rewrite API — never bind it to 0.0.0.0, never publish 2019.
+	admin 127.0.0.1:2019
+
+	# rate_limit is a plugin directive, so Caddy needs to be told where it sits
+	# in the handler chain. Rate limiting must run before anything expensive.
+	order rate_limit before basic_auth
+
+	servers {
+		# ── Real client IPs ────────────────────────────────────────────────
+		# Behind Cloudflare every connection arrives from a Cloudflare edge IP.
+		# Without this block, `{client_ip}` is the Cloudflare node, which means
+		# (a) your logs are useless and (b) rate limiting by client_ip throttles
+		# every user who happens to share that edge node.
+		#
+		# Ranges below are Cloudflare's published list as of 2026-07.
+		# Refresh from https://www.cloudflare.com/ips/ — see cloudflare.md.
+		# FAIL-SAFE NOTE: a stale list degrades gracefully. A Cloudflare range
+		# that is missing here is simply "untrusted", so client_ip falls back to
+		# the edge IP: worse logging and coarser rate limiting, not an outage.
+		#
+		# If you are NOT behind Cloudflare, delete the CIDRs and keep only
+		# `private_ranges`, or drop the whole trusted_proxies line — trusting a
+		# proxy that is not there lets anyone spoof Cf-Connecting-Ip.
+		trusted_proxies static \
+			173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+			141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+			197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+			104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
+			2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
+			2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers Cf-Connecting-Ip X-Forwarded-For
+
+		# ── Timeouts ───────────────────────────────────────────────────────
+		timeouts {
+			# Time to receive the request HEADERS. Short: a client that cannot
+			# send headers in 15s is a slowloris, not an agent.
+			read_header 15s
+
+			# read_body and write are deliberately LEFT UNSET (= 0 = no limit).
+			#
+			#   read_body : a request can legitimately carry several MB. Our
+			#               reference measurement pushed a 748,918-token prompt
+			#               through this path; capping upload time by duration
+			#               punishes slow links, and `request_body max_size`
+			#               below is the correct control instead.
+			#   write     : this is the one that kills streaming. A write
+			#               timeout is measured from the START of the response,
+			#               not from the last byte, so ANY finite value is a
+			#               hard cap on stream length. Caddy defaults to no
+			#               write timeout; keep it that way.
+
+			# Idle keep-alive between requests on a pooled connection.
+			idle 10m
+		}
+
+		max_header_size 64KB
+
+		# Trim the fingerprint. Caddy does not send X-Powered-By at all; the
+		# Server header is removed per-response in the (security_headers) snippet.
+		protocols h1 h2 h3
+	}
+
+	log default {
+		output stderr
+		format json
+		level INFO
+	}
+}
+
+# ── Reusable snippets ──────────────────────────────────────────────────────
+
+(security_headers) {
+	header {
+		# 1 year. `preload` is intentionally NOT set: submitting to the preload
+		# list is effectively irreversible for the domain and all subdomains.
+		# Add it only once you are certain every subdomain will always be HTTPS.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
+		# Scoped for the registration page the gateway serves. If your page
+		# uses inline <script>, do not add 'unsafe-inline' here — move the
+		# script to a file. Inline STYLE is allowed because most minimal
+		# templates need it.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		# Strip anything that advertises the stack.
+		-Server
+		-X-Powered-By
+		-X-AspNet-Version
+	}
+}
+
+# Streaming-safe reverse proxy to the gateway. Used by every route.
+(to_gateway) {
+	reverse_proxy gateway:{$GATEWAY_PORT:8000} {
+		# -1 = flush every write immediately, no response buffering. Without
+		# this, SSE tokens can sit in Caddy's buffer and the agent looks hung.
+		flush_interval -1
+
+		header_up X-Real-IP {client_ip}
+		header_up X-Forwarded-Proto {scheme}
+		# Do not let a client forge its own identity headers.
+		header_up -X-Admin-Key
+		header_down -Server
+
+		transport http {
+			dial_timeout 10s
+
+			# Time to FIRST BYTE from the gateway. This covers the whole
+			# upstream round trip up to the first token, which for a very large
+			# prompt is the slow part. Our measured warm/cold first-token times
+			# on a 748,918-token prompt were 10.8s and 21.4s; 300s leaves a wide
+			# margin for bigger prompts and upstream retries. Note this is also
+			# the value that must stay under Cloudflare's 100s edge timeout if
+			# you are proxied — see cloudflare.md, this is the #1 cause of 524s.
+			response_header_timeout 300s
+
+			# 0 = no limit. These two are what let a 10-minute stream finish.
+			read_timeout 0
+			write_timeout 0
+
+			keepalive 2m
+			keepalive_idle_conns 32
+		}
+	}
+}
+
+# ── Site ───────────────────────────────────────────────────────────────────
+
+{$YANGBLE5_DOMAIN} {
+	import security_headers
+
+	# Optional drop-ins (e.g. tls.conf switching ACME to the Cloudflare DNS
+	# challenge, or an extra route). A glob that matches nothing is not an
+	# error, so this is safe to leave in place with an empty directory.
+	import /etc/caddy/conf.d/*.conf
+
+	# Upload ceiling. Large enough for the biggest prompt we have actually
+	# measured (748,918 tokens ≈ a few MB of JSON) plus headroom; small enough
+	# that a single request cannot exhaust memory. Cloudflare's own free-plan
+	# upload cap is 100 MB, so this is the binding limit, not CF.
+	request_body {
+		max_size 32MB
+	}
+
+	# Compression. text/event-stream is EXCLUDED by omission: compressing an
+	# SSE stream adds a compression-window's worth of latency to every token
+	# and is the second most common cause of "the agent looks frozen".
+	# Do not replace this list with `text/*`.
+	encode zstd gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/plain*
+			header Content-Type text/css*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	# ── HARD BLOCK: engine management surface ────────────────────────────
+	# CLIProxyAPI's /v0/management/* can list and mint credentials, read the
+	# usage queue and rewrite config. It must never be reachable from the
+	# internet. 404 rather than 403 so we do not confirm it exists.
+	# This is the outermost of three locks; the others are (1) the engine has
+	# no published port and (2) it still demands a management key.
+	@management path /v0/* /v0
+	handle @management {
+		respond 404
+	}
+
+	# Also block anything that looks like a probe for the engine's debug or
+	# admin surfaces reaching us by mistake.
+	@forbidden path /debug/pprof/* /metrics /management/* /.env /.git/*
+	handle @forbidden {
+		respond 404
+	}
+
+	# ── Health check (unauthenticated, unrated, unlogged) ────────────────
+	handle /healthz {
+		import to_gateway
+	}
+
+	# ── Auth / registration: strict rate limit ───────────────────────────
+	# This is the credential-guessing surface. 10 requests/minute per client IP
+	# is generous for a human filling in a form and hostile to a script.
+	# The matching fail2ban jail (harden.sh) watches the 401/403/429s this
+	# produces — read the Cloudflare caveat there before enabling it.
+	#
+	# STOCK CADDY USERS: delete the rate_limit block, keep the rest.
+	@auth path /auth/* /register /register/* /login /login/* /v1/auth/*
+	handle @auth {
+		rate_limit {
+			zone yb5_auth {
+				key {client_ip}
+				events 10
+				window 1m
+			}
+		}
+		import to_gateway
+	}
+
+	# ── Inference API ────────────────────────────────────────────────────
+	# Deliberately looser than the auth zone: an agent doing tool-calling can
+	# fire a burst of legitimate requests. This is a circuit breaker against
+	# a runaway loop, not a quota — real quota lives in the gateway, which can
+	# count tokens rather than requests.
+	# `not path /v1/auth/*` is not redundant: /v1/auth/* is also in @auth, and
+	# two `handle` blocks whose matchers OVERLAP are resolved by Caddy's
+	# ordering rather than by the order you wrote them. Making the two sets
+	# disjoint means the strict auth limit applies to /v1/auth/* no matter how
+	# Caddy sorts the routes — the alternative is a rate limit that silently
+	# becomes 120/min on the credential-guessing surface after an upgrade.
+	@api {
+		path /v1/* /api/*
+		not path /v1/auth/*
+	}
+	handle @api {
+		# `no-transform` is the standards-based way to tell an intermediary not
+		# to rewrite or re-compress the body. It matters here because Cloudflare
+		# is an intermediary we do not control: without it, a proxied zone may
+		# buffer or transform a text/event-stream response and the agent sits
+		# there looking frozen. `no-store` keeps inference responses — which
+		# contain user data — out of every cache on the path.
+		header Cache-Control "no-store, no-transform"
+
+		rate_limit {
+			zone yb5_api {
+				key {client_ip}
+				events 120
+				window 1m
+			}
+		}
+		import to_gateway
+	}
+
+	# ── Everything else (registration page, static assets) ───────────────
+	handle {
+		rate_limit {
+			zone yb5_web {
+				key {client_ip}
+				events 60
+				window 1m
+			}
+		}
+		import to_gateway
+	}
+
+	# Plain-text errors on purpose. The Caddyfile treats { } as placeholder
+	# delimiters, so a literal JSON body here is fragile to get right and
+	# easy to break on upgrade. Real API errors come from the gateway, which
+	# returns proper JSON; what reaches this handler is edge-level only —
+	# 413 (body over max_size), 429 (rate limited), 502 (gateway down).
+	handle_errors {
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+
+	# ── Access log ───────────────────────────────────────────────────────
+	# JSON to a host-mounted file so fail2ban (running on the host) can read
+	# it. Caddy redacts Authorization and Cookie headers by default; do not
+	# add them back with a custom format.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+		level INFO
+	}
+}
+
+# Declared explicitly because the `:80` catch-all below would otherwise
+# suppress Caddy's automatic HTTP→HTTPS redirect for our own hostname.
+http://{$YANGBLE5_DOMAIN} {
+	redir https://{host}{uri} permanent
+}
+
+# Bare-IP and unknown-Host probes on :80 get nothing.
+# (Port 443 needs no equivalent: Caddy only holds certificates for the names
+# in this file and never issues one for an unknown SNI unless you explicitly
+# enable `on_demand_tls`, so an unknown-SNI probe just fails the handshake.)
+:80 {
+	respond 404
+}

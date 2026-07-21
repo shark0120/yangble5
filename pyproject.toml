@@ -1,0 +1,130 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yangble5"
+version = "0.1.0"
+description = "Prompt-cache measurement and Claude-wire compatibility tooling for a local CLIProxyAPI-based proxy stack."
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["prompt-cache", "llm-proxy", "cliproxyapi", "claude-code", "codex", "benchmark"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+  "Topic :: System :: Monitoring",
+]
+
+# Deliberately empty. Everything under tools/ is standard-library only so a single
+# file can be copied onto an operator's machine and run with the system Python --
+# no virtualenv, no wheel build, no supply chain. Adding a dependency here would
+# quietly break that property, so it should be argued for, not defaulted into.
+dependencies = []
+
+[project.optional-dependencies]
+# The gateway service -- NOT the tools -- is a FastAPI app that talks to upstreams
+# with an async HTTP client. Keeping it an extra is what lets someone install this
+# project purely for the measurement tools and pull in nothing at all.
+# (pydantic and starlette arrive as fastapi's own dependencies.)
+gateway = [
+  "fastapi>=0.110",
+  "httpx>=0.27",
+]
+# Encryption at rest for BYOK credentials. Optional because the gateway is the
+# internet-facing component and every package it hard-depends on becomes the
+# operator's CVE surface -- an operator who does not offer BYOK should not carry
+# a crypto library for it. Setting BYOK_ENCRYPTION_KEY without this installed is
+# a startup error rather than a silent downgrade to plaintext storage.
+byok = [
+  "cryptography>=42",
+]
+dev = [
+  "pytest>=7.4",
+  "ruff>=0.5",
+  # TEST-ONLY. byok/setup.py assembles its engine config by templating and has no
+  # YAML parser of its own (nothing under byok/ or tools/ may take a dependency).
+  # The tests parse the rendered config with a real YAML implementation, because
+  # "it looks like YAML" is not the property that matters -- "the engine can load
+  # it, and routing.strategy really is fill-first in the output" is.
+  "pyyaml>=6",
+  # Listed explicitly rather than as a self-referencing "yangble5[gateway]" extra:
+  # the gateway test module imports fastapi at collection time, so without these
+  # a plain `pip install -e ".[dev]"` cannot even collect the suite.
+  "fastapi>=0.110",
+  "httpx>=0.27",
+]
+
+[project.scripts]
+yangble5-cache-bench = "tools.cache_bench:main"
+yangble5-cache-stats = "tools.cache_stats_sidecar:main"
+yangble5-claude-shim = "tools.claude_shim:main"
+
+[tool.setuptools]
+# Explicit, because flat-layout auto-discovery refuses to guess between several
+# top-level directories and fails the install with a confusing error.
+packages = ["tools", "gateway"]
+
+# --------------------------------------------------------------------------
+# pytest
+# --------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+# --strict-markers/--strict-config turn a typo in a marker or an unknown ini key
+# into a failure instead of a silently ignored line.
+addopts = "-q --strict-markers --strict-config"
+filterwarnings = [
+  # A DeprecationWarning from the standard library is how these tools will find
+  # out they broke on a new Python, so it has to fail the suite, not scroll past.
+  "error",
+  # Narrow exemption, deliberately not a blanket one: starlette's TestClient warns
+  # at import that it prefers httpx2 over httpx. It is a third-party packaging
+  # preference we do not control and it fires during collection, which takes the
+  # whole gateway suite down. Scoped to this exact message so a real deprecation
+  # in our own code still fails the build.
+  "ignore:Using .httpx. with .starlette.testclient. is deprecated",
+]
+
+# --------------------------------------------------------------------------
+# ruff
+# --------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # import sorting
+  "UP",   # pyupgrade
+  "B",    # bugbear
+  "C4",   # comprehensions
+  "SIM",  # simplify
+  "A",    # shadowed builtins (the shim must shadow `format` to match its base class)
+  "S",    # bandit: these tools handle API keys and open sockets
+  "RUF",
+]
+ignore = [
+  # The tools intentionally catch broad exception groups around network I/O: a
+  # sidecar that dies because the proxy restarted is worse than one that retries.
+  "S110",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert (S101), bind loopback sockets (S104), and carry obviously fake
+# keys as fixtures (S105/S106) on purpose.
+"tests/*" = ["S101", "S104", "S105", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tools", "gateway"]
