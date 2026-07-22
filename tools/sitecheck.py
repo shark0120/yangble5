@@ -856,9 +856,7 @@ def _loc_to_relative(loc: str) -> str | None:
     return "index.html" if rest in ("", "/") else rest
 
 
-def sitemap_problems(
-    site: pathlib.Path = SITE, today: datetime.date | None = None
-) -> list[str]:
+def sitemap_problems(site: pathlib.Path = SITE, today: datetime.date | None = None) -> list[str]:
     path = site / SITEMAP
     if not path.is_file():
         # Not having a sitemap is a legitimate choice; having one that lies is
@@ -892,9 +890,7 @@ def sitemap_problems(
     for raw in _LASTMOD_RE.findall(text):
         m = _ISO_DATE_RE.match(raw)
         if not m:
-            problems.append(
-                f"{SITEMAP}: <lastmod>{raw}</lastmod> is not a YYYY-MM-DD date"
-            )
+            problems.append(f"{SITEMAP}: <lastmod>{raw}</lastmod> is not a YYYY-MM-DD date")
             continue
         try:
             when = datetime.date(int(m[1]), int(m[2]), int(m[3]))
@@ -956,9 +952,7 @@ WELLKNOWN = ".well-known/security.txt"
 _SECURITY_FIELD_RE = re.compile(r"(?mi)^([A-Za-z-]+):[ \t]*(\S.*?)[ \t]*$")
 
 
-def wellknown_problems(
-    site: pathlib.Path = SITE, today: datetime.date | None = None
-) -> list[str]:
+def wellknown_problems(site: pathlib.Path = SITE, today: datetime.date | None = None) -> list[str]:
     path = site / WELLKNOWN
     if not path.is_file():
         return []
@@ -991,9 +985,7 @@ def wellknown_problems(
         try:
             when = datetime.datetime.fromisoformat(stamp).date()
         except ValueError:
-            problems.append(
-                f"{WELLKNOWN}: Expires: {raw} is not an ISO 8601 timestamp"
-            )
+            problems.append(f"{WELLKNOWN}: Expires: {raw} is not an ISO 8601 timestamp")
         else:
             if when <= today:
                 problems.append(
@@ -1263,10 +1255,7 @@ CLAIM_TRAILING_NEGATION = ("yangble5 is a model, not a proxy.", "model")
 
 # ── the whole-file disclosure cases ────────────────────────────────────────
 # (name, file text, substring that MUST appear in some problem)
-_SCOPED = (
-    "warm rounds only, from one run on one machine on 2026-07-21; the cold "
-    "round hit 0.00%"
-)
+_SCOPED = "warm rounds only, from one run on one machine on 2026-07-21; the cold round hit 0.00%"
 DISCLOSURE_MUST_FAIL = [
     ("the headline figure, naked", "cache hit rate 99.53%", "which rounds"),
     (
@@ -1531,8 +1520,10 @@ def coverage(site: pathlib.Path = SITE) -> int:
         print(f"{f:{width}s}  EXEMPT — {why}")
     # Named separately because they are checks over the WHOLE directory rather
     # than over one file's text, so they do not belong on any single row.
-    for f, what in ((SITEMAP, "indexes every document, and only real ones"),
-                    (WELLKNOWN, "required fields, and an Expires that has not passed")):
+    for f, what in (
+        (SITEMAP, "indexes every document, and only real ones"),
+        (WELLKNOWN, "required fields, and an Expires that has not passed"),
+    ):
         if (site / f).is_file():
             print(f"{f:{width}s}  {what}")
     print(
