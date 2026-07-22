@@ -460,15 +460,38 @@ between a user who chose this and a user who was sold it.
 
 ## 11. Uninstall
 
-The installer writes an uninstaller and puts it on the path. Reversing the
-install is:
+The installer writes an uninstaller. **Run it with no confirmation flag
+first.** It prints every path it is about to delete and stops. Show that list
+to the user and wait for an answer — section 8 requires it, and the list is
+the only thing standing between "uninstall" and "delete a directory on someone
+else's machine".
+
+macOS / Linux:
 
 ```
-yangble5-uninstall --yes          # prints what it deletes, then deletes it
+yangble5-uninstall                # prints the list, deletes nothing
+yangble5-uninstall --yes          # only after the user has said yes
 ```
 
-which is equivalent to `sh ~/.yangble5/uninstall.sh --yes`. Run it without
-`--yes` first if the user wants to see the list before anything goes.
+`yangble5-uninstall` is a launcher on the path; it is equivalent to
+`sh ~/.yangble5/uninstall.sh`.
+
+Windows — **different file, different flag, and neither of the commands above
+exists**:
+
+```
+powershell -NoProfile -File "$env:USERPROFILE\.yangble5\uninstall.ps1"
+powershell -NoProfile -File "$env:USERPROFILE\.yangble5\uninstall.ps1" -Yes
+```
+
+Two things about the Windows form. The installer's own closing screen prints
+this line with `-ExecutionPolicy Bypass` and `-Yes` already on it — that text
+is addressed to the **human**, who may run it in their own shell however they
+like. Neither is yours to add: `-Yes` skips the question section 8 obliges you
+to ask, and the policy flag is the system-settings change described in
+section 5. If the uninstaller will not load because scripts are disabled, that
+is the same wall as section 5 and it has the same answer: report it, and let
+the user decide.
 
 It removes the local install. **The account is server-side**: deleting the
 files does not delete the key, and it does not free the registration this

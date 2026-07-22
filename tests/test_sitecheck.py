@@ -1249,3 +1249,47 @@ def test_agents_md_does_not_claim_the_project_never_uses_the_bypass_flag():
         "-ExecutionPolicy Bypass. site/install.sh prints it at least once, so the "
         "claim is false and an agent can catch this file being wrong"
     )
+
+
+def test_agents_md_uninstall_covers_windows():
+    """§11 used to give two POSIX commands and nothing else.
+
+    Verified by running the real Windows installer on 2026-07-23: it writes
+    ``~/.yangble5/uninstall.ps1``. ``yangble5-uninstall`` is a shell launcher
+    that install.sh writes and install.ps1 does not, and ``sh`` is not on a
+    stock Windows box either. A compliant agent on Windows had no uninstall
+    path at all -- and the one the installer's own closing screen prints
+    carries ``-ExecutionPolicy Bypass``, which §8 forbids the agent to add.
+    """
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    section = agents[agents.index("## 11. Uninstall") :]
+    assert "uninstall.ps1" in section, "§11 still has no Windows uninstall path"
+    assert "yangble5-uninstall" in section, "§11 lost the POSIX launcher"
+
+    ps1 = (sitecheck.SITE / "install.ps1").read_text(encoding="utf-8")
+    assert "uninstall.ps1" in ps1, (
+        "install.ps1 no longer writes uninstall.ps1, so §11's Windows command "
+        "names a file that is never created -- which is the defect this test "
+        "was written for, in the other direction"
+    )
+
+
+def test_agents_md_uninstall_does_not_lead_with_the_flag_section_8_forbids():
+    """§11's headline was `yangble5-uninstall --yes`, framed as *the* command.
+
+    §8 says never run the uninstaller with ``--yes`` unprompted: run it bare,
+    show the list, wait. §11 mentioned that as something to do "if the user
+    wants to see the list" -- optional, in the section an agent copies from.
+    Two rules, one mandatory and one optional, about the same destructive act.
+    """
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    section = agents[agents.index("## 11. Uninstall") :]
+    first_block = section[section.index("```") + 3 :]
+    first_block = first_block[: first_block.index("```")]
+    lines = [ln.strip() for ln in first_block.splitlines() if ln.strip()]
+    assert lines, "§11 has no command block"
+    assert "--yes" not in lines[0] and "-Yes" not in lines[0], (
+        f"§11's first command is {lines[0]!r}, which skips the confirmation §8 "
+        "makes mandatory. The bare form has to come first: it is the one that "
+        "prints the list of paths before anything is deleted."
+    )
