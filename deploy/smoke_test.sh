@@ -972,8 +972,8 @@ check_api_not_cacheable() {
 
     local path cc bad=0
     for path in /usage /byok /auth/register /pool/status /health; do
-        cc="$(curl -sSI --max-time 20 "${BASE_URL}${path}" 2>/dev/null | tr -d '
-'               | grep -i '^cache-control:' | head -1 | cut -d: -f2- | sed 's/^ *//')"
+        cc="$(curl -sSI --max-time 20 "${BASE_URL}${path}" 2>/dev/null | tr -d '\r' \
+              | grep -i '^cache-control:' | head -1 | cut -d: -f2- | sed 's/^ *//')"
         if [ -z "$cc" ]; then
             warn "cache${path}" "no Cache-Control at all"
         elif contains_ci "$cc" "no-store"; then
