@@ -173,6 +173,18 @@ jobs:
           files = sorted(pathlib.Path("tools").rglob("*.py"))
           files += sorted(pathlib.Path("byok").rglob("*.py"))
           for path in files:
+              # A SIBLING file is not a third-party package. `tools/sitecheck.py`
+              # imports `drift_check` by bare name because that is the only
+              # spelling that resolves under `python tools/sitecheck.py`, where
+              # sys.path[0] is tools/ and the repo root is not on the path at
+              # all. Rejecting it would force the module to be importable only
+              # one of the two ways it is actually loaded.
+              #
+              # Scoped to THIS file's own directory, not to a global set of
+              # every stem in the tree: that keeps the hole as small as the one
+              # Python itself has (a local module shadows an installed one) and
+              # no larger.
+              siblings = {p.stem for p in path.parent.glob("*.py")} - {path.stem}
               tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
               for node in ast.walk(tree):
                   if isinstance(node, ast.Import):
@@ -183,7 +195,7 @@ jobs:
                       continue
                   for name in names:
                       root = name.split(".")[0]
-                      if root not in allowed:
+                      if root not in allowed and root not in siblings:
                           offenders.append(f"{path}:{node.lineno}: imports {name!r}")
           if offenders:
               print("::error::non-stdlib import in a file that promises stdlib-only")
