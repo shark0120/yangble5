@@ -360,6 +360,13 @@ BYTE_SENSITIVE = (
     "deploy/Caddyfile",
     "deploy/nginx/security-headers.conf",
     "deploy/nginx/yangble5.com.conf.example",
+    # tools/drift_check.py compares these against the live site byte for byte,
+    # which puts them in the same class as the pages: a CRLF checkout changes
+    # bytes nobody edited and the gate fails for a reason that is not a defect.
+    "site/AGENTS.md",
+    "site/llms.txt",
+    "site/sitemap.xml",
+    "site/.well-known/security.txt",
 )
 
 

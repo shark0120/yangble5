@@ -510,3 +510,510 @@ def test_ci_runs_the_coverage_check():
     assert "notes.rst" in ci or "unclassified" in ci, (
         "CI has no negative control proving an unclassified file turns the job red"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# THE SURFACE AN AI AGENT LANDS ON
+# ══════════════════════════════════════════════════════════════════════════
+# site/AGENTS.md, site/llms.txt, site/sitemap.xml and site/.well-known/ are
+# read by agents, not by people, and an agent acts on what it reads. They are
+# also the exact shape of file the figure guard was once blind to: not HTML,
+# not obviously "content", added long after anyone last opened the checker.
+# Everything below exists to make "these files are covered" a thing that has
+# been observed to fail rather than a thing someone believes.
+
+NEW_SURFACE = ("AGENTS.md", "llms.txt", "sitemap.xml", ".well-known/security.txt")
+
+
+@pytest.mark.parametrize("name", NEW_SURFACE)
+def test_the_agent_facing_files_exist_and_are_classified(name):
+    """None of them may sit in site/ outside the guard, and a dotted
+    directory must not fall out of discovery — `.well-known` is exactly the
+    kind of path a glob quietly skips."""
+    assert (sitecheck.SITE / name).is_file(), f"site/{name} is missing"
+    _pages, texts, problems = sitecheck.classify()
+    assert problems == [], "\n".join(problems)
+    assert name in texts, (
+        f"site/{name} is not in the checked text-file set, so every figure and "
+        f"every claim in it is unguarded"
+    )
+
+
+@pytest.mark.parametrize("name", NEW_SURFACE)
+def test_a_bogus_number_in_an_agent_facing_file_turns_the_build_red(name, site_copy):
+    """The negative control, once per new file, through the SAME command CI
+    runs. `99.61%` and `748,919` are a plausible hit rate and a plausible
+    prompt total that the measurement record does not contain."""
+    target = site_copy / name
+    target.write_text(
+        target.read_text(encoding="utf-8")
+        + "\nwarm-round cache hit rate 99.61%, prefix 748,919 tokens\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    r = _run_site(site_copy)
+    assert r.returncode == 1, (
+        f"a bogus measurement in site/{name} left the build green:\n{r.stdout}{r.stderr}"
+    )
+    assert name in r.stdout, f"the run failed but never named {name}:\n{r.stdout}"
+    assert "99.61" in r.stdout and "748919" in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("name", NEW_SURFACE)
+def test_a_forbidden_claim_in_an_agent_facing_file_turns_the_build_red(name, site_copy):
+    """A file can be wrong with no number in it at all. `#` opens a comment in
+    two of these formats and `<!--` in a third, and none of that matters: a
+    sentence a crawler or an agent can read is published."""
+    target = site_copy / name
+    target.write_text(
+        target.read_text(encoding="utf-8") + "\nyangble5 is a fast model.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    r = _run_site(site_copy)
+    assert r.returncode == 1, (
+        f"a forbidden claim in site/{name} left the build green:\n{r.stdout}{r.stderr}"
+    )
+    assert name in r.stdout and "forbidden claim" in r.stdout, r.stdout
+
+
+def test_the_new_files_are_reached_by_the_real_run_not_only_by_a_copy():
+    """`--site` is how the negative controls stay non-destructive, but a rule
+    that only ever fires on a temporary directory proves nothing about what CI
+    checks. Run the checker's own functions over the files as committed."""
+    used: set[tuple[str, str]] = set()
+    for name in NEW_SURFACE:
+        body = (sitecheck.SITE / name).read_text(encoding="utf-8")
+        assert sitecheck.check_text(name, body, used) == [], name
+        assert sitecheck.whole_file_problems(name, body) == [], name
+
+
+# ── forbidden claims ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,payload,needle", sitecheck.CLAIM_MUST_FAIL, ids=[c[0] for c in sitecheck.CLAIM_MUST_FAIL]
+)
+def test_a_forbidden_claim_is_reported(name, payload, needle):
+    problems = sitecheck.claim_problems(payload)
+    assert any(needle in p for p in problems), (
+        f"{name}: {payload!r} produced no problem quoting {needle!r}. Problems "
+        f"were: {problems!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,payload", sitecheck.CLAIM_MUST_PASS, ids=[c[0] for c in sitecheck.CLAIM_MUST_PASS]
+)
+def test_denying_a_forbidden_claim_is_not_making_it(name, payload):
+    """Every sentence here is on the site right now. A guard that fires on the
+    denial is a guard that gets deleted, and then the assertion is unguarded
+    too."""
+    assert sitecheck.claim_problems(payload) == [], f"{name}: {payload!r} was wrongly flagged"
+
+
+def test_a_negation_after_the_claim_does_not_retract_it():
+    payload, needle = sitecheck.CLAIM_TRAILING_NEGATION
+    assert any(needle in p for p in sitecheck.claim_problems(payload)), (
+        "the negation window must end at the match: a sentence may assert "
+        "something forbidden and then deny something else"
+    )
+
+
+def test_claims_are_checked_on_pages_and_on_text_files_alike():
+    """`curl https://yangble5.com/install.sh` is read by more people than the
+    landing page is. A claim in a shell comment is published just as hard."""
+    page = sitecheck.check_page("<t>", sitecheck._page("yangble5 是一個模型。"), set())
+    assert any("forbidden claim" in p for p in page), page
+    text = sitecheck.check_text("install.sh", "yangble5 is a fast model.", set())
+    assert any("forbidden claim" in p for p in text), text
+
+
+def test_a_forbidden_claim_cannot_be_allow_listed_away():
+    """TEXT_ALLOW exists because a figure can be legitimate in one file and
+    meaningless in another. A false sentence is false everywhere, so the
+    per-file escape hatch must not reach it."""
+    assert any(
+        "forbidden claim" in p
+        for p in sitecheck.check_text(sitecheck.GUARD_DOC, "yangble5 is a fast model.", set())
+    )
+
+
+def test_every_claim_rule_carries_a_reason_and_is_exercised():
+    for label, pattern, why in sitecheck.CLAIMS:
+        assert why and len(why) > 40, f"{label!r} is forbidden with no stated reason"
+        assert any(
+            pattern.search(payload) for _n, payload, _needle in sitecheck.CLAIM_MUST_FAIL
+        ), f"no must-fail fixture exercises the {label!r} pattern"
+
+
+# ── a measurement may not be published without its scope ──────────────────
+
+
+@pytest.mark.parametrize(
+    "name,payload,needle",
+    sitecheck.DISCLOSURE_MUST_FAIL,
+    ids=[c[0] for c in sitecheck.DISCLOSURE_MUST_FAIL],
+)
+def test_a_naked_hit_rate_is_reported(name, payload, needle):
+    problems = sitecheck.disclosure_problems(payload)
+    assert any(needle in p for p in problems), f"{name}: {payload!r} produced {problems!r}"
+
+
+@pytest.mark.parametrize(
+    "name,payload",
+    sitecheck.DISCLOSURE_MUST_PASS,
+    ids=[c[0] for c in sitecheck.DISCLOSURE_MUST_PASS],
+)
+def test_a_hit_rate_with_its_scope_is_accepted(name, payload):
+    assert sitecheck.disclosure_problems(payload) == [], f"{name}: {payload!r} was wrongly flagged"
+
+
+def test_the_disclosure_rule_is_a_whole_file_rule_not_a_fragment_rule():
+    """It must NOT run inside check_page/check_text: those are handed single
+    sentences by the self-test, and demanding that every sentence restate the
+    whole measurement record is how a guard becomes noise and gets removed."""
+    fragment = "暖輪 99.53% 命中"
+    assert sitecheck.check_page("<t>", sitecheck._page(fragment), set()) == []
+    assert sitecheck.check_text("install.sh", "99.53% — warm rounds only", set()) == []
+    assert sitecheck.disclosure_problems(fragment) != []
+
+
+def test_the_naked_headline_figure_turns_the_build_red(site_copy):
+    """End to end, through the command CI runs. site/sitemap.xml is used
+    because it carries none of the disclosures; the other files already do,
+    which is the point of the rule but makes them useless as a fixture."""
+    target = site_copy / "sitemap.xml"
+    target.write_text(
+        target.read_text(encoding="utf-8") + "\n<!-- cache hit rate 99.53% -->\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    r = _run_site(site_copy)
+    assert r.returncode == 1, r.stdout + r.stderr
+    for needle in ("sitemap.xml", "which rounds", "cold request hit zero", "scope of the run"):
+        assert needle in r.stdout, f"{needle!r} missing from:\n{r.stdout}"
+
+
+def test_the_naked_headline_figure_turns_the_build_red_on_a_page_too(tmp_path):
+    """The same rule down the OTHER code path. Pages and text files are read
+    by different halves of main(), and wiring a rule into one of them is
+    exactly the kind of half-done change that looks finished.
+
+    A minimal site rather than a copy of the real one: site/index.html carries
+    every disclosure already — which is the rule working — so making it fail
+    would mean deleting Chinese phrases out of a 100 KB page by substring,
+    and a fixture that fragile stops testing the thing it was written for.
+    """
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "index.html").write_text(
+        sitecheck._page("命中率 99.53%"), encoding="utf-8", newline="\n"
+    )
+    r = _run_site(site)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "index.html" in r.stdout and "which rounds" in r.stdout, r.stdout
+
+
+def test_the_disclosure_rule_is_not_vacuous_on_the_real_files():
+    """"0 problems" is also what a rule that matched nothing prints. Some
+    committed file must actually publish the hit rate and satisfy the rule."""
+    publishers = [
+        name
+        for name in sorted(sitecheck.classify()[1])
+        if sitecheck.CACHE_FIGURE_RE.search((sitecheck.SITE / name).read_text(encoding="utf-8"))
+    ]
+    assert "AGENTS.md" in publishers, (
+        "site/AGENTS.md no longer quotes the hit rate, so nothing proves the "
+        "disclosure rule was evaluated against it"
+    )
+    for name in publishers:
+        body = (sitecheck.SITE / name).read_text(encoding="utf-8")
+        assert sitecheck.disclosure_problems(body) == [], name
+
+
+def test_the_hit_rate_pattern_is_derived_from_the_record():
+    """Perturb the record and the set of figures that demand a scope moves
+    with it. A transcribed literal would not."""
+    assert "99.53" in sitecheck.CACHE_FIGURES and "99.5333" in sitecheck.CACHE_FIGURES
+    assert "0.00" not in sitecheck.CACHE_FIGURES, "zero is not a claim that needs a scope"
+    assert not sitecheck.CACHE_FIGURE_RE.search("99.54%")
+    # The alternation must report the figure that is actually on the page, not
+    # the shortest prefix of it that happens to be in the table.
+    assert sitecheck.CACHE_FIGURE_RE.search("= 99.5333%").group(1) == "99.5333"
+    assert sitecheck.CACHE_FIGURE_RE.search("99.53%").group(1) == "99.53"
+
+
+# ── the sitemap describes the site, in both directions ────────────────────
+
+
+def test_the_real_sitemap_is_consistent_with_the_real_site():
+    assert sitecheck.sitemap_problems() == []
+    assert sitecheck.wellknown_problems() == []
+
+
+@pytest.mark.parametrize("name", ("AGENTS.md", "llms.txt"))
+def test_the_agent_facing_documents_are_indexed(name):
+    text = (sitecheck.SITE / sitecheck.SITEMAP).read_text(encoding="utf-8")
+    assert f"{sitecheck.SITE_ORIGIN}{name}" in text, (
+        f"site/{name} is published but not in the sitemap, so it is invisible "
+        f"to anything that starts from the index"
+    )
+
+
+def test_a_new_document_that_nothing_indexes_is_reported(site_copy):
+    """The direction nobody notices: nothing is broken, the page is simply
+    invisible."""
+    (site_copy / "guide.md").write_text("a document\n", encoding="utf-8", newline="\n")
+    problems = sitecheck.sitemap_problems(site_copy)
+    assert any("guide.md" in p and "does not list" in p for p in problems), problems
+
+
+def test_a_sitemap_entry_for_a_file_that_is_gone_is_reported(site_copy):
+    """The direction that breaks: a renamed page leaves the index advertising
+    a 404, and the person who renamed it never opened this file."""
+    (site_copy / "verify.html").unlink()
+    problems = sitecheck.sitemap_problems(site_copy)
+    assert any("verify.html" in p and "404" in p for p in problems), problems
+
+
+def test_a_sitemap_entry_pointing_off_site_is_reported(site_copy):
+    path = site_copy / "sitemap.xml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "<loc>https://yangble5.com/verify.html</loc>",
+            "<loc>https://evil.example/verify.html</loc>",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    problems = sitecheck.sitemap_problems(site_copy)
+    assert any("evil.example" in p for p in problems), problems
+
+
+def test_a_future_lastmod_is_reported(site_copy):
+    import datetime
+
+    path = site_copy / "sitemap.xml"
+    # Rewrite whatever the first date happens to be, rather than a literal:
+    # the dates move every time a listed document is edited, and a fixture
+    # pinned to one of them turns red for a reason that has nothing to do
+    # with the rule it is testing.
+    path.write_text(
+        re.sub(r"<lastmod>[^<]+</lastmod>", "<lastmod>2999-01-01</lastmod>",
+               path.read_text(encoding="utf-8"), count=1),
+        encoding="utf-8",
+        newline="\n",
+    )
+    problems = sitecheck.sitemap_problems(site_copy, today=datetime.date(2026, 7, 23))
+    assert any("2999-01-01" in p and "future" in p for p in problems), problems
+
+
+def test_a_stale_sitemap_exclusion_is_reported(site_copy, monkeypatch):
+    monkeypatch.setitem(sitecheck.SITEMAP_EXCLUDED, "gone.md", "a file that is not there")
+    problems = sitecheck.sitemap_problems(site_copy)
+    assert any("gone.md" in p and "stale" in p for p in problems), problems
+
+
+def test_every_sitemap_exclusion_carries_a_reason():
+    for name, why in sitecheck.SITEMAP_EXCLUDED.items():
+        assert why and len(why) > 20, f"{name!r} is excluded from the index with no stated reason"
+
+
+def test_an_exclusion_that_could_never_fire_is_reported(site_copy, monkeypatch):
+    """An entry for a suffix the index does not cover documents a decision
+    nobody is making. Unreachable entries are how the checker this file
+    replaced hid the fact that it had never seen a percentage."""
+    monkeypatch.setitem(sitecheck.SITEMAP_EXCLUDED, "install.sh", "not a document anyway")
+    problems = sitecheck.sitemap_problems(site_copy)
+    assert any("install.sh" in p and "never fire" in p for p in problems), problems
+
+
+def test_a_loc_that_walks_out_of_the_webroot_is_not_resolved(site_copy):
+    """`../README.md` exists in the repository root. Resolving it would let a
+    <loc> the web server can never serve be reported as fine."""
+    path = site_copy / "sitemap.xml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "<loc>https://yangble5.com/verify.html</loc>",
+            "<loc>https://yangble5.com/../README.md</loc>",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    problems = sitecheck.sitemap_problems(site_copy)
+    assert any("README.md" in p for p in problems), problems
+    assert sitecheck._loc_to_relative("https://yangble5.com/../README.md") is None
+
+
+def test_no_sitemap_is_not_a_finding(site_copy):
+    """Not publishing an index is a legitimate choice. Publishing one that
+    lies is not, and only the second is this checker's business."""
+    (site_copy / "sitemap.xml").unlink()
+    assert sitecheck.sitemap_problems(site_copy) == []
+
+
+# ── security.txt has to still be true ─────────────────────────────────────
+
+
+def test_an_expired_security_txt_is_reported(site_copy):
+    """RFC 9116 makes Expires mandatory because a stale security contact is
+    worse than none: a finder either wastes the report or goes public."""
+    import datetime
+
+    problems = sitecheck.wellknown_problems(site_copy, today=datetime.date(2099, 1, 1))
+    assert any("Expires" in p and "has passed" in p for p in problems), problems
+
+
+def test_a_security_txt_without_a_contact_is_reported(site_copy):
+    path = site_copy / ".well-known" / "security.txt"
+    path.write_text(
+        "\n".join(
+            ln for ln in path.read_text(encoding="utf-8").splitlines()
+            if not ln.startswith("Contact:")
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    problems = sitecheck.wellknown_problems(site_copy)
+    assert any("Contact" in p for p in problems), problems
+
+
+def test_a_commented_out_field_does_not_count_as_present(site_copy):
+    """The file is mostly comment. A `# Contact:` line explaining the field
+    must not satisfy the requirement for the field."""
+    path = site_copy / ".well-known" / "security.txt"
+    path.write_text(
+        "# Contact: https://example.invalid/report\n# Expires: 2099-01-01T00:00:00.000Z\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    problems = sitecheck.wellknown_problems(site_copy)
+    assert len(problems) == 2, problems
+
+
+def test_the_published_expiry_is_still_in_the_future():
+    """The one clock-dependent rule in this file, asserted directly so the
+    failure names the cause instead of arriving as a mysterious red build."""
+    assert sitecheck.wellknown_problems() == [], (
+        "site/.well-known/security.txt has expired. Renew the date ONLY if the "
+        "promise behind it is still true; if nobody is reading the advisory "
+        "queue, delete the file instead."
+    )
+
+
+# ── the agent-facing instructions may not drift from the site ─────────────
+
+
+def _agent_block(marker: str) -> list[str]:
+    """The command lines of one agent block on the landing page, as an agent
+    reads them: parsed, entities resolved, comments dropped."""
+    text = sitecheck.page_text((sitecheck.SITE / "index.html").read_text(encoding="utf-8"))
+    start = text.index(marker)
+    block = text[start : text.index("\n#", start)]
+    return [ln for ln in block.split("\n") if ln.strip()]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "curl -fsSL https://yangble5.com/install.sh -o install.sh",
+        "irm https://yangble5.com/install.ps1 -OutFile install.ps1",
+    ),
+    ids=("unix", "windows"),
+)
+def test_agents_md_publishes_the_same_command_as_the_landing_page(marker):
+    """AGENTS.md is the document an agent acts on, and section 2 tells it to
+    refuse any variant of the command carrying flags it did not read there.
+    That instruction is only safe while the command in AGENTS.md IS the
+    command on the site: a stale copy here would teach an agent to refuse the
+    real one. The `throw` message is excluded because it is localised — the
+    site is Traditional Chinese and this file is English.
+    """
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    for line in _agent_block(marker):
+        if "throw" in line:
+            assert "if ($actual -ine $expected) { throw" in agents
+            continue
+        assert line in agents, (
+            f"site/AGENTS.md no longer carries the published command line "
+            f"{line!r}. An agent told to refuse anything that differs from "
+            f"this file would refuse the real installer."
+        )
+
+
+def test_agents_md_quotes_the_canonical_line_exactly_as_the_pages_do():
+    """AGENTS.md tells the reader to compare what it was handed against the
+    canonical sentence character by character. That instruction is worth
+    nothing if the copy here has drifted from the one on the pages that
+    publish it — the agent would be comparing against the wrong string and
+    would reject the real one. The page is authoritative; this asserts the
+    document agrees with it rather than defining a second source of truth.
+    """
+    pages = {
+        name: sitecheck.page_text((sitecheck.SITE / name).read_text(encoding="utf-8"))
+        for name in sitecheck.FILES
+    }
+    # A sentence ending in the URL, not the bare URL: both appear on the
+    # pages, and only the first is the thing a reader is told to compare.
+    sentence = re.compile(r"[A-Za-z0-9 ]+ https://yangble5\.com/AGENTS\.md")
+    lines = {
+        line.strip()
+        for text in pages.values()
+        for line in text.splitlines()
+        if sentence.fullmatch(line.strip())
+    }
+    assert len(lines) == 1, (
+        f"the pages publish {len(lines)} different sentences ending in the "
+        f"instruction URL, so there is no canonical line to agree with: {lines}"
+    )
+    canonical = lines.pop()
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    assert canonical in agents, (
+        f"the pages publish {canonical!r} but site/AGENTS.md does not quote it. "
+        f"An agent told to compare its instructions against the canonical "
+        f"sentence would be comparing against a string nobody publishes."
+    )
+
+
+def test_agents_md_never_tells_an_agent_to_reveal_the_credential():
+    """POST /auth/register accepts a machine id with no other authentication
+    and returns the account key, so the full value is a bearer credential and
+    stdout is a transcript. The file must not contain an instruction to print
+    it, or the paths that hold it."""
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    for phrase in ("Never print the full machine id", "credentials", "machine-id"):
+        assert phrase in agents, f"AGENTS.md no longer warns about {phrase!r}"
+    for forbidden in ("cat ~/.yangble5/credentials", "Get-Content ~/.yangble5/credentials"):
+        assert forbidden not in agents, (
+            f"AGENTS.md contains {forbidden!r} — an agent copies commands out of "
+            f"this file, and that one puts the API key into its transcript"
+        )
+
+
+def test_agents_md_refuses_the_endpoint_takeover():
+    """The published SHA-256 pins the script, not the invocation. A genuine
+    hash-matching installer with a hostile --api is the whole threat, and this
+    file is the only place an agent is told about it."""
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    assert "--allow-nondefault-endpoint" in agents
+    assert "never yours to add" in agents.lower()
+    assert "pins the" in agents and "not the" in agents
+
+
+# ── the new rules must be able to turn the self-test red ──────────────────
+
+
+@pytest.mark.parametrize("break_it", ["claim", "disclosure"])
+def test_the_new_silent_cases_can_turn_the_self_test_red(break_it, monkeypatch):
+    """These cases print nothing when they pass, exactly like the text cases,
+    and for the same reason: site/README.md quotes this program's transcript
+    verbatim. This is the only thing standing between them and ornament."""
+    assert sitecheck.selftest(verbose=False) is True
+    if break_it == "claim":
+        monkeypatch.setattr(sitecheck, "CLAIMS", ())
+    else:
+        monkeypatch.setattr(sitecheck, "DISCLOSURES", ())
+    assert sitecheck.selftest(verbose=False) is False, (
+        f"emptying {break_it.upper()}S left the self-test green, so it was proving nothing"
+    )

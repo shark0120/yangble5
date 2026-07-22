@@ -16,6 +16,29 @@ Anyone with write access, but the pre-release checklist is not delegable to CI: 
 matter (do the numbers still carry their disclosures? is anything in the README no longer true?)
 cannot be automated. CI is a floor, not a gate.
 
+That said, this document has been wrong about CI before — it claimed three Python versions when
+the matrix ran five, and described a secret scan by a shape count that had stopped being true.
+So: **`.github/workflows/ci.yml` is the source of truth for what CI does.** Where this file names
+a job, a scope or a version, it is quoting the workflow, and if the two disagree the workflow is
+right and this file is stale. Fix it in the same commit you notice it.
+
+What CI covers, by job id, so the checklist below can refer to them by name:
+
+| Job | What a green tick means |
+|---|---|
+| `test` | pytest + `ruff check .` + `ruff format --check tools byok`, on Ubuntu and Windows, on every Python in the matrix |
+| `tools-are-stdlib-only` | nothing in `tools/` or `byok/` imports a third-party package, proved on a bare interpreter |
+| `offline-self-checks` | every `.sh` and `.ps1` parses; `--help` and `--dry-run` paths still work and still write nothing; `pyproject.toml` agrees with the test matrix |
+| `installer-digests` | every `site/*.sh`/`*.ps1` has a `.sha256` and each digest matches its file **in the tree** |
+| `published-numbers` | `tools/sitecheck.py` accounts for every figure on every file under `site/`, and its two negative controls prove the checker can still go red |
+| `no-secrets` | no key-shaped string, operator path, non-reserved email domain, or un-allowlisted IP address |
+| `live-site-drift` | **scheduled only, skipped on PRs.** `tools/drift_check.py` says the *served* site is this commit |
+
+What CI does **not** cover, and therefore what section 3 is for: whether the numbers still carry
+their qualifiers, whether the README is still true, and — until the scheduled job's next run —
+whether what is deployed is what is in this tree. That last one is section 3.6 and it is the only
+step in this document with no manual alternative.
+
 ---
 
 ## 1. Versioning policy
@@ -50,11 +73,16 @@ Nothing else hard-codes a version. If a future change adds a second copy (a `__v
 Docker image tag, a badge), add it to this table in the same commit, or the next release will
 ship an inconsistency.
 
-To confirm no stale version strings remain:
+To confirm no stale version strings remain, grep for the version you are **replacing**, not the
+one you are cutting — the new version is supposed to appear:
 
 ```bash
-git grep -nE '0\.1\.0' -- . ':!CHANGELOG.md'
+# e.g. cutting 0.2.0 over 0.1.0
+previous=0.1.0
+git grep -nF "$previous" -- . ':!CHANGELOG.md'
 ```
+
+`CHANGELOG.md` is excluded because it is the one file that must keep every old version forever.
 
 ---
 
@@ -78,10 +106,19 @@ and `tests/` are not `ruff format`-clean yet; widening the scope is a standalone
 part of a release.
 
 - [ ] Full suite green locally.
-- [ ] Green in CI on **both** operating systems and **all three** Python versions. A skipped
-      Windows job is a red job.
+- [ ] Green in CI on **both** operating systems and **every** Python in the `test` matrix — at the
+      time of writing 3.10, 3.11, 3.12, 3.13 and 3.14, ten matrix cells. Do not trust that list:
+      read `strategy.matrix.python-version` in `.github/workflows/ci.yml`. It is the source of
+      truth, and the `offline-self-checks` job fails the build if `requires-python` or the
+      `Programming Language :: Python` classifiers disagree with it. Nothing checks the sentence
+      you are reading, which is exactly why it was wrong before.
+- [ ] A **skipped** job is a red job, with one exception: `live-site-drift` is `if`-gated to
+      `schedule` and `workflow_dispatch`, so it is *supposed* to show as skipped on a push or a
+      pull request. Section 3.6 is how you cover it at release time.
 - [ ] The `tools-are-stdlib-only` job passed. If it was skipped, the release does not go out:
       that job is the only thing keeping `tools/` copy-and-run-able.
+- [ ] `offline-self-checks`, `installer-digests`, `published-numbers` and `no-secrets` all passed.
+      They are cheap and they are the ones nobody watches.
 - [ ] Record the test count in the changelog entry, since it is quoted in the README.
 
 ### 3.2 Secrets and operator paths
@@ -114,13 +151,32 @@ git grep -nIE "$pattern" -- . ':!.github/workflows/ci.yml' ':!CONTRIBUTING.md' \
       `git ls-files | grep -nE '(^|/)(auth/|\.env$|config\.yaml$)|\.(pem|key)$'`
 - [ ] `deploy/engine-bin/` contains only its `README.md`. The CLIProxyAPI binary is never
       redistributed and a 40MB blob cannot be removed from published history.
-- [ ] Skim `git log -p` for the release range. Do it even though the scan passed - the scan knows
-      four shapes of secret and reality knows more.
+- [ ] Skim `git log -p` for the release range. Do it even though the scan passed. The scan knows
+      the shapes enumerated in that one pattern in `ci.yml` — provider keys, GitHub tokens, AWS
+      key ids, Slack tokens, Stripe keys, bcrypt hashes, PEM private keys, JWTs, operator paths
+      and GCP project identifiers — and reality knows more. Do not write a count here; the last
+      one said "four" long after the pattern had grown past twenty, and a stale number in a
+      security step is worse than no number, because it tells you the coverage is small enough
+      to hold in your head.
 
 ### 3.3 Claims audit
 
-This is the step that distinguishes this project from a normal one. **Every** quantitative claim
-in `README.md`, `docs/`, `assets/`, `site/` and the release notes must satisfy all of:
+This is the step that distinguishes this project from a normal one.
+
+Part of it *is* automated now, and knowing exactly which part is what keeps the rest from being
+skipped. `tools/sitecheck.py`, run by the `published-numbers` job, accounts for every figure on
+every file under `site/` — including files added after it was last edited, which it refuses to
+classify silently. Two negative controls in that job plant a bogus hit rate and a new file and
+require the checker to go red, because a guard that cannot be shown to fail is decorative; that
+is not hypothetical here, the guard's regex once could not see a decimal and printed OK over the
+headline number for as long as nobody looked.
+
+What it cannot judge: whether a number that is *correct* is also *qualified*. A page can pass
+`sitecheck.py` and still be a lie by omission. `sitecheck.py` covers `site/`, not `README.md`,
+`docs/` or the release notes you are about to write. So:
+
+**Every** quantitative claim in `README.md`, `docs/`, `assets/`, `site/` and the release notes
+must satisfy all of:
 
 - [ ] The number is reproducible by a command that is printed next to it.
 - [ ] Its conditions travel with it: date, one machine, single run per configuration, engine
@@ -156,6 +212,63 @@ in place.
       decision and needs an explicit `Changed` entry explaining why the copy-one-file-and-run
       property was given up.
 - [ ] Open Dependabot PRs triaged - merged or explicitly deferred with a reason.
+
+### 3.6 Is what we deployed what we wrote?
+
+**This step has no manual alternative and no "looks fine" version. Run the command.**
+
+Everything above this line asks whether the tree is self-consistent. None of it can tell you what
+a visitor to `https://yangble5.com` is actually served, and that is not a theoretical gap:
+
+* The deployed pages were once a **full day older than the repo**, and nothing compared them. Six
+  audit findings cited line numbers that were wrong by 100–470 lines, and several defects recorded
+  as fixed were still live. Every check in section 3 was green the whole time, because every check
+  in section 3 was looking at the repo.
+* Cloudflare's Email Address Obfuscation rewrote `--email you@example.com` inside a `<pre>` on the
+  live page, so the **published install command was broken for every visitor** while the origin
+  served the correct bytes. Nothing that checks the origin can see this. Neither can `sha256sum`
+  against a file on disk.
+
+```bash
+# From your laptop. NOT from the VPS, and not on any machine whose resolver
+# points yangble5.com at the origin.
+python tools/drift_check.py
+```
+
+Better, if you have `bash` and thirty spare seconds — it runs the same comparison plus the
+vantage-point guard and the published-digest check, spends no tokens, and needs no API key:
+
+```bash
+bash deploy/smoke_test.sh --no-spend --base-url https://yangble5.com
+```
+
+- [ ] Exit status 0, and it named every published file. Read the list. "0 problems" is also what a
+      check that examined nothing prints.
+- [ ] **It ran from outside the origin.** A hosts entry, a split-horizon resolver, a tunnel, or
+      simply being logged into the server sends the request straight to the origin and skips the
+      CDN — and the CDN is the half of the path that has actually corrupted a published file here.
+      Such a run does not prove nothing; it proves the origin is correct, which was *already true*
+      on the day of the second incident while every visitor was being served a broken install
+      command. It answers a question nobody was asking. `deploy/smoke_test.sh` check 11 refuses to
+      report a result when the peer that answered was loopback, an RFC1918 address, or an address
+      on the machine running it; `python tools/drift_check.py` on its own does not, so this box is
+      yours to tick honestly.
+- [ ] Any difference was resolved by **deploying**, never by editing the repo to match what is
+      live, and never by adding to `EDGE_STRIPS` in `tools/drift_check.py`. That list is the set of
+      edge transformations this project has agreed to; every entry in it is a difference the check
+      will never report again. Adding one to make a red run green is how the next rewrite ships.
+
+The same comparison runs two other ways, and neither replaces this one:
+
+| Where | When | Why it is not enough on its own |
+|---|---|---|
+| `deploy/smoke_test.sh` check 11 | whenever an operator runs the post-deploy smoke test | Only if someone runs it, and only for the deployment they just made |
+| `live-site-drift` job in `ci.yml` | daily, on a schedule | Up to 24 hours late, and GitHub silently disables scheduled workflows in repositories inactive for 60 days |
+
+If `python` is not available where you are, `deploy/smoke_test.sh` check 12 still verifies each
+published `.sha256` against its published payload over the network. It catches a rewritten or
+half-deployed installer. It **cannot** see a page that is merely stale, which was the first
+incident. It is not a substitute for this step.
 
 ---
 
@@ -253,6 +366,15 @@ Reproduce with:
 - [ ] Re-read the published release page as a stranger would. If any number on it can be
       screenshotted without its qualifier, move the qualifier up.
 - [ ] Confirm the CI badge on the released tag is green.
+- [ ] **If this release was also deployed to `https://yangble5.com`, run section 3.6 again, after
+      the deploy.** Section 3.6 ran against the previous deployment; a release that changed
+      anything under `site/` has invalidated that answer. A deploy that half-applied looks
+      identical to a deploy that did not happen, and both look identical to success until
+      something compares the bytes.
+- [ ] Trigger `live-site-drift` by hand once (`Actions` -> `CI` -> `Run workflow`) rather than
+      waiting up to 24 hours for the schedule. It is the same comparison run from a machine that
+      has never had this repository on it, which is a slightly stronger statement than your
+      laptop can make.
 - [ ] Open a fresh `## [Unreleased]` section in `CHANGELOG.md` if step 2 did not.
 - [ ] File issues for anything the checklist forced you to notice and skip.
 

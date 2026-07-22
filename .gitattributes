@@ -39,6 +39,14 @@ site/uninstall.ps1  text eol=lf
 # which is a second reason they cannot be allowed to vary by platform.
 site/*.html         text eol=lf
 
+# The agent-facing surface, added when tools/drift_check.py started comparing it
+# against the live site byte for byte. Same reasoning as the pages above: a CRLF
+# checkout changes bytes nobody edited, and the failure surfaces on Windows only.
+site/AGENTS.md                  text eol=lf
+site/llms.txt                   text eol=lf
+site/sitemap.xml                text eol=lf
+site/.well-known/*              text eol=lf
+
 # The configs that CARRY those pins. Their bytes are not hashed, but a file
 # that must be diffed against a deployed copy should not change shape by
 # checkout either.

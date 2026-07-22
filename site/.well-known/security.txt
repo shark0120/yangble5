@@ -1,0 +1,34 @@
+# security.txt for yangble5.com — RFC 9116
+#
+# WHY THIS FILE EXISTS
+#
+# Someone who finds a flaw in a service run by one person has no obvious way
+# to tell them about it. The alternatives to a machine-readable contact are a
+# public issue (which discloses the flaw to everyone at the same time as to
+# the operator) and silence. This file is the third option.
+#
+# ON THE Expires FIELD
+#
+# RFC 9116 requires it, and an expired security.txt is worse than none: it
+# advertises a channel while telling the reader that nobody is standing
+# behind it. tools/sitecheck.py fails the build once this date has passed,
+# which is a deliberate trade-off — a red build is an alarm that someone has
+# to answer, and the alternative is a file that quietly stops meaning
+# anything. When you renew it, renew the promise too: if nobody is reading
+# the advisory queue any more, delete this file instead of extending the
+# date.
+
+# Report privately. GitHub's advisory flow keeps the report between you and
+# the maintainer until there is a fix; a public issue does not.
+Contact: https://github.com/shark0120/yangble5/security/advisories/new
+
+Expires: 2027-07-22T00:00:00.000Z
+
+Preferred-Languages: en, zh-Hant
+
+Canonical: https://yangble5.com/.well-known/security.txt
+
+# What is in scope, how quickly you can expect an answer, and what this
+# project can and cannot promise — stated honestly, because it is maintained
+# by one person.
+Policy: https://github.com/shark0120/yangble5/security/policy

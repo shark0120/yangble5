@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sitemap.xml for yangble5.com
+
+  WHAT IS AND IS NOT LISTED HERE
+
+  Documents only. The installers and their .sha256 files are deliberately
+  absent: they are executable payloads, not things anyone should reach from a
+  search result, and robots.txt already asks crawlers to leave the gateway's
+  HTTP API alone. A sitemap that lists everything is a sitemap nobody has
+  thought about.
+
+  README.md is absent for a different reason: nothing in the deploy
+  configuration copies it into the webroot, so a <loc> for it would probably
+  be a link to a 404. The full reasoning, and what to do to reverse it, is in
+  SITEMAP_EXCLUDED in tools/sitecheck.py.
+
+  EVERY <loc> BELOW MUST RESOLVE TO A FILE IN site/
+
+  tools/sitecheck.py enforces that in both directions: a <loc> naming a file
+  that is not in site/ is a finding (the sitemap would advertise a 404 the
+  moment a page is renamed), and a document in site/ that is neither listed
+  here nor named in the checker's written exclusion list is also a finding
+  (so a new page cannot quietly fall out of the index). Neither direction is
+  maintained by anyone remembering to.
+
+  <lastmod> IS MAINTAINED BY HAND, AND THAT IS A KNOWN WEAKNESS
+
+  Nothing in this repository can derive it: the deployed copy's modification
+  time is a property of the deploy, not of the file, and git mtimes are not
+  preserved across a clone. The checker therefore verifies what it honestly
+  can - that each value is a well-formed date and is not in the future - and
+  does not pretend to verify that it is the date the file actually changed.
+  If you edit a listed document, update its date here.
+
+  <changefreq> and <priority> are omitted on purpose. Google has stated it
+  ignores both, so publishing them would be stating something no consumer
+  reads and no one here can check.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+
+  <url>
+    <loc>https://yangble5.com/</loc>
+    <lastmod>2026-07-23</lastmod>
+  </url>
+
+  <url>
+    <loc>https://yangble5.com/verify.html</loc>
+    <lastmod>2026-07-23</lastmod>
+  </url>
+
+  <url>
+    <loc>https://yangble5.com/AGENTS.md</loc>
+    <lastmod>2026-07-23</lastmod>
+  </url>
+
+  <url>
+    <loc>https://yangble5.com/llms.txt</loc>
+    <lastmod>2026-07-23</lastmod>
+  </url>
+
+</urlset>

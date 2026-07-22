@@ -6,6 +6,22 @@
 # tells you nothing about whether the internet can reach you, and it will make
 # the "management surface is not exposed" check meaningless.
 #
+# "OUTSIDE" NOW MEANS SOMETHING STRONGER THAN "not on the VPS". Checks 11 and 12
+# compare the bytes a VISITOR receives against the bytes in this repository, and
+# a visitor's bytes come through the CDN. Resolving the name to the origin — an
+# /etc/hosts entry, a split-horizon resolver, running on the box, or a `curl
+# --resolve` habit — skips the edge, which is the half of the path that has
+# actually corrupted a published file here. Check 11 therefore FAILS if the peer
+# that answered is loopback, an RFC1918 address, or an address on this machine.
+# Do not "fix" that by pointing it at the origin; the origin was right the whole
+# time, once.
+#
+# What that test can and cannot see, stated plainly rather than implied: it
+# catches the cases where the request never left this network. It cannot tell a
+# CDN's public address from an origin's public address, and it does not try to —
+# if a deployment has no edge in front of it, then the origin IS what a visitor
+# receives and comparing it to the repo is the right comparison.
+#
 # WHAT IT CHECKS
 #   1. TLS terminates and the certificate is valid
 #   2. GET /health                    — the gateway is alive
@@ -26,14 +42,35 @@
 #      no nosniff, no X-Frame-Options and no Referrer-Policy tested green
 #  10. registration mode, against the "no pooled personal OAuth behind a
 #      public endpoint" rule in docs/OPERATING_A_PUBLIC_SERVICE.md §1
+#  11. IS WHAT WE DEPLOYED WHAT WE WROTE — every published file fetched through
+#      the edge and compared against this repository, via tools/drift_check.py.
+#      Two real incidents live behind this one check and neither was caught by
+#      anything else in this repo:
+#        * the deployed pages were a full DAY older than the repo. Every check
+#          above was green throughout, because they all ask "does the service
+#          answer correctly", and a stale page answers correctly.
+#        * Cloudflare's Email Address Obfuscation rewrote the install command
+#          inside a <pre>, so the command shown to every visitor was broken
+#          while the ORIGIN served the correct bytes the entire time. Anything
+#          that checks the origin, or that compares a file to itself, reports
+#          success while this is happening.
+#      This is a hard FAIL, and it fails when it cannot run. A check that
+#      quietly turns itself off is the failure it was written to prevent.
+#  12. the published .sha256 verifies the published payload — the exact
+#      verification the download page tells a visitor to perform, performed
+#      end-to-end over the network. Independent of 11: it needs no repository
+#      and no Python, and it catches an edge that rewrites a payload or a deploy
+#      that shipped a digest and its file from different commits.
 #
 # CHECKS 5 AND 6 SPEND TOKENS on whatever upstream account you configured.
 # Two requests, max_tokens=16. Pass --no-spend to skip them.
+# CHECKS 11 AND 12 spend nothing. There is no flag to skip them.
 #
 # SECRETS: the API key is passed to curl through a config file on stdin
 # (`curl -K -`), never as a command-line argument, so it does not appear in
 # `ps`, in your shell history, or in any process listing on a shared box.
-# Nothing is ever written to disk. The key is redacted from all output.
+# No secret is ever written to disk, and nothing this script downloads is
+# written to disk at all. The key is redacted from all output.
 #
 # USAGE
 #   export YANGBLE5_API_KEY=yb5_...                  # or --api-key-file
@@ -48,9 +85,11 @@
 set -uo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly VERSION="1.0.0"
+readonly REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+readonly VERSION="1.1.0"
 
 BASE_URL="${YANGBLE5_BASE_URL:-}"
+SITE_URL=""        # where the STATIC site is published; defaults to BASE_URL
 API_KEY="${YANGBLE5_API_KEY:-}"
 MODEL="${YANGBLE5_SMOKE_MODEL:-yangble5}"
 DIALECT="anthropic"
@@ -59,6 +98,7 @@ NO_SPEND=0
 JSON=0
 KEY_ON_CLI=0
 TLS_REACHABLE=0   # set by check_tls; later checks skip rather than repeat a dead probe
+REMOTE_IP=""      # set by check_tls; check 11 refuses to run if this is the origin
 
 # ── output ─────────────────────────────────────────────────────────────────
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -102,6 +142,11 @@ usage() {
 
   --base-url URL       public base URL, e.g. https://api.example.com
                        (default: https://$YANGBLE5_DOMAIN from deploy/.env)
+  --site-url URL       where the STATIC site (index.html, install.sh, the
+                       .sha256 files) is published, if that is not --base-url.
+                       Checks 11 and 12 use this. There is no flag to turn
+                       them off: if this host publishes no site, say where the
+                       site IS, do not say "do not look".
   --api-key-file PATH  read the key from a file (first line)
   --api-key VALUE      pass the key inline (DISCOURAGED: shell history + ps)
   --model NAME         model alias to exercise (default: yangble5)
@@ -113,6 +158,11 @@ usage() {
 
 The key may also come from $YANGBLE5_API_KEY, or be typed at a prompt.
 Checks 5 and 6 spend tokens on your upstream account (max_tokens=16 each).
+
+Run this from OUTSIDE the origin, on a machine that resolves the name the way
+the public does. Checks 11 and 12 compare what a VISITOR is served against this
+repository, so a host entry or a split-horizon resolver that points the name at
+the origin makes them prove nothing -- and check 11 fails rather than pretend.
 '
     exit 0
 }
@@ -120,6 +170,7 @@ Checks 5 and 6 spend tokens on your upstream account (max_tokens=16 each).
 while [ $# -gt 0 ]; do
     case "$1" in
         --base-url)     BASE_URL="${2:?--base-url needs a URL}"; shift 2 ;;
+        --site-url)     SITE_URL="${2:?--site-url needs a URL}"; shift 2 ;;
         --api-key-file) API_KEY="$(head -n1 -- "${2:?--api-key-file needs a path}" 2>/dev/null | tr -d ' \r\n')"; shift 2 ;;
         --api-key)      API_KEY="${2:?--api-key needs a value}"; KEY_ON_CLI=1; shift 2 ;;
         --model)        MODEL="${2:?--model needs a name}"; shift 2 ;;
@@ -151,6 +202,13 @@ case "$DIALECT" in
     *) die "--dialect must be 'anthropic' or 'openai'" ;;
 esac
 
+SITE_URL="${SITE_URL:-$BASE_URL}"
+SITE_URL="${SITE_URL%/}"
+case "$SITE_URL" in
+    http://*|https://*) : ;;
+    *) die "--site-url must start with http:// or https:// (got '$SITE_URL')" ;;
+esac
+
 # ── obtain the key ─────────────────────────────────────────────────────────
 if [ "$KEY_ON_CLI" -eq 1 ]; then
     printf '%sWARNING:%s --api-key puts the key in your shell history and in `ps` output.\n' "$C_YLW" "$C_OFF"
@@ -173,6 +231,7 @@ esac
 
 printf '%s%syangble5 smoke test v%s%s\n' "$C_BLD" "$C_BLU" "$VERSION" "$C_OFF"
 printf '%starget: %s   dialect: %s   model: %s%s\n' "$C_DIM" "$BASE_URL" "$DIALECT" "$MODEL" "$C_OFF"
+[ "$SITE_URL" != "$BASE_URL" ] && printf '%ssite:   %s   (checks 11 and 12)%s\n' "$C_DIM" "$SITE_URL" "$C_OFF"
 [ "$NO_SPEND" -eq 1 ] && note "--no-spend: the two upstream round trips will be skipped"
 
 # ===========================================================================
@@ -232,6 +291,10 @@ check_tls() {
         --max-time 20 "${BASE_URL}/health" 2>/dev/null)"
     set -- $out
     code="${1:-000}"; verify="${2:-}"
+    # Kept for check 11: the address that actually answered. If it is the origin
+    # rather than a CDN, every byte comparison below the API checks is testing a
+    # path no visitor takes.
+    REMOTE_IP="${4:-}"
 
     if [ "$code" = "000" ]; then
         # `2>&1 >/dev/null` keeps stderr and throws stdout away — the opposite
@@ -706,6 +769,239 @@ check_registration_exposure() {
 }
 
 # ===========================================================================
+# 11. Is what we DEPLOYED what we WROTE?
+# ===========================================================================
+# Checks 1-10 all ask "does the service behave correctly". A site that is a day
+# out of date behaves perfectly correctly. So does a site whose install command
+# the CDN has rewritten into something that does not work. Both of those have
+# happened to this project, and on both occasions every check above was green.
+#
+# tools/drift_check.py is the answer: it fetches each published file THROUGH THE
+# EDGE and compares it against the repository copy, with the edge transformations
+# this project has agreed to enumerated in one list. Read its docstring before
+# adding anything to that list.
+#
+# Three things this check refuses to do, each because doing them is how the
+# equivalent check died last time:
+#
+#   * It does not skip when the tool is missing. "SKIP" in a green summary is
+#     indistinguishable from "PASS" to the person reading the summary at 3am.
+#   * It does not pass when the peer that answered is the origin. Comparing the
+#     origin against the repo is a comparison that has never once failed here,
+#     including on the day the CDN was serving a corrupted install command.
+#   * It has no off switch. If the host under test publishes no static site,
+#     --site-url says where the site is; there is no flag that says "do not ask".
+check_site_drift() {
+    step "11. Deployed site == this repository"
+
+    local tool py candidate
+    tool="$REPO_ROOT/tools/drift_check.py"
+
+    if [ ! -f "$tool" ]; then
+        fail "site/drift" "tools/drift_check.py not found next to this script"
+        note "expected at: $tool"
+        note "This check compares the SERVED site against a repository, so it"
+        note "cannot run from a copy of smoke_test.sh alone. Run it from a"
+        note "checkout of the commit you deployed -- on your laptop, not the VPS."
+        return
+    fi
+
+    # The interpreter is version-checked, not just found. `python` is still
+    # Python 2 on some hosts, and a Python 2 syntax error exits non-zero exactly
+    # like a real difference does -- reporting "the site does not match" when the
+    # truth is "nothing looked" is the worst outcome this check can produce.
+    py=""
+    for candidate in python3 python; do
+        have "$candidate" || continue
+        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            py="$candidate"; break
+        fi
+    done
+    if [ -z "$py" ]; then
+        fail "site/drift" "no Python >= 3.10 on PATH, so the comparison cannot run"
+        note "drift_check.py is stdlib-only and needs no install or virtualenv."
+        note "Check 12 below still runs and still catches a rewritten payload, but it"
+        note "cannot see a page that is merely STALE. Do not treat it as a substitute."
+        return
+    fi
+
+    # Which host answered. If it is loopback or an RFC1918 address then the name
+    # resolved to something inside this network -- the origin, a sidecar, a
+    # tunnel -- and the CDN is not in the path being tested.
+    local peer
+    peer="$REMOTE_IP"
+    if [ "$SITE_URL" != "$BASE_URL" ] || [ -z "$peer" ]; then
+        peer="$(curl -sS -o /dev/null -w '%{remote_ip}' --max-time 20 "${SITE_URL}/" 2>/dev/null)"
+    fi
+    # An empty remote_ip means curl never completed a connection. Treating that
+    # as "not a private address" and passing is the exact shape of false green
+    # this check exists to remove: it would print PASS for a site that is down.
+    if [ -z "${peer:-}" ]; then
+        fail "site/drift-vantage" "nothing answered at ${SITE_URL}, so there is no vantage to judge"
+        note "curl reported no peer address. Either the host is unreachable, or"
+        note "curl is too old to report %{remote_ip} (7.29, 2013). Until this says"
+        note "which host served the page, the comparison below cannot be trusted"
+        note "even if it passes -- that is why this is a FAIL and not a warning."
+        return
+    fi
+
+    case "$peer" in
+        127.*|::1|0.0.0.0|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|169.254.*|fd*:*|fe80:*)
+            fail "site/drift-vantage" "${SITE_URL} resolved to $peer — that is not the public path"
+            note "A private or loopback peer means this machine reached the origin"
+            note "directly: a hosts entry, a split-horizon resolver, a tunnel, or you"
+            note "are on the VPS. The comparison would then pass on exactly the"
+            note "deployment that broke last time, because the ORIGIN bytes were"
+            note "correct throughout and it was the EDGE that rewrote them."
+            note "Re-run from a machine that resolves the name the way a visitor does."
+            return ;;
+    esac
+
+    # The script's own local addresses, best effort. Being served by your own
+    # PUBLIC IP is the same problem as loopback and is not caught by the case
+    # above: it is what happens when someone runs the "post-deploy" step over ssh
+    # on the box they just deployed to.
+    #
+    # Every source that is present, not the first one that exists. `hostname -I`
+    # is Linux-only and macOS's hostname prints a usage error instead, so an
+    # if/elif chain that reaches `hostname` first quietly returns nothing on
+    # macOS and this check stops checking without saying so.
+    local mine=""
+    have ip       && mine="$mine$(ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"$'\n'
+    have ifconfig && mine="$mine$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | sed 's/^addr://')"$'\n'
+    have hostname && mine="$mine$(hostname -I 2>/dev/null | tr ' ' '\n')"$'\n'
+    if printf '%s\n' "$mine" | grep -qxF -- "$peer"; then
+        fail "site/drift-vantage" "${SITE_URL} answered from $peer, which is an address on THIS machine"
+        note "You are running the post-deploy check on the machine you deployed."
+        note "Nothing below it can tell you what the internet receives."
+        return
+    fi
+    pass "site/drift-vantage" "served by $peer, which is neither this host nor a private address"
+
+    # PYTHONUNBUFFERED because the per-file results go to stdout and the problem
+    # report to stderr. Merged into one stream, a buffered stdout arrives after
+    # stderr, so the "ok" lines print BELOW the failure they precede and the
+    # report reads as if the files listed as ok were the ones that failed.
+    local out rc
+    out="$(PYTHONUNBUFFERED=1 "$py" "$tool" --base "$SITE_URL" 2>&1)"
+    rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        local matched
+        matched="$(printf '%s\n' "$out" | grep -c '^  ok ')"
+        pass "site/drift" "$matched published files byte-identical to this checkout"
+        return
+    fi
+
+    # A crash and a real difference are both a non-zero exit. Saying which is
+    # the difference between "deploy the current commit" and "the checker is
+    # broken", and those are not the same emergency.
+    if printf '%s' "$out" | grep -q 'Traceback (most recent call last)'; then
+        fail "site/drift" "drift_check.py CRASHED — this says nothing about the site either way"
+        printf '%s\n' "$out" | tail -20 | while IFS= read -r line; do note "$line"; done
+        note "Fix the tool, then re-run. Do not read this as 'the site is fine'."
+        return
+    fi
+
+    fail "site/drift" "the served site is NOT this commit (drift_check.py exit $rc)"
+    printf '%s\n' "$out" | head -40 | while IFS= read -r line; do note "$line"; done
+    note "Two things this means, and they need opposite responses:"
+    note "  * a file differs      -> the deploy did not happen, or did not finish."
+    note "                           Deploy this commit, then re-run. Do NOT edit"
+    note "                           the repo to match what is live."
+    note "  * a file 404s         -> either the deploy dropped it, or this host"
+    note "                           does not publish the site (see --site-url)."
+    note "Do not add to EDGE_STRIPS in drift_check.py to make this quiet. The last"
+    note "edge transformation nobody understood corrupted the install command shown"
+    note "to every visitor, and the origin looked perfect the whole time."
+}
+
+# ===========================================================================
+# 12. The published digest verifies the published payload
+# ===========================================================================
+# site/verify.html tells a visitor to fetch install.sh, fetch install.sh.sha256,
+# and compare. This performs that, over the network, on the real URLs. It is
+# deliberately independent of check 11: no repository, no Python, no knowledge of
+# what the file is supposed to contain -- so it still answers when 11 cannot, and
+# a bug in one does not silence the other.
+#
+# What it catches that nothing else does: a deploy that copied install.sh and
+# install.sh.sha256 from different commits. CI proves they matched in the tree;
+# only this proves they still match after whatever moved them.
+check_published_digests() {
+    step "12. Published digests verify the published payloads"
+
+    local sha=""
+    if have sha256sum;  then sha="sha256sum"
+    elif have shasum;   then sha="shasum -a 256"
+    elif have openssl;  then sha="openssl dgst -sha256 -r"
+    fi
+    if [ -z "$sha" ]; then
+        fail "site/digests" "no sha256sum, shasum or openssl — the check a visitor is told to run cannot be run here"
+        return
+    fi
+
+    # sha256 of zero bytes. `curl -f` writes nothing on an HTTP error, and the
+    # digest of nothing is a perfectly valid-looking hex string, so "the fetch
+    # failed" and "the file is empty" would otherwise be reported as a digest
+    # MISMATCH -- the alarming answer to the wrong question.
+    local EMPTY_SHA256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    # The payload list is DERIVED from site/ when a checkout is present, and
+    # only falls back to a literal list when it is not. A hard-coded list makes
+    # coverage opt-in by filename and shrinks as a share of the site every time
+    # someone adds a file -- which is precisely how two installers publishing the
+    # headline figures ended up outside the guard that claimed to cover them
+    # (see the `published-numbers` job in .github/workflows/ci.yml). A file that
+    # is in the repo and 404s on the site is a finding, not an omission.
+    local payloads
+    if [ -d "$REPO_ROOT/site" ]; then
+        payloads="$(cd "$REPO_ROOT/site" && ls -1 -- *.sh *.ps1 2>/dev/null)"
+    fi
+    if [ -z "${payloads:-}" ]; then
+        payloads="install.sh
+install.ps1
+uninstall.sh
+uninstall.ps1"
+        note "no site/ checkout here; falling back to the four documented payload names"
+    fi
+
+    local name url got want rc
+    for name in $payloads; do
+        url="${SITE_URL}/${name}"
+
+        # Piped, never captured into a variable: command substitution strips
+        # trailing newlines, and a digest over "the file minus its last newline"
+        # is a mismatch that would look like an attack.
+        got="$(curl -fsS --max-time 30 "$url" 2>/dev/null | $sha 2>/dev/null | awk '{print $1}')"
+        rc=$?
+        if [ "$rc" -ne 0 ] || [ -z "$got" ] || [ "$got" = "$EMPTY_SHA256" ]; then
+            fail "digest/$name" "could not fetch $url (or it was served empty)"
+            continue
+        fi
+
+        want="$(curl -fsS --max-time 20 "${url}.sha256" 2>/dev/null | awk 'NR==1{print $1}')"
+        if [ -z "$want" ]; then
+            fail "digest/$name" "$url is served but ${name}.sha256 is not — the documented verification step cannot be performed by a visitor"
+            continue
+        fi
+
+        if [ "$got" = "$want" ]; then
+            pass "digest/$name" "${got:0:16}... matches the published .sha256"
+        else
+            fail "digest/$name" "PUBLISHED DIGEST DOES NOT MATCH THE PUBLISHED FILE"
+            note "served file : $got"
+            note "served digest: $want"
+            note "A visitor following site/verify.html sees this as a failure and is"
+            note "told, correctly, not to run the script. Assume the deploy is"
+            note "half-applied until proven otherwise; if the bytes were changed by"
+            note "something other than a deploy, treat it as a compromise of the"
+            note "distribution path and rotate before republishing."
+        fi
+    done
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 check_tls
@@ -718,6 +1014,8 @@ check_management_blocked
 check_engine_port_closed
 check_security_headers
 check_registration_exposure
+check_site_drift
+check_published_digests
 
 # ── summary ────────────────────────────────────────────────────────────────
 RULE="+--------+--------------------------------+---------------------------------------------------+"

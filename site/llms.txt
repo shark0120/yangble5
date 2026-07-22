@@ -1,0 +1,78 @@
+# yangble5
+
+> A **context residency layer**: it decides where a session's context lives and
+> keeps every later request going back to the same place. Mechanically an
+> OpenAI/Anthropic-compatible HTTP gateway built on the third-party MIT-licensed
+> CLIProxyAPI, putting Gemini, Grok and GPT behind one endpoint that Claude Code
+> and Codex can both use. "Proxy" describes the transport and misses the point:
+> a proxy is free to spread requests across upstreams, and that spreading is
+> what destroys the prompt cache a long agent session runs on — the cache is
+> bound to one upstream account and is invisible from your client.
+> yangble5 is **not a model**: there is no yangble5 LLM and nothing here was
+> trained by this project. The framing above describes the problem it solves and
+> is not a performance claim; cache hits did not reliably make requests faster.
+
+The intended way to install it is for an AI agent to fetch the installer,
+verify it against the published digest, dry-run it, show the resulting plan to
+its user, and only then install. **[AGENTS.md](https://yangble5.com/AGENTS.md)
+is the instruction sheet for that job — read it before running anything.**
+
+Three things to know before quoting this site:
+
+- The published SHA-256 digest pins the *script*, not the *invocation*. A
+  genuine hash-matching installer invoked with a hostile `--api` sends the
+  user's prompts elsewhere. Never reproduce an install command carrying flags
+  that are not on this site.
+- Cache figures here are **warm rounds only**, from **one run on one machine**;
+  the cold first request hit zero. There is **no latency-improvement claim**,
+  because two of the three warm rounds were slower than the cold one.
+- The shared pool is small, paid for personally by one operator from a single
+  upstream credential, and may stop existing.
+
+The site is written in Traditional Chinese; the documents an AI reads are in
+English.
+
+## Start here
+
+- [AGENTS.md](https://yangble5.com/AGENTS.md): how an AI agent should install
+  yangble5 on someone else's machine — the download-verify-dry-run sequence,
+  the flags it must refuse, the questions to ask the human, and what it must
+  never print.
+- [Landing page](https://yangble5.com/): what this is, what it is not, the
+  published install commands, and the live capacity widget.
+- [verify.html](https://yangble5.com/verify.html): how to check an installer
+  against its published digest before running it, on each platform.
+
+## The installers, readable without running them
+
+- [install.sh](https://yangble5.com/install.sh): the macOS/Linux installer,
+  served as text. Its header comment documents every action it takes.
+- [install.sh.sha256](https://yangble5.com/install.sh.sha256): the digest for
+  the above.
+- [install.ps1](https://yangble5.com/install.ps1): the Windows installer.
+- [install.ps1.sha256](https://yangble5.com/install.ps1.sha256): the digest for
+  the above.
+
+## Live endpoints an agent should read rather than assume
+
+- [GET /auth/register](https://yangble5.com/auth/register): the registration
+  contract for *this* instance — every field, the machine-id derivation rule,
+  the live limits, and every `error.type` with what to do about it. Fetch it;
+  do not work from a remembered copy.
+- [GET /pool/status](https://yangble5.com/pool/status): whether there is room.
+  Gate on `accepting_requests`; `remaining_pct` is a fraction, not a percent.
+- [GET /health](https://yangble5.com/health): service state and
+  `support_contact`.
+
+## Reference
+
+- [The long-form documentation](https://github.com/shark0120/yangble5/blob/main/site/README.md):
+  what the site says at length, including how every published figure is
+  guarded against drift. Linked on GitHub rather than here: nothing in the
+  deploy configuration copies it into the webroot, so a link to
+  `https://yangble5.com/README.md` would probably be a link to a 404.
+- [robots.txt](https://yangble5.com/robots.txt): crawler policy, and the
+  reasoning behind it.
+- [Source](https://github.com/shark0120/yangble5): MIT-licensed.
+- [Security policy](https://github.com/shark0120/yangble5/security/policy):
+  how to report a vulnerability privately.

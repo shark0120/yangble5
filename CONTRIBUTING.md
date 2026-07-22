@@ -48,9 +48,14 @@ use `timezone.utc`) and `tomllib` (3.11+; import it under `try/except ModuleNotF
 git clone https://github.com/shark0120/yangble5
 cd yangble5
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"                          # pytest, ruff, and the gateway extras
+pip install -e ".[dev]"                          # pytest, ruff, pyyaml, and fastapi/httpx
 pytest -q
 ```
+
+`[dev]` deliberately carries fastapi and httpx by name rather than as a self-referencing
+`yangble5[gateway]`: the gateway test module imports fastapi at collection time, so without them a
+plain `pip install -e ".[dev]"` cannot even collect the suite. pyyaml and tomli are test-only -
+nothing under `tools/` or `byok/` may import either.
 
 `tools/` is standard library only, and stays that way: it has to run on a machine where somebody
 is debugging a proxy, not on a curated CI image. A dedicated CI job installs **nothing** and
@@ -88,7 +93,66 @@ build. `gateway/` may use its declared extras (`fastapi`, `httpx`).
 
 `pytest -q` must pass before you open a PR. New behaviour needs a test; bug fixes need a test
 that fails before the fix. The tests are offline by design - none of them touch a network or an
-upstream account, so they run in CI without credentials.
+upstream account, so they run in CI without credentials. They are, however, slow, and no wall-clock
+figure is quoted here because the honest one depends entirely on your machine: a large share of
+them shell out to `sh` or to PowerShell to exercise the installers and the generated launchers,
+and on Windows every one of those spawns a fresh interpreter. Run the files you touched while you
+work - `pytest -q tests/test_claude_shim.py` finishes in seconds - and the whole suite once before
+you push.
+
+### The gates that are not pytest
+
+Two more checks run outside pytest, and both guard published claims rather than code. The first
+one is offline:
+
+```sh
+python tools/sitecheck.py --self-test   # the checker proves it can still go red
+python tools/sitecheck.py               # every figure under site/ traces to the record
+```
+
+`sitecheck.py` exits `2` if its own self-test failed, which is a different and worse result than
+a page finding (`1`): a checker that cannot be shown to fail certifies nothing. It also classifies
+every file under `site/`, so a **new** file that restates 99.53% or 748,918 fails the build rather
+than quietly living outside the guard - `--coverage` prints that classification and `--inventory`
+prints what was actually examined, because "0 problems" is also what a checker that read nothing
+says.
+
+The second needs a network, and its own `--help` says it has to be run from outside the origin
+host or it proves nothing:
+
+```sh
+python tools/drift_check.py             # is the site that is SERVED the site in this repo?
+```
+
+It is not `sha256sum`. An edge legitimately rewrites a page - Cloudflare's e-mail obfuscation once
+rewrote `--email you@example.com` inside a `<pre>` and broke the published install command for
+every visitor while the origin served the correct bytes - so it compares against the repo copy
+with the **known, enumerated** transformations applied and fails on anything else. Do not wave a
+failure away as "just the CDN" without reading which transformation it could not account for; that
+is the whole signal.
+
+If you touched a shell or PowerShell script, the `offline-self-checks` job is worth reproducing
+too. It parses every `*.sh` with `bash -n` and every `*.ps1` with the PowerShell parser, then runs
+the paths a user reaches *before* anything is installed - the ones nothing else exercises:
+
+```sh
+bash deploy/preflight.sh --self-test     # pure address/CIDR/ELF helpers, no network, no root
+for s in deploy/harden.sh deploy/install.sh deploy/preflight.sh deploy/smoke_test.sh \
+         scripts/make_history.sh site/install.sh site/uninstall.sh; do
+  bash "$s" --help > /dev/null && echo "ok $s"
+done
+```
+
+`--help`, `--dry-run` and `--self-test` must touch nothing. CI asserts that literally: it points
+`byok/setup.py --dry-run` at an empty directory and fails if the directory exists afterwards, and
+it runs `site/uninstall.sh --dry-run` against a fake `$HOME` and fails if the file is gone. A
+regression there writes an engine config, a `settings.json` and a secret env file onto a machine
+whose owner asked for a preview.
+
+Anything under `site/` that is digest-pinned - `install.sh`, `install.ps1`, `uninstall.*` and
+every `*.sha256` - is published, and the digests are recomputed centrally. A PR that edits one of
+those files and not its `.sha256` (or vice versa) fails the `installer-digests` job. If you
+believe one of them has to change, say so in the PR description rather than hand-editing a digest.
 
 ## Secrets: the one unforgivable mistake
 
@@ -132,7 +196,7 @@ copy advertised as "the same shapes CI rejects"; it was a subset, and it matched
 containing a hyphen (`sk-ant-api03-`, `sk-or-v1-`, `sk-proj-`) and no forward-slash operator
 path. If you ever find yourself pasting this pattern into a third place, lift it instead.
 
-or simply push to a branch and let CI answer.
+If you would rather not run any of that locally, push to a branch and let CI answer.
 
 Everything configurable is read from an environment variable with a safe default. If your change
 needs a new secret, add it to `deploy/.env.example` as a placeholder and document it - never as a

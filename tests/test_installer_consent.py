@@ -309,53 +309,128 @@ def _write_shim(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
+_UNAME_SHIM = """\
+#!/bin/sh
+case "${1:-}" in
+  -s) echo Linux ;;
+  -m) echo x86_64 ;;
+  -n) echo testhost ;;
+  *)  echo Linux ;;
+esac
+"""
+
+# Test harness only. Nothing here is part of install.sh, and it must never
+# change the REQUEST -- only the two directives that name a file on this disk.
+#
+# `cygpath -m` rather than a text substitution: see the sh_shim docstring. A
+# pattern that assumes a path SHAPE is a pattern that silently matches nothing
+# on a machine whose mount table differs, and a curlrc that reaches curl.exe
+# unconverted fails as "could not reach the endpoint" -- which reads as a
+# network fault and is nothing of the kind.
+#
+# @REAL_CURL@ is substituted by str.replace and not by %-formatting or
+# str.format: this script is dense with `%` (printf conversions, `${p%...}`)
+# and `{}`, and escaping all of it for the sake of one placeholder is how a
+# shell script acquires a bug that only shows up at runtime.
+_CURL_SHIM = """\
+#!/bin/sh
+REAL="@REAL_CURL@"
+if [ "${1:-}" = "--config" ] && [ -f "${2:-}" ]; then
+    cfg="$2"
+    shift 2
+    if ! command -v cygpath >/dev/null 2>&1; then
+        printf '%s\\n' "test shim: cygpath is not on PATH, so the local paths in" \\
+            "${cfg} cannot be converted into a form native curl.exe can open." >&2
+        exit 127
+    fi
+    win="${cfg}.win"
+    : > "$win"
+    chmod 600 "$win"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            'output = "'*'"')
+                p=${line#'output = "'}
+                p=${p%'"'}
+                printf 'output = "%s"\\n' "$(cygpath -m "$p")"
+                ;;
+            'data-binary = "@'*'"')
+                p=${line#'data-binary = "@'}
+                p=${p%'"'}
+                printf 'data-binary = "@%s"\\n' "$(cygpath -m "$p")"
+                ;;
+            *)
+                printf '%s\\n' "$line"
+                ;;
+        esac
+    done < "$cfg" >> "$win"
+    exec "$REAL" --config "$(cygpath -m "$win")" "$@"
+fi
+exec "$REAL" "$@"
+"""
+
+
 @pytest.fixture(scope="session")
 def sh_shim(tmp_path_factory) -> str:
-    """A PATH prefix that makes install.sh runnable on a Windows dev box.
+    """A PATH prefix that makes install.sh runnable on Windows.
 
     install.sh is a macOS/Linux artefact and refuses outright under Git Bash --
     `uname -s` there says MINGW64_NT and the Windows binaries need install.ps1.
     That refusal is a feature and has its own test below. This fixture exists so
-    that the REST of the POSIX behaviour can still be exercised locally, and it
-    is a no-op on Linux CI, where the real uname and the real curl are used.
+    that the REST of the POSIX behaviour can still be exercised on a Windows
+    developer box AND on GitHub's windows-latest runner, and it is a no-op on
+    Linux CI, where the real uname and the real curl are used.
 
     Two shims, both Windows-only:
 
     * `uname`, which reports Linux;
-    * `curl`, which rewrites the /tmp paths inside the generated curlrc to
-      Windows form before delegating to the real curl.exe. MSYS converts
-      path-shaped environment variables when a NATIVE process (pytest) launches
-      an MSYS one (dash), so TMPDIR arrives as /tmp/... no matter what Python
-      set -- and curl.exe cannot open an MSYS path. Only the file NAMES are
-      touched; the request, the config contents and every code path in
-      install.sh are the real ones.
+
+    * `curl`, which converts the LOCAL FILE PATHS inside the generated curlrc
+      into Windows form before delegating to the real curl.exe.
+
+    WHY THE CURL SHIM EXISTS, AND WHY IT MUST NOT ASSUME A PATH SHAPE
+
+    MSYS rewrites path-shaped environment variables when a NATIVE process
+    (pytest) launches an MSYS one (dash), so whatever `sh_run` puts in TMPDIR
+    arrives inside install.sh in POSIX form. `mktemp -d` inherits that form, and
+    so does every `output = "..."` and `data-binary = "@..."` line that
+    http_call writes into its curlrc. curl.exe is a native Windows binary and
+    cannot open a POSIX path.
+
+    WHICH POSIX form depends on the MSYS mount table, and that differs between
+    machines. Git Bash binds /tmp to the Windows temp directory
+    (`... on /tmp type ntfs (binary,noacl,posix=0,usertemp)`), so on a developer
+    box -- where pytest's basetemp sits under %TEMP% -- the path comes back as
+    `/tmp/...`, the shortest mount that covers it. On GitHub's windows-latest it
+    does not: CI reported the installed-to path as
+    `/c/Users/runneradmin/AppData/Local/Temp/...`, i.e. the same directory
+    reached through the plain drive mount because it did NOT match /tmp. (The
+    likeliest reason, not something this file can verify from here: %TEMP% on
+    that image is the 8.3 short form `C:\\Users\\RUNNER~1\\...` while pytest
+    resolves its basetemp to the long `runneradmin` form, so the two spellings
+    no longer share a prefix. The fix below does not depend on the reason.)
+
+    An earlier version of this shim rewrote the literal substring `/tmp/`. On
+    the runner nothing matched, the curlrc reached curl.exe unconverted, curl
+    answered `Failed to open .../register.json`, and install.sh -- correctly --
+    reported "Could not reach <endpoint> at all" and exited 5. Every sh test
+    that needs a completed request went red with a message that pointed at the
+    network. Hence: ask cygpath, never pattern-match the path. Reproduce it with
+    `pytest --basetemp=<a directory outside %TEMP%>`, which puts a developer box
+    into exactly the runner's shape.
+
+    Only the two directives that name a file on this disk are touched. The URL,
+    the headers, the body and every code path in install.sh are the real ones.
     """
     if not IS_WINDOWS:
         return ""
     d = tmp_path_factory.mktemp("shim")
-    _write_shim(
-        d / "uname",
-        "#!/bin/sh\n"
-        'case "${1:-}" in\n'
-        "  -s) echo Linux ;;\n"
-        "  -m) echo x86_64 ;;\n"
-        "  -n) echo testhost ;;\n"
-        "  *)  echo Linux ;;\n"
-        "esac\n",
-    )
+    _write_shim(d / "uname", _UNAME_SHIM)
     real_curl = shutil.which("curl")
     if real_curl:
+        # Forward slashes: the shim runs under MSYS sh, where a backslash in an
+        # `exec` argument is an escape rather than a separator.
         _write_shim(
-            d / "curl",
-            "#!/bin/sh\n"
-            f'REAL="{real_curl}"\n'
-            'TMPWIN="$(cygpath -m /tmp)"\n'
-            'if [ "${1:-}" = "--config" ] && [ -f "${2:-}" ]; then\n'
-            '    cfg="$2"; shift 2\n'
-            '    sed "s#/tmp/#${TMPWIN}/#g" "$cfg" > "${cfg}.win"\n'
-            '    exec "$REAL" --config "$(cygpath -m "${cfg}.win")" "$@"\n'
-            "fi\n"
-            'exec "$REAL" "$@"\n',
+            d / "curl", _CURL_SHIM.replace("@REAL_CURL@", real_curl.replace("\\", "/"))
         )
     return str(d)
 
@@ -379,9 +454,13 @@ def sh_run(
     # while a backslash is an escape to the former and mktemp would embed it.
     home_arg = str(home).replace("\\", "/")
     env.update({"HOME": home_arg, "NO_COLOR": "1"})
-    # Windows curl.exe cannot open an MSYS /tmp path, and install.sh hands curl
-    # a config file whose name comes from mktemp -d. Pointing TMPDIR at the
-    # (Windows-shaped) pytest tmp dir keeps every path readable by both.
+    # install.sh's scratch directory comes from `mktemp -d`, so this keeps it
+    # inside the per-test home and out of the machine's real temp directory.
+    #
+    # It does NOT decide the SHAPE of that path: MSYS converts TMPDIR to POSIX
+    # form on the way into dash whatever is written here, and which POSIX form
+    # depends on the mount table. Making those paths openable by the native
+    # curl.exe is the curl shim's job -- see sh_shim.
     env["TMPDIR"] = home_arg
     env.pop("YB5_SOURCE_ONLY", None)
     for name in ("YANGBLE5_API", "YANGBLE5_API_KEY", "YANGBLE5_EMAIL", "YANGBLE5_INVITE"):
@@ -465,6 +544,109 @@ def installed_paths(home: Path) -> list[str]:
     return sorted(
         str(p.relative_to(root)) for p in root.rglob("*") if p.name != "machine-id"
     )
+
+
+# ==========================================================================
+# 0. the harness's own guard
+#
+# Everything below this point runs install.sh through the curl shim on Windows.
+# When that shim stops converting a path it says nothing: curl fails to open a
+# file, install.sh reports "could not reach the endpoint at all", and every
+# consent test that needs a completed request goes red pointing at the network.
+# (CI named eight of them; the workflow's annotation step caps that list at
+# eight, so the count in a red matrix cell is a floor, not a total.) That is how
+# a mount-table difference between a developer box and windows-latest cost a
+# day. So the shim gets a test of its own, and it fails for the real reason.
+# ==========================================================================
+def _msys_c_form(path: Path) -> str:
+    """``C:\\a\\b`` -> ``/c/a/b`` -- the one mount every MSYS install has.
+
+    Written by hand rather than asked of cygpath on purpose: cygpath returns the
+    SHORTEST form the mount table allows, which on a machine where /tmp covers
+    the Windows temp directory is ``/tmp/...``. That is the shape this harness
+    used to assume, so deriving the test input from it would test only the case
+    that already worked.
+    """
+    drive, rest = os.path.splitdrive(str(path))
+    if not re.fullmatch(r"[A-Za-z]:", drive):
+        pytest.skip(f"{path} is not on a lettered drive, so it has no /<letter>/ form")
+    return "/" + drive[0].lower() + rest.replace("\\", "/")
+
+
+@pytest.mark.skipif(
+    SH is None or not IS_WINDOWS,
+    reason="the curl shim is Windows-only; Linux CI runs install.sh against the real curl",
+)
+def test_the_curl_shim_converts_every_path_shape_a_runner_can_produce(
+    tmp_path, sh_shim, fake_api
+):
+    """A curlrc whose file paths are POSIX must still be usable by curl.exe.
+
+    install.sh writes `output = "..."` and `data-binary = "@..."` with whatever
+    shape `mktemp -d` produced, and that shape is decided by the MSYS mount
+    table: `/tmp/...` on a developer box, `/c/Users/...` on windows-latest. Both
+    are POSIX and neither can be opened by a native curl.exe, so every shape is
+    tried here -- including the one this machine does NOT generate, which is the
+    whole point: the old shim was green on a developer box while converting
+    nothing at all on the runner.
+
+    The URL is checked byte-for-byte as well: a shim that edits the request
+    rather than the filenames would make every other sh test in this file assert
+    something about a request the installer did not make.
+    """
+    shim_curl = Path(sh_shim) / "curl"
+    assert shim_curl.is_file(), (
+        "no curl shim was written (shutil.which('curl') found nothing), so the "
+        "sh tests below are not running against what they think they are"
+    )
+
+    url = f"{fake_api}/ok/health"
+    shapes = {
+        "windows": str(tmp_path).replace("\\", "/"),
+        "msys-drive": _msys_c_form(tmp_path),
+        # Whatever THIS machine's mount table calls the same directory, which on
+        # a box where /tmp covers %TEMP% is the `/tmp/...` form. Usually equal to
+        # one of the two above; kept separate so a third shape cannot appear
+        # without this test seeing it.
+        "msys-shortest": subprocess.run(  # noqa: S603 - fixed argv, interpreter from which()
+            [SH, "-c", 'cygpath -u "$1"', "sh", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        ).stdout.strip(),
+    }
+    for name, base in shapes.items():
+        cfg = tmp_path / f"curlrc.{name}"
+        out_name = f"resp.{name}"
+        cfg.write_text(
+            "silent\n"
+            "show-error\n"
+            'request = "GET"\n'
+            'header = "accept: application/json"\n'
+            f'output = "{base}/{out_name}"\n'
+            'write-out = "%{http_code}"\n'
+            f'url = "{url}"\n',
+            newline="\n",
+        )
+        proc = subprocess.run(  # noqa: S603 - fixed argv, interpreter from which()
+            [SH, str(shim_curl), "--config", str(cfg).replace("\\", "/")],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        detail = f"[{name}] rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}"
+        assert proc.returncode == 0, detail
+        assert proc.stdout.strip() == "200", detail
+        body = (tmp_path / out_name).read_text(encoding="utf-8")
+        assert '"status": "ok"' in body, detail
+
+        rewritten = (tmp_path / f"{cfg.name}.win").read_text(encoding="utf-8")
+        assert f'url = "{url}"\n' in rewritten, (
+            f"[{name}] the shim edited the request, not just the filenames:\n{rewritten}"
+        )
 
 
 # ==========================================================================

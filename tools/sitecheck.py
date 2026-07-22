@@ -40,6 +40,43 @@ discovered and total: every file under ``site/`` is an HTML page, a
 text-bearing file, or named in ``EXEMPT`` with a written reason, and anything
 else is a finding.  A new file cannot be born outside the guard.
 
+What a number cannot tell you
+-----------------------------
+Everything above is about NUMBERS, and for a long time that was the whole
+guard.  A number can only be wrong by being unmeasured.  A SENTENCE can be
+wrong while containing no number at all — "yangble5 is a fast model" carries
+two falsehoods and one figure guard would pass it — and the sentences this
+project must never say are known and short: it is not a model, it was not
+trained here or anywhere, no latency claim is derivable from anything measured
+(two of the three warm rounds were SLOWER than the cold one), and no dollar
+figure may be attached to a pool one person pays for personally.  ``CLAIMS``
+holds them.  Every one of them also appears on the site already in NEGATED
+form, so a match is discarded when a negator appears between the start of the
+surrounding sentence and the end of the match — before or inside, never after,
+because "a model, not a proxy" is still the claim.
+
+The other half is that a true number can mislead by omission.  ``99.53%`` on
+its own is the most flattering possible way to be wrong about this
+measurement: it is warm rounds two, three and four of ONE run on ONE machine,
+and the cold first request hit 0.00%.  ``DISCLOSURES`` makes the scope travel
+with the figure — any file printing a hit rate must also state, somewhere,
+which rounds it covers, that the cold round was zero, and how narrow the run
+was.  That is a whole-FILE rule, so it lives in ``whole_file_problems`` and
+not in ``check_page``/``check_text``, which are handed fragments.
+
+The index invariant
+-------------------
+``sitemap.xml`` is a claim that certain documents exist at certain addresses,
+and it rots in two directions.  A ``<loc>`` naming a file that is not in
+``site/`` advertises a 404; a document in ``site/`` that no ``<loc>`` names has
+silently fallen out of the index, which nobody notices because nothing is
+broken.  Both are checked against the directory as it is on disk.  The same
+logic applies to ``.well-known/security.txt``: RFC 9116 makes ``Expires``
+mandatory precisely because a stale security contact is worse than none, so
+this build goes red once that date has passed.  That is the one rule here that
+depends on the clock, and it is a deliberate trade — the alternative is a file
+that quietly stops meaning anything.
+
 The tokeniser invariant
 -----------------------
 THE SET OF CHARACTERS CONSUMED MUST EQUAL THE SET OF CHARACTERS CHECKED.
@@ -55,6 +92,7 @@ historical broken pattern and requiring it to complain.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import pathlib
 import re
 import sys
@@ -363,6 +401,185 @@ def account_figures(figures, used: set[str]) -> list[str]:
     return problems
 
 
+# ── forbidden claims: the things no file here may assert, at any precision ──
+# Everything above this line is about NUMBERS.  A number can only be wrong by
+# being unmeasured; a sentence can be wrong while containing no number at all,
+# and the four sentences below are the ones this project has decided it must
+# never say.  They are checked on HTML pages and on text files alike, because
+# `curl https://yangble5.com/install.sh` is read by more people than the
+# landing page is and a claim in its header comment is published exactly as
+# hard.
+#
+# HOW A NEGATION IS RECOGNISED, AND WHAT THAT COSTS
+# Every one of these claims appears on the site ALREADY, in negated form —
+# "it is not a model", "延遲沒有變好", "never claim a Taiwanese-trained LLM".
+# A guard that cannot tell a denial from an assertion would fire on all of
+# them, be switched off within a day, and protect nothing.  So a match is
+# discarded when a negator appears between the start of the surrounding
+# SENTENCE and the end of the match.  Two deliberate properties:
+#   * the window ends at the match, not at the end of the sentence, so
+#     "yangble5 is a model, not a proxy" is still reported — a negation that
+#     arrives after the claim does not retract it;
+#   * the window starts at a sentence boundary, not at a line break, because
+#     the prose here is hard-wrapped and "there is no\nyangble5 LLM" is one
+#     sentence in two lines.  A line-scoped window reported both of the real
+#     negated sentences in site/llms.txt and site/README.md.
+# The residual hole is stated rather than hidden: a forbidden claim written in
+# the same sentence as an unrelated negation is waved through.  Nothing
+# mechanical closes that, and pretending otherwise would be the same mistake
+# as a guard that has never been watched fail.
+CLAIM_CONTEXT_CHARS = 160
+
+_NEGATOR = re.compile(
+    r"\bnot\b|\bno\b|\bnever\b|\bcannot\b|n't\b|\bwithout\b|\brefus|\bnothing\b"
+    r"|[不沒未非無別]",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"[。！？]|[.!?](?=[\s\"')\]]|$)")  # noqa: RUF001
+
+CLAIMS: tuple[tuple[str, re.Pattern, str], ...] = (
+    (
+        "yangble5 described as a model",
+        re.compile(
+            r"yangble5\s*(?:是|就是)\s*[^\n。，,]{0,12}?模型"  # noqa: RUF001
+            r"|yangble5\s+is\s+(?:a|an|the)\s+(?:\w+[- ]){0,3}model\b"
+            r"|(?:our|the|a)\s+yangble5\s+model\b"
+            r"|yangble5\s*(?:LLM|大型語言模型)",
+            re.IGNORECASE,
+        ),
+        "yangble5 is a PROXY in front of other companies' models, built on the "
+        "third-party MIT-licensed CLIProxyAPI. There is no yangble5 model and "
+        "nothing here was trained by this project. This is the one claim the "
+        "project most needs never to make.",
+    ),
+    (
+        "a Taiwanese-trained model",
+        re.compile(
+            r"(?:台灣|臺灣)[^\n。]{0,10}?(?:訓練|自製|自研|研發)"
+            r"|Taiwan(?:ese)?[-\s]trained",
+            re.IGNORECASE,
+        ),
+        "nothing here was trained anywhere by anyone on this project. The "
+        "landing page exists partly to refuse this specific misreading.",
+    ),
+    (
+        "a latency improvement",
+        re.compile(
+            r"延遲[^\n。！？]{0,12}?(?:變快|更快|快了|降低|下降|減少|改善|變好|變低|縮短)"  # noqa: RUF001
+            r"|(?:速度|回應)[^\n。！？]{0,8}?(?:變快|更快|提升)"  # noqa: RUF001
+            r"|\b(?:faster|speed-?ups?|lower\s+latency)\b"
+            r"|\blatency\s+(?:is\s+)?(?:drop|improv|reduc|lower|better)"
+            r"|[0-9](?:\.[0-9]+)?\s*[x×]\s*(?:faster|speed)",  # noqa: RUF001
+            re.IGNORECASE,
+        ),
+        f"the measured round trips were {'/'.join(str(m) for m in ROUND_MS)} ms: "
+        "TWO of the three warm rounds were SLOWER than the cold one. A cache "
+        "hit rate is a cost result, and no latency claim is derivable from it "
+        "or from anything else this project has measured.",
+    ),
+    (
+        "a free-credit money figure",
+        re.compile(
+            r"(?:US|NT)?\$\s?[0-9]+(?:[.,][0-9]+)*\s*"
+            r"(?:USD|of\s+(?:free\s+)?credit|credits?\b)"
+            r"|[0-9]+(?:[.,][0-9]+)?\s*(?:美元|美金)"
+            r"|[0-9]+(?:[.,][0-9]+)?\s*(?:USD|dollars?)\b"
+            r"|(?:免費|贈送|送)[^\n。]{0,10}?(?:US|NT)?\$\s?[0-9]",
+            re.IGNORECASE,
+        ),
+        "the shared pool is paid for personally by one operator out of one "
+        "upstream credential. No dollar figure for it may be published: it is "
+        "not a product with an allowance, and a number invites a reader to "
+        "plan around capacity nobody has promised.",
+    ),
+)
+
+
+def claim_problems(text: str) -> list[str]:
+    """Forbidden claims asserted in `text`, negated ones ignored."""
+    problems: list[str] = []
+    for label, pattern, why in CLAIMS:
+        for m in pattern.finditer(text):
+            pre = text[max(0, m.start() - CLAIM_CONTEXT_CHARS) : m.start()]
+            cuts = list(_SENTENCE_END.finditer(pre))
+            if cuts:
+                pre = pre[cuts[-1].end() :]
+            if _NEGATOR.search(pre + m.group(0)):
+                continue
+            excerpt = " ".join((pre + m.group(0)).split())[-90:]
+            problems.append(f"forbidden claim ({label}): ...{excerpt!r} — {why}")
+    return problems
+
+
+# ── a measurement may not be published without its scope ────────────────────
+# The figure guard above rules a number in or out. It cannot see the sentence
+# the number is sitting in, so `99.53%` alone passes it — and `99.53%` alone
+# is the most flattering possible way to be wrong about this measurement. The
+# hit rate is an average over the SECOND, THIRD and FOURTH rounds of ONE run
+# on ONE Windows machine; the first request through a cold cache hit 0.00%.
+# A reader given the headline without the scope plans around a number they
+# will never see on their first call.
+#
+# So: any file that prints a non-zero hit rate must also carry, somewhere in
+# the same file, each disclosure below. Any ONE of the listed markers
+# satisfies its group, in English or Chinese, because site/index.html is
+# Traditional Chinese and the installers are English and both publish it.
+# This is a whole-file rule rather than a proximity rule on purpose — a
+# proximity window would be a number this file could not justify either.
+CACHE_FIGURES = tuple(
+    sorted({f"{100.0 * c / p:.{dp}f}" for _label, c, p in _PAIRS for dp in (1, 2, 4) if c})
+)
+# Longest alternative first. Backtracking would find `99.5333` behind `99.5`
+# anyway, but an alternation whose correctness depends on the engine retrying
+# is one refactor away from silently matching the shorter prefix and reporting
+# the wrong figure back to the reader.
+CACHE_FIGURE_RE = re.compile(
+    r"(?<![0-9A-Za-z_.,])("
+    + "|".join(f.replace(".", r"\.") for f in sorted(CACHE_FIGURES, key=len, reverse=True))
+    + r")\s*%"
+)
+
+DISCLOSURES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    (
+        "which rounds it covers",
+        ("暖輪", "warm round", "warm-round"),
+        "the figure is warm rounds only; quoted bare it reads as the general case",
+    ),
+    (
+        "that the cold request hit zero",
+        ("0.00%", "冷輪", "冷啟動", "cold round", "cold start", "first request"),
+        "the first request through a cold cache hit 0.00%, which is what a new "
+        "user's very first call will actually do",
+    ),
+    (
+        "the scope of the run",
+        ("單機", "單次", "one machine", "single machine", "one run", "single run", "2026-07-21"),
+        "one run, one Windows machine, 2026-07-21, never independently reproduced",
+    ),
+)
+
+
+def disclosure_problems(text: str) -> list[str]:
+    """A cache hit rate published without the scope that makes it true.
+
+    Called only through `whole_file_problems`, never from `check_page` or
+    `check_text`. Those two are given FRAGMENTS by the self-test — a single
+    sentence carrying one figure — and a whole-file rule applied to a sentence
+    demands that every sentence restate the entire provenance, which is both
+    absurd and, worse, the kind of noise that gets a guard switched off.
+    """
+    hits = sorted({m.group(1) for m in CACHE_FIGURE_RE.finditer(text)})
+    if not hits:
+        return []
+    haystack = text.lower()
+    return [
+        f"publishes the cache hit rate ({', '.join(hits)}%) but never states "
+        f"{label} — {why}. Any one of {list(markers)} would satisfy this."
+        for label, markers, why in DISCLOSURES
+        if not any(marker.lower() in haystack for marker in markers)
+    ]
+
+
 def check_text(name: str, text: str, used: set[tuple[str, str]]) -> list[str]:
     """Published-figure claims in a file under site/ that is not an HTML page.
 
@@ -381,7 +598,11 @@ def check_text(name: str, text: str, used: set[tuple[str, str]]) -> list[str]:
     matches is reported as drift, the same rule the page allow-list lives by.
     """
     allow = TEXT_ALLOW.get(name, {})
-    problems: list[str] = []
+    # Claims are NOT allow-listable, and the asymmetry is deliberate. A figure
+    # can be legitimate in one file and meaningless in another, which is what
+    # TEXT_ALLOW is for. "yangble5 is a model" is false everywhere, so an
+    # escape hatch for it would only ever be used to let it through.
+    problems: list[str] = claim_problems(text)
 
     def rule(token: str, kind: str, accounted: bool) -> None:
         if token in allow:
@@ -536,6 +757,251 @@ def check_page(name: str, src: str, used: set[str]) -> list[str]:
     figures, invariant = scan_figures(text)
     problems += invariant
     problems += account_figures(figures, used)
+    # Read from the parsed text, not the source: an HTML comment explaining
+    # why a claim is forbidden is not the page making it, and the rule about
+    # latency lives in a comment at the top of site/index.html.
+    problems += claim_problems(text)
+    return problems
+
+
+def page_text(src: str) -> str:
+    """A page as an agent reads it: parsed, entities resolved, no script/style."""
+    d = Doc()
+    d.feed(src)
+    d.close()
+    return "\n".join(d.text)
+
+
+def whole_file_problems(name: str, text: str) -> list[str]:
+    """Rules that are properties of a FILE rather than of a fragment.
+
+    `check_page` and `check_text` answer "is this sentence allowed to say
+    that". This answers "is this document allowed to exist in this state",
+    which is a different question with a different unit, and conflating the
+    two is what made the first version of the disclosure rule demand that
+    every sentence on the site restate the whole measurement record.
+    """
+    return disclosure_problems(text)
+
+
+# ── the sitemap must describe the site, in both directions ─────────────────
+# A sitemap is an index, and an index is a claim: "these documents exist at
+# these addresses". It rots in two distinct ways and this checks both.
+#
+#   FORWARD  a <loc> naming a file that is not in site/ advertises a 404. The
+#            usual cause is a page being renamed by somebody who never opened
+#            this file.
+#   BACKWARD a document in site/ that appears in no <loc> has silently fallen
+#            out of the index. That direction is the one nobody notices,
+#            because nothing is broken — the page is simply invisible, which
+#            is the same failure the discovered-not-typed page set exists to
+#            prevent one level down.
+#
+# Both are enforced against site/ as it is on disk, so neither can be
+# satisfied by remembering to edit something.
+SITEMAP = "sitemap.xml"
+SITE_ORIGIN = "https://yangble5.com/"
+
+# What counts as a document worth indexing. Deliberately NOT the whole text
+# file set: .sh/.ps1/.sha256 are executable payloads and digests, and a search
+# result is not how anyone should arrive at an installer.
+SITEMAP_DOCUMENT_SUFFIXES = (*PAGE_SUFFIXES, ".md", ".txt")
+
+# Documents excluded from the index on purpose, each with a reason, each held
+# to the same rule as every other allow-list here: an entry naming a file that
+# is not there is reported.
+SITEMAP_EXCLUDED: dict[str, str] = {
+    "robots.txt": (
+        "a directive to crawlers, not a document for readers. Listing it in "
+        "the index of documents would be a category error, and no crawler "
+        "needs a sitemap to find it."
+    ),
+    ".well-known/security.txt": (
+        "a well-known resource under RFC 9116. It is discovered by its fixed "
+        "path, never by search, and indexing it would put a security contact "
+        "into results pages for no benefit."
+    ),
+    "README.md": (
+        "NOT INDEXED BECAUSE NOTHING SHOWS IT IS DEPLOYED. site/robots.txt "
+        "advertises /README.md, but the webroot copy list in "
+        "deploy/nginx/yangble5.com.conf.example PART 3d does not include it "
+        "and neither does PUBLISHED in tools/drift_check.py, so a <loc> for it "
+        "would most likely advertise a 404 — the exact failure this index "
+        "checks for in the other direction. Add it to the deploy file list and "
+        "to drift_check, confirm with `curl -sSI "
+        "https://yangble5.com/README.md`, then delete this entry and give it a "
+        "<url>."
+    ),
+}
+
+_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
+_LASTMOD_RE = re.compile(r"<lastmod>\s*([^<\s]+)\s*</lastmod>")
+_ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def _loc_to_relative(loc: str) -> str | None:
+    """The file under site/ a <loc> resolves to, or None if it is not one.
+
+    `..` is refused rather than resolved. Nothing here is a security boundary
+    — it reads a file this repository wrote — but a <loc> that walks out of
+    the webroot would be checked for existence OUTSIDE site/ and could
+    therefore be reported as fine while advertising a URL the web server will
+    never serve.
+    """
+    if not loc.startswith(SITE_ORIGIN):
+        return None
+    rest = loc[len(SITE_ORIGIN) :].split("?")[0].split("#")[0]
+    if ".." in rest.split("/"):
+        return None
+    return "index.html" if rest in ("", "/") else rest
+
+
+def sitemap_problems(
+    site: pathlib.Path = SITE, today: datetime.date | None = None
+) -> list[str]:
+    path = site / SITEMAP
+    if not path.is_file():
+        # Not having a sitemap is a legitimate choice; having one that lies is
+        # not. Say nothing when there is none.
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return [f"{SITEMAP}: cannot be read as UTF-8, so the index was not checked: {exc}"]
+
+    if today is None:
+        today = datetime.date.today()
+
+    problems: list[str] = []
+    listed: set[str] = set()
+    for loc in _LOC_RE.findall(text):
+        rel = _loc_to_relative(loc)
+        if rel is None:
+            problems.append(
+                f"{SITEMAP}: <loc>{loc}</loc> is not under {SITE_ORIGIN} — a "
+                f"sitemap may only list URLs on the site it describes"
+            )
+            continue
+        listed.add(rel)
+        if not (site / rel).is_file():
+            problems.append(
+                f"{SITEMAP}: <loc>{loc}</loc> resolves to {rel}, which is not "
+                f"in {site.name}/ — the published index advertises a 404"
+            )
+
+    for raw in _LASTMOD_RE.findall(text):
+        m = _ISO_DATE_RE.match(raw)
+        if not m:
+            problems.append(
+                f"{SITEMAP}: <lastmod>{raw}</lastmod> is not a YYYY-MM-DD date"
+            )
+            continue
+        try:
+            when = datetime.date(int(m[1]), int(m[2]), int(m[3]))
+        except ValueError:
+            problems.append(f"{SITEMAP}: <lastmod>{raw}</lastmod> is not a real date")
+            continue
+        if when > today:
+            problems.append(
+                f"{SITEMAP}: <lastmod>{raw}</lastmod> is in the future — a "
+                f"modification date that has not happened yet is not a date"
+            )
+
+    for path_ in sorted(site.rglob("*")):
+        if not path_.is_file():
+            continue
+        rel = path_.relative_to(site).as_posix()
+        if path_.suffix.lower() not in SITEMAP_DOCUMENT_SUFFIXES:
+            continue
+        if rel in listed or rel in SITEMAP_EXCLUDED:
+            continue
+        problems.append(
+            f"{rel}: a document under {site.name}/ that {SITEMAP} does not "
+            f"list — it is published but not indexed. Add a <url> for it, or "
+            f"add it to SITEMAP_EXCLUDED in tools/sitecheck.py with a reason."
+        )
+    on_disk = {p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file()}
+    for rel in sorted(set(SITEMAP_EXCLUDED) - on_disk):
+        problems.append(
+            f"SITEMAP_EXCLUDED names {rel!r}, which is not in {site} — a stale "
+            f"exclusion is cover for the next file that lands on that name"
+        )
+    # An exclusion for a file the index would never have asked about is dead
+    # weight, and dead entries are precisely how the checker this file
+    # replaced hid the fact that it had never seen a percentage.
+    for rel in sorted(SITEMAP_EXCLUDED):
+        if pathlib.PurePosixPath(rel).suffix.lower() not in SITEMAP_DOCUMENT_SUFFIXES:
+            problems.append(
+                f"SITEMAP_EXCLUDED names {rel!r}, whose suffix is not one this "
+                f"index covers ({', '.join(SITEMAP_DOCUMENT_SUFFIXES)}) — the "
+                f"entry can never fire, so it documents a decision that is not "
+                f"being made"
+            )
+    return problems
+
+
+# ── security.txt: a contact that has to still be true ──────────────────────
+# RFC 9116 makes `Expires` mandatory, and the reason is that an unmaintained
+# security.txt is worse than none: it advertises a reporting channel while
+# telling the reader nobody is behind it, so a finder either wastes the report
+# or goes public with it.
+#
+# THIS CHECK CAN TURN THE BUILD RED ON A DATE NOBODY TOUCHED, AND THAT IS THE
+# POINT. It is the only rule here that depends on the clock, which is a real
+# cost — a green build becomes a thing that expires. The alternative is a file
+# that silently stops meaning anything, and this project's whole position is
+# that a claim nobody can watch fail is not a claim. `today` is injectable so
+# the tests are not themselves time-dependent.
+WELLKNOWN = ".well-known/security.txt"
+_SECURITY_FIELD_RE = re.compile(r"(?mi)^([A-Za-z-]+):[ \t]*(\S.*?)[ \t]*$")
+
+
+def wellknown_problems(
+    site: pathlib.Path = SITE, today: datetime.date | None = None
+) -> list[str]:
+    path = site / WELLKNOWN
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return [f"{WELLKNOWN}: cannot be read as UTF-8: {exc}"]
+
+    if today is None:
+        today = datetime.date.today()
+
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        m = _SECURITY_FIELD_RE.match(line)
+        if m:
+            fields.setdefault(m.group(1).lower(), m.group(2))
+
+    problems: list[str] = []
+    for required in ("contact", "expires"):
+        if required not in fields:
+            problems.append(
+                f"{WELLKNOWN}: no {required.title()} field. RFC 9116 requires "
+                f"it, and a security.txt missing one is not a security.txt"
+            )
+    raw = fields.get("expires")
+    if raw:
+        stamp = raw.replace("Z", "+00:00")
+        try:
+            when = datetime.datetime.fromisoformat(stamp).date()
+        except ValueError:
+            problems.append(
+                f"{WELLKNOWN}: Expires: {raw} is not an ISO 8601 timestamp"
+            )
+        else:
+            if when <= today:
+                problems.append(
+                    f"{WELLKNOWN}: Expires: {raw} has passed. The file now "
+                    f"advertises a reporting channel that says nobody is "
+                    f"standing behind it. Renew the date only if the promise "
+                    f"is still true; otherwise delete the file."
+                )
     return problems
 
 
@@ -750,6 +1216,81 @@ TEXT_MUST_FAIL = [
     ("a file with no per-file allowance of its own", "llms.txt", "hit rate 99.61%", "99.61"),
 ]
 
+# ── the claim cases ────────────────────────────────────────────────────────
+# Every one of these sentences is on the site RIGHT NOW in negated form, which
+# is exactly why the pairs below run together: the must-fail case proves the
+# guard sees the assertion, and the must-pass case immediately beside it
+# proves the denial of the same sentence is not collateral damage. A claim
+# guard that cannot tell those apart gets switched off in a day.
+#
+# (name, text, substring that MUST appear in some problem).  Every needle is
+# drawn from the QUOTED EXCERPT, never from the rule's own label: a needle
+# like "model" is satisfied by the words "described as a model" in the
+# message template, so it would stay green with the pattern deleted.
+CLAIM_MUST_FAIL = [
+    (
+        "yangble5 called a model, in English",
+        "yangble5 is a fast model.",
+        "yangble5 is a fast model",
+    ),
+    ("yangble5 called a model, in Chinese", "yangble5 是一個模型。", "yangble5 是一個模型"),
+    ("the yangble5 LLM", "Ask the yangble5 LLM anything.", "the yangble5 LLM"),
+    ("a Taiwanese-trained model", "It is a Taiwanese-trained LLM.", "It is a Taiwanese-trained"),
+    ("trained in Taiwan, in Chinese", "台灣自己訓練的模型。", "台灣自己訓練"),
+    ("latency improved, in Chinese", "延遲降低了三成。", "延遲降低"),
+    ("latency improved, in English", "Warm rounds are much faster.", "Warm rounds are much faster"),
+    ("a speed multiple", "Warm rounds are 2x faster.", "2x faster"),
+    ("a free-credit figure in dollars", "Get $5 of free credit on sign-up.", "$5 of free credit"),
+    ("a free-credit figure in yuan", "註冊送 300 美元的額度。", "300 美元"),
+]
+
+# (name, text) — must produce NO claim problem at all
+CLAIM_MUST_PASS = [
+    ("the denial, in English", "yangble5 is NOT a model. There is no yangble5 LLM."),
+    ("the denial, in Chinese", "這不是一個模型，更不是「台灣自己訓練的模型」。"),  # noqa: RUF001
+    ("the denial, hard-wrapped", "yangble5 is not a model: there is no\nyangble5 LLM."),
+    ("no latency claim, in Chinese", "延遲沒有變好，我們不會假裝有。"),  # noqa: RUF001
+    ("no latency claim, in English", "No page may claim a latency improvement."),
+    ("a rule forbidding the claim", "The page must never call it a model."),
+    ("a negation that arrives first still counts", "It is never faster."),
+    ("shell positional parameters are not money", 'shift; printf %s "$1" "$2"'),
+    ("a batch substring expression is not money", "%KEY:~0,24%"),
+]
+
+# A negation AFTER the claim does not retract it. Kept as its own case so the
+# window's end boundary is exercised deliberately rather than by accident.
+CLAIM_TRAILING_NEGATION = ("yangble5 is a model, not a proxy.", "model")
+
+# ── the whole-file disclosure cases ────────────────────────────────────────
+# (name, file text, substring that MUST appear in some problem)
+_SCOPED = (
+    "warm rounds only, from one run on one machine on 2026-07-21; the cold "
+    "round hit 0.00%"
+)
+DISCLOSURE_MUST_FAIL = [
+    ("the headline figure, naked", "cache hit rate 99.53%", "which rounds"),
+    (
+        "warm-rounds stated, scope and cold round missing",
+        "warm rounds: 99.53%",
+        "cold request hit zero",
+    ),
+    (
+        "everything but the scope of the run",
+        "warm rounds 99.53%, cold round 0.00%",
+        "scope of the run",
+    ),
+    ("the four-place form is the same claim", "= 99.5333%", "which rounds"),
+    ("the all-four-rounds figure is a hit rate too", "74.6%", "which rounds"),
+]
+
+# (name, file text) — must produce NO disclosure problem
+DISCLOSURE_MUST_PASS = [
+    ("the figure with its scope", f"99.53% — {_SCOPED}"),
+    ("the same, in Chinese", "暖輪 99.53%、冷輪 0.00%，單機單次 2026-07-21"),  # noqa: RUF001
+    ("a file that publishes no hit rate at all", "748,918 tokens in a 1M window"),
+    ("zero is not a claim that needs a scope", "冷輪 0.00%"),
+]
+
 # (name, file, file text) — must produce NO problem at all
 TEXT_MUST_PASS = [
     ("the authoritative warm hit rate", "install.sh", "99.53% — warm rounds only"),
@@ -874,6 +1415,37 @@ def selftest(verbose: bool = True) -> bool:
             failures.append(
                 f"TEXT MUST-PASS CASE FAILED: {case}: {payload!r} in {fname} produced {got!r}"
             )
+    for case, payload, needle in CLAIM_MUST_FAIL:
+        got = claim_problems(payload)
+        if not any(needle in p for p in got):
+            failures.append(
+                f"CLAIM MUST-FAIL CASE DID NOT FAIL: {case}: {payload!r} produced "
+                f"{got!r}, expected a problem naming {needle!r}"
+            )
+    for case, payload in CLAIM_MUST_PASS:
+        got = claim_problems(payload)
+        if got:
+            failures.append(f"CLAIM MUST-PASS CASE FAILED: {case}: {payload!r} produced {got!r}")
+    _trailing, _needle = CLAIM_TRAILING_NEGATION
+    if not any(_needle in p for p in claim_problems(_trailing)):
+        failures.append(
+            "THE NEGATION WINDOW EXTENDS PAST THE CLAIM: "
+            f"{_trailing!r} was not reported. A negation that arrives after a "
+            "claim does not retract it, so the window must end at the match"
+        )
+    for case, payload, needle in DISCLOSURE_MUST_FAIL:
+        got = disclosure_problems(payload)
+        if not any(needle in p for p in got):
+            failures.append(
+                f"DISCLOSURE MUST-FAIL CASE DID NOT FAIL: {case}: {payload!r} "
+                f"produced {got!r}, expected a problem naming {needle!r}"
+            )
+    for case, payload in DISCLOSURE_MUST_PASS:
+        got = disclosure_problems(payload)
+        if got:
+            failures.append(
+                f"DISCLOSURE MUST-PASS CASE FAILED: {case}: {payload!r} produced {got!r}"
+            )
     if not classify()[0]:
         failures.append(
             "NO PAGES DISCOVERED under site/ — the page set is discovered, so "
@@ -944,13 +1516,25 @@ def coverage(site: pathlib.Path = SITE) -> int:
     pages, texts, problems = classify(site)
     width = max([28, *(len(f) for f in pages + texts + list(EXEMPT))])
     for f in pages:
-        print(f"{f:{width}s}  page audit: structure, references, every figure accounted")
+        print(
+            f"{f:{width}s}  page audit: structure, references, every figure "
+            f"accounted, forbidden claims, disclosure"
+        )
     for f in texts:
         n = len(TEXT_ALLOW.get(f, {}))
         extra = f" ({n} allow-listed for this file)" if n else ""
-        print(f"{f:{width}s}  figure claims: percentages, grouped totals, units{extra}")
+        print(
+            f"{f:{width}s}  figure claims: percentages, grouped totals, units"
+            f"{extra}; forbidden claims, disclosure"
+        )
     for f, why in sorted(EXEMPT.items()):
         print(f"{f:{width}s}  EXEMPT — {why}")
+    # Named separately because they are checks over the WHOLE directory rather
+    # than over one file's text, so they do not belong on any single row.
+    for f, what in ((SITEMAP, "indexes every document, and only real ones"),
+                    (WELLKNOWN, "required fields, and an Expires that has not passed")):
+        if (site / f).is_file():
+            print(f"{f:{width}s}  {what}")
     print(
         f"\n{len(pages)} page(s), {len(texts)} text file(s), {len(EXEMPT)} exempt; "
         f"every file under {site.name}/ is accounted for."
@@ -1034,7 +1618,7 @@ def main(argv: list[str]) -> int:
     for f in pages:
         src = read(f)
         if src is not None:
-            reports.append((f, check_page(f, src, used)))
+            reports.append((f, check_page(f, src, used) + whole_file_problems(f, page_text(src))))
     stale = unused_allow_problems(used)
     if site == SITE:
         # Only meaningful against the real tree: --site points at a copy whose
@@ -1052,10 +1636,17 @@ def main(argv: list[str]) -> int:
     # that has to be re-pasted by hand.
     for f in texts:
         body = read(f)
-        if body is not None and (problems := check_text(f, body, used_text)):
+        if body is not None and (
+            problems := check_text(f, body, used_text) + whole_file_problems(f, body)
+        ):
             reports.append((f, problems))
     if coverage_problems:
         reports.append(("site/ coverage", coverage_problems))
+    # Same silence-on-success rule as the text files above, and for the same
+    # reason: site/README.md quotes this program's stdout verbatim, so a new
+    # "OK" line per index file would make the published documentation stale.
+    if index_problems := sitemap_problems(site) + wellknown_problems(site):
+        reports.append(("site index", index_problems))
     text_stale = unused_text_allow_problems(used_text)
     if text_stale:
         reports.append(("text allow-list", text_stale))

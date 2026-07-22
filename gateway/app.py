@@ -2254,8 +2254,12 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
             return _error(
                 400, "invalid_request_error", "'email' is not a valid address.",
                 param="email",
+                # The illustration uses a reserved domain on purpose. CI fails the
+                # build on any committed address outside RFC 2606, and an invented
+                # placeholder domain is still address-shaped enough to trip it --
+                # as was this comment, on its first draft, while explaining that.
                 errors=[{"param": "email", "code": "invalid_format",
-                         "constraint": "an address of the form name@host.tld"}],
+                         "constraint": "an address like you@example.com"}],
             )
         if settings.registration_mode == "open" and not email and machine_id is None:
             # Open mode needs ONE stable identity, not a verified one. A machine

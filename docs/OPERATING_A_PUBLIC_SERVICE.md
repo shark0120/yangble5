@@ -30,6 +30,64 @@ personal account behind a public endpoint, even if they said yes, even if they a
 **One-line version: personal OAuth credentials are for personal use. A public service needs
 keys that are licensed for it.**
 
+### 1.1 The author of this document runs exactly the configuration it forbids
+
+`https://yangble5.com` is up, registration is open, and it is backed by the maintainer's own
+personal OAuth credentials. The 1M-context tier — the capability this whole project exists to
+demonstrate — is served by **exactly one** of them.
+
+That is the pattern described immediately above, and the warning is not being withdrawn. It is
+correct. The maintainer is doing it anyway, deliberately, and you are entitled to know that
+before you decide how much weight to give the advice or how much to trust the endpoint.
+
+**The specific risk being carried, stated plainly:**
+
+* **One credential, no failover, for the tier that matters.** The engine can hold several
+  credentials and fail over between them, but there is only one on the 1M-context channel. When
+  it is rate-limited, the tier is down. When it is suspended, the tier is gone — there is no
+  second account to roll to and no plan that produces one.
+* **Suspension lands on the account, not on the service.** The credential is a personal Google
+  account reached through CLIProxyAPI's `antigravity` OAuth channel. An enforcement action
+  against it is an action against that Google account and everything else it is used for. The
+  blast radius of "my demo endpoint got banned" is not confined to the demo endpoint.
+* **Traffic from strangers, attributed to one person.** Every request an anonymous registrant
+  makes is, from the provider's side, that one human's usage. Automated abuse detection is
+  looking for exactly this shape: one residential origin behaving like dozens of unrelated users.
+* **Appeals for this do not go well.** "I was proxying my personal account to the internet" is
+  not a defence anyone has had success with, and the terms it violates are not ambiguous.
+* **Capacity is small and personally funded.** It is one person's money. When the pool is spent
+  it says so — `GET /pool/status` and the `usable_now` field on an issued key — rather than
+  degrading quietly. No credit amount is promised anywhere, because none is funded.
+
+**This section is a debt the code called in.** `deploy/install.sh` refuses
+`REGISTRATION_MODE=open` unless the operator writes
+`YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES=yes` into `.env` — a deliberate, recorded, greppable
+assertion rather than the absence of an objection. It defaults to `no`, and its refusal message
+ends with a condition attached to saying yes:
+
+> If you choose (c) and the pool is still best-effort or single-credential, say so publicly on
+> the landing page and in the installer output: users planning around a tier deserve to know it
+> can vanish without notice.
+
+`https://yangble5.com` runs with `open`, so that assertion was made. The paragraphs above are the
+public half of it. If you ever find this section absent while the live instance is still issuing
+keys, that is the failure, not a tidy-up.
+
+**Why you should not copy it.** The instance is a demo, run at one person's own risk, with no
+SLA, no support commitment, no uptime commitment, and an operator who can read every request
+sent through it. Those costs are being paid knowingly by the person who owns the account. If you
+deploy `gateway/` and `site/` against your own personal accounts, you are not copying a proven
+configuration; you are copying an accepted loss. The difference between the two is entirely a
+matter of whose account is on the line and whether they understood what they were signing up
+for.
+
+If you want the caching result this repository measures without any of the above, run it on
+localhost against an upstream you already pay for. That is the configuration the benchmark was
+run on and the one the rest of this repository is written for.
+
+There is a matching disclosure in the project `README.md`; if you ever find one of them saying
+this and the other not, the omission is the bug.
+
 ---
 
 ## 2. What a public deployment actually requires
@@ -98,6 +156,18 @@ the operator-facing subset is in [`deploy/.env.example`](../deploy/.env.example)
 | Registration mode | `REGISTRATION_MODE` | `invite` | Exactly one of `invite`, `open`, `closed`. Anything else is fatal at startup. |
 | Legacy boolean | `REGISTRATION_OPEN` | unset | A **boolean** alias honoured only when `REGISTRATION_MODE` is unset: true -> `open`, false -> `closed`. It cannot express `invite`. Prefer `REGISTRATION_MODE`. |
 
+One more gate, and it is **not** a `gateway/config.py` setting — it lives in `deploy/install.sh`
+and is read from your `.env`:
+
+| Control | Setting | Default | Notes |
+|---|---|---|---|
+| Licence assertion | `YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES` | `no` | `deploy/install.sh` **refuses** `REGISTRATION_MODE=open` unless this reads `yes`/`true`/`1`. The money gate above (`GLOBAL_MONTHLY_USD_BUDGET > 0`) bounds what abuse can cost; this one is about what abuse can get **suspended**, which the money gate never asked about. The default is the safe answer, so an operator who reads nothing gets `invite`. |
+
+Setting it to `yes` is a statement, not a checkbox: you are asserting the pool is licensed for
+serving third parties. See [§1.1](#11-the-author-of-this-document-runs-exactly-the-configuration-it-forbids)
+for what it looks like when someone asserts it anyway and owes the public disclosure that comes
+with doing so.
+
 **Rate and concurrency:** `RATE_LIMIT_RPM`, `RATE_LIMIT_CONCURRENCY`, `AUTH_RPM_PER_IP`
 (limiter primitives in `gateway/ratelimit.py`, wired up in `gateway/app.py`). These bound burst damage and upstream 429s. They are
 **in-process**, so they are per uvicorn worker: run one worker, or divide the limits by the
@@ -162,7 +232,10 @@ reference compose stack.
 ## 5. Pre-launch checklist
 
 - [ ] Every upstream credential is a paid key licensed for serving third parties. No personal
-      OAuth account is in the pool.
+      OAuth account is in the pool. (The maintainer's own instance fails this box on purpose and
+      says so in [§1.1](#11-the-author-of-this-document-runs-exactly-the-configuration-it-forbids).
+      Failing it knowingly is a decision; failing it by accident is the thing this list exists to
+      prevent.)
 - [ ] At least one operator ceiling is a number you can afford to lose entirely:
       `GLOBAL_MONTHLY_USD_BUDGET`, `GLOBAL_MONTHLY_TOKEN_BUDGET`, `GLOBAL_DAILY_USD_BUDGET` or
       `GLOBAL_DAILY_TOKEN_BUDGET`. **They all default to `0` = unlimited, and nothing forces you
@@ -196,3 +269,18 @@ What it *will* do is make a long agent session against an upstream **you already
 substantially less, because a 99%-cached 749K prefix is billed very differently from an uncached
 one. That is a real saving on a real bill. It is not free inference, and there is no
 configuration in this repository that turns it into free inference.
+
+Yes, `https://yangble5.com` will issue you a key without asking for money. That is one person
+paying for it out of their own pocket, from the accounts described in [§1.1](#11-the-author-of-this-document-runs-exactly-the-configuration-it-forbids),
+with no commitment that it will exist next week. Treat it as a demo you were lent, not as a
+supply. If it matters to your work, run your own.
+
+---
+
+## 7. See also
+
+* [`AGENT_INTERVIEW.md`](AGENT_INTERVIEW.md) — the other side of the same endpoint: what an AI
+  agent asks a human before it registers them against an instance like this, what it must never
+  ask for, and what it says when registration is refused.
+* [`../SECURITY.md`](../SECURITY.md) — reporting a vulnerability.
+* [`../deploy/`](../deploy/) — the reference compose stack these settings assume.

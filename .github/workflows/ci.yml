@@ -5,10 +5,24 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Once a day, for the `live-site-drift` job at the bottom of this file and
+    # nothing else. A stale deploy and a CDN feature toggled on in a dashboard
+    # are both silent and neither is tied to a commit, so no push-triggered job
+    # can ever notice them. 06:17 rather than 06:00: GitHub queues the whole
+    # world's on-the-hour crons together and drops runs it cannot schedule.
+    - cron: "17 6 * * *"
 
-# A force-push while a run is queued should cancel the stale run, not race it.
 concurrency:
-  group: ci-${{ github.ref }}
+  # A force-push while a run is queued should cancel the stale run, not race it.
+  #
+  # The schedule gets its OWN group. A cron run and a push to the default branch
+  # both report `github.ref = refs/heads/main`, so a single group lets the
+  # nightly drift run cancel a release push's CI -- or be cancelled by it. Either
+  # way the cancelled run reports as "cancelled", which reads like "not run yet"
+  # rather than "failed", and this whole file exists to stop checks from going
+  # quiet without anyone deciding they should.
+  group: ci-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -182,14 +196,21 @@ jobs:
         run: |
           python -c "import tools.cache_bench, tools.cache_stats_sidecar, tools.claude_shim"
           python -c "import tools.sitecheck"
+          python -c "import tools.drift_check"
           python -c "import byok.setup"
 
       - name: Every tool runs as a plain script
+        # drift_check.py is in this list for a reason beyond tidiness: it is run
+        # by `deploy/smoke_test.sh` check 11 and by the `live-site-drift` job
+        # below, and in both places a crash at startup and a genuine difference
+        # between the repo and the live site are BOTH a non-zero exit. Proving
+        # here that it starts is what keeps those two outcomes distinguishable.
         run: |
           python tools/cache_bench.py --help
           python tools/cache_stats_sidecar.py --help
           python tools/claude_shim.py --help
           python tools/sitecheck.py --help
+          python tools/drift_check.py --help
           python byok/setup.py --help
 
   offline-self-checks:
@@ -590,3 +611,104 @@ jobs:
           echo "$(wc -l < /tmp/all-ips.txt) distinct addresses:"
           echo "  $(( $(wc -l < /tmp/all-ips.txt) - $(wc -l < /tmp/found-ips.txt) )) reserved by IANA"
           echo "  $(wc -l < /tmp/found-ips.txt) public, every one of them allowlisted"
+
+  live-site-drift:
+    # THE ONLY JOB HERE THAT LOOKS AT THE INTERNET, AND THE ONLY ONE THAT CAN
+    # FAIL WITHOUT ANYONE HAVING CHANGED ANYTHING.
+    #
+    # Every other job answers "is this commit self-consistent". None of them can
+    # answer "is the site people are actually being served this commit", and
+    # that gap has cost this project twice:
+    #   * the deploy was a full day stale and nothing compared the two, so an
+    #     audit cited line numbers from a file no visitor had ever received;
+    #   * Cloudflare's Email Address Obfuscation rewrote the install command
+    #     inside a <pre> on the live page while the origin served correct bytes,
+    #     so every origin-side check stayed green.
+    # Neither is tied to a commit, so neither can be caught by a push trigger.
+    # Hence a schedule.
+    #
+    # WHY IT IS `if`-GATED RATHER THAN A NORMAL JOB:
+    # a contributor's pull request must not go red because a CDN feature was
+    # toggled on in a dashboard they have never seen and cannot fix. A gate that
+    # fails for reasons the author cannot act on gets ignored, then bypassed,
+    # then deleted. So this runs on the schedule and on workflow_dispatch, and
+    # is skipped -- visibly, in the same checks list -- on push and PR.
+    #
+    # WHY IT IS IN THIS FILE ANYWAY:
+    # a separate workflow is a file nobody opens. Whoever edits CI should see
+    # that this exists and that it is the one check standing between the repo
+    # and a silently stale deploy. The `if` does the isolating; the file does
+    # the telling.
+    #
+    # A GitHub runner is off-origin by construction, which is the property
+    # `tools/drift_check.py` needs: it must reach the site the way a visitor
+    # does, through the CDN. Running it on the origin box would compare the
+    # origin against the repo and pass on exactly the incident above.
+    #
+    # If this job stops appearing at all: GitHub disables scheduled workflows in
+    # repositories with no activity for 60 days, silently. That is the failure
+    # mode of the failure detector, and the only cure is to look.
+    name: live site still matches this repository (scheduled)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The floor, deliberately: drift_check.py is stdlib-only and an
+          # operator debugging a red run here will reach for whatever Python is
+          # on the box, which is usually the oldest one this project supports.
+          python-version: "3.10"
+
+      - name: Compare the published site against this commit
+        env:
+          # The per-file results go to stdout and the problem report to stderr.
+          # Redirected into one file, a buffered stdout lands AFTER stderr, so
+          # the "ok" lines print below the failure they precede and the log reads
+          # as if the files listed as ok were the ones that failed.
+          PYTHONUNBUFFERED: "1"
+          # A fork that publishes its own site sets the SITE_BASE repository
+          # variable; the default is this project's. GitHub does not run
+          # scheduled workflows in forks unless the fork owner turns them on, so
+          # in practice this only ever runs here.
+          SITE_BASE: ${{ vars.SITE_BASE || 'https://yangble5.com' }}
+        # ONE retry, and both outputs are printed whatever happens.
+        #
+        # A retry is here because a single 502 from an edge would otherwise page
+        # someone at 06:17 about a rewrite that never occurred, and an alarm that
+        # is wrong once a month is an alarm that gets muted. It is exactly one
+        # retry, sixty seconds apart, because a difference that survives a minute
+        # is a deploy or a configuration change, not a blip -- and because a loop
+        # that retries until it passes is how a check learns to always pass.
+        #
+        # The first attempt's output is printed even when the second succeeds:
+        # an intermittent difference is a finding, not a non-event.
+        run: |
+          set +e
+          echo "comparing $SITE_BASE against $GITHUB_SHA"
+          python tools/drift_check.py --base "$SITE_BASE" > attempt-1.txt 2>&1
+          status=$?
+          cat attempt-1.txt
+          if [ "$status" -ne 0 ]; then
+            echo "--- first attempt failed (exit $status); retrying once in 60s ---"
+            sleep 60
+            python tools/drift_check.py --base "$SITE_BASE" > attempt-2.txt 2>&1
+            status=$?
+            cat attempt-2.txt
+            if [ "$status" -eq 0 ]; then
+              echo "::warning::the live site differed on the first attempt and matched on the second."
+              echo "::warning::That is not nothing: an edge that transforms a response intermittently"
+              echo "::warning::serves the transformed copy to some visitors. Read attempt-1 above."
+            else
+              # One multi-line annotation: GitHub shows only the first ten error
+              # annotations per job, and the difference itself is the whole
+              # message. %0A is how a newline survives the workflow-command
+              # encoding, so the % in a percentage has to be escaped first.
+              printf '::error::%s%%0A%%0A%s\n' "the live site is NOT this commit" \
+                "$(sed 's/%/%25/g; s/\r/ /g' attempt-2.txt | awk '{printf "%s%%0A", $0}')"
+              echo "::error::Deploy the current main, or explain the difference. Do NOT edit"
+              echo "::error::EDGE_STRIPS in tools/drift_check.py to make this green."
+            fi
+          fi
+          exit "$status"

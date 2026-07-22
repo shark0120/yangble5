@@ -57,6 +57,16 @@ PUBLISHED = (
     "uninstall.sh.sha256",
     "uninstall.ps1",
     "uninstall.ps1.sha256",
+    # The agent-facing surface. AGENTS.md is what the published one-liner points
+    # an AI at, so it is the single document most worth substituting: an agent
+    # that fetches it will do what it says, on somebody's machine, without a
+    # human reading it first. A stale or replaced copy here is worse than a
+    # stale landing page, not better, which is why it is checked like the
+    # installers rather than treated as documentation.
+    "AGENTS.md",
+    "llms.txt",
+    "sitemap.xml",
+    ".well-known/security.txt",
 )
 
 # Transformations the edge is ALLOWED to apply, applied to the repo copy before
