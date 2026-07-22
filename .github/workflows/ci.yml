@@ -274,6 +274,26 @@ jobs:
         # what keeps that true.
         run: bash deploy/preflight.sh --self-test
 
+      - name: smoke_test.sh --self-test
+        # The substring helper behind every security-header verdict. It exists
+        # because `grep -qiF` -- the previous implementation -- ABORTS on GNU
+        # grep 3.0 (the build Git Bash ships), and a crashed grep looks exactly
+        # like "no match": on 2026-07-23 the smoke test failed all eight
+        # headers against an origin serving all eight correctly.
+        #
+        # A gate that cannot pass gets ignored the same way a gate that cannot
+        # fail gets trusted, and this repo's release rule is "do not announce
+        # while smoke_test is red".
+        #
+        # NOTE ON WHERE THIS RUNS. This job is ubuntu-latest only, and Ubuntu's
+        # grep does not have the bug -- so this step alone would NOT have caught
+        # it. What covers the affected platform is tests/test_smoke_test_helpers.py:
+        # it shells out to the same --self-test and it runs on the windows-latest
+        # half of the `test` matrix, plus a static check that no *.sh in the repo
+        # combines -i and -F again. This step is the cheap early signal, not the
+        # proof.
+        run: bash deploy/smoke_test.sh --self-test
+
       - name: Every script answers --help without touching anything
         run: |
           for script in \

@@ -1017,3 +1017,105 @@ def test_the_new_silent_cases_can_turn_the_self_test_red(break_it, monkeypatch):
     assert sitecheck.selftest(verbose=False) is False, (
         f"emptying {break_it.upper()}S left the self-test green, so it was proving nothing"
     )
+
+
+# ── the clock the checker reads ────────────────────────────────────────────
+#
+# On 2026-07-23 this repository was green on a workstation in UTC+8 and red on
+# every one of the ten CI runners, which are UTC. Nobody had touched a file.
+# `site/sitemap.xml` carried `<lastmod>2026-07-23</lastmod>`, stamped by
+# someone for whom that was today, read by a runner for whom it was tomorrow —
+# and `sitemap_problems` asked the machine what day it was with
+# `datetime.date.today()`, which is LOCAL time.
+#
+# Four tests failed on ten platforms over identical bytes. A gate whose verdict
+# depends on the committer's longitude is not a gate, and the failure mode is
+# nasty in the specific way that matters here: it is green where the change is
+# written and red where it is reviewed, which is the direction that wastes the
+# most time before anyone suspects the clock.
+
+
+def test_the_checker_never_asks_the_machine_what_day_it_is():
+    """No local-time call anywhere under tools/.
+
+    Static, and over the whole directory rather than the one function that
+    broke: the next date-dependent rule will be written by someone who never
+    read this and will reach for `date.today()` because that is what it is
+    called.
+    """
+    import ast
+
+    offenders = []
+    for path in sorted((sitecheck.ROOT / "tools").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            attr = node.func.attr
+            if attr == "today":
+                offenders.append(f"{path.name}:{node.lineno}: .today() is local time")
+            elif attr in ("now", "fromtimestamp") and not (node.args or node.keywords):
+                offenders.append(f"{path.name}:{node.lineno}: .{attr}() with no tz is local time")
+    assert not offenders, (
+        "local-time clock reads under tools/:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nUse tools/sitecheck.py's _utc_today(), or pass "
+        "datetime.timezone.utc explicitly. These functions answer differently "
+        "on a workstation and on a UTC runner, so the check they feed is green "
+        "where it is written and red where it is reviewed."
+    )
+
+
+def test_utc_today_is_actually_utc():
+    """The helper itself, in case someone 'simplifies' it back."""
+    import datetime as _dt
+
+    assert sitecheck._utc_today() == _dt.datetime.now(_dt.timezone.utc).date()
+
+
+def test_the_shipped_sitemap_is_clean_on_a_utc_runner():
+    """What CI will compute, asserted here rather than discovered there.
+
+    `sitemap_problems()` with no argument already uses UTC, so this is the same
+    question CI asks — but naming it means a future stamp fails with *this*
+    sentence attached instead of as four unrelated red tests.
+    """
+    problems = sitecheck.sitemap_problems(today=sitecheck._utc_today())
+    assert problems == [], (
+        "site/sitemap.xml is not clean against UTC's today. If a <lastmod> is "
+        "the future by more than the one-day grace, it was stamped from a "
+        "calendar rather than from the change: write the date the file actually "
+        "changed.\n  " + "\n  ".join(problems)
+    )
+
+
+@pytest.mark.parametrize(
+    ("stamp", "reported"),
+    [
+        ("2026-07-23", False),  # exactly today, from the runner's point of view
+        ("2026-07-24", False),  # tomorrow in UTC == today for a committer in +08
+        ("2026-07-25", True),   # two days out; no offset on Earth reaches this
+    ],
+)
+def test_the_one_day_grace_on_lastmod(site_copy, stamp, reported):
+    """The grace exists, and it is exactly one day wide.
+
+    A date-only `<lastmod>` denotes a DAY, not an instant, and days do not line
+    up across zones. Without the grace, every commit made during Asian working
+    hours stamps a date the UTC runner reads as tomorrow and the build is red
+    for nine hours a day. With more than a day of it, a genuinely wrong date
+    stops being caught. Both edges are pinned because a tolerance nobody tests
+    is a tolerance that quietly becomes infinite.
+    """
+    import datetime
+
+    path = site_copy / "sitemap.xml"
+    path.write_text(
+        re.sub(r"<lastmod>[^<]+</lastmod>", f"<lastmod>{stamp}</lastmod>",
+               path.read_text(encoding="utf-8"), count=1),
+        encoding="utf-8",
+        newline="\n",
+    )
+    problems = sitecheck.sitemap_problems(site_copy, today=datetime.date(2026, 7, 23))
+    hit = any(stamp in p and "future" in p for p in problems)
+    assert hit is reported, (stamp, problems)

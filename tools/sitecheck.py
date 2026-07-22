@@ -856,6 +856,35 @@ def _loc_to_relative(loc: str) -> str | None:
     return "index.html" if rest in ("", "/") else rest
 
 
+def _utc_today() -> datetime.date:
+    """Today in UTC, deliberately not in whatever zone this machine is set to.
+
+    `datetime.date.today()` is LOCAL time, and using it made this checker's
+    verdict depend on where it ran. On 2026-07-23 the repository was green on a
+    machine in UTC+8 and red on all ten CI runners, which are UTC:
+    `site/sitemap.xml` carried `<lastmod>2026-07-23</lastmod>`, stamped by
+    someone for whom that was today and read by a runner for whom it was
+    tomorrow. Four tests failed on every platform over a file nobody had
+    touched.
+
+    A gate that answers differently on two machines looking at identical bytes
+    is not a gate — it is a coin flip that happens to be correlated with the
+    committer's longitude. UTC is the only reference both ends already share.
+
+    `datetime.UTC` is 3.11+ and this project's floor is 3.10, so `timezone.utc`
+    it is; they are the same object.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+# The largest real UTC offset is +14:00 (Kiritimati, and Chatham in DST is
+# +13:45), so a date-only stamp written by anybody on Earth is at most ONE
+# calendar day ahead of UTC. A date-only `<lastmod>` denotes a whole day, not
+# an instant; treating "tomorrow in UTC" as a lie would fail every commit made
+# during Asian working hours. Two days ahead is not a timezone.
+_LASTMOD_FUTURE_GRACE = datetime.timedelta(days=1)
+
+
 def sitemap_problems(site: pathlib.Path = SITE, today: datetime.date | None = None) -> list[str]:
     path = site / SITEMAP
     if not path.is_file():
@@ -868,7 +897,7 @@ def sitemap_problems(site: pathlib.Path = SITE, today: datetime.date | None = No
         return [f"{SITEMAP}: cannot be read as UTF-8, so the index was not checked: {exc}"]
 
     if today is None:
-        today = datetime.date.today()
+        today = _utc_today()
 
     problems: list[str] = []
     listed: set[str] = set()
@@ -897,10 +926,12 @@ def sitemap_problems(site: pathlib.Path = SITE, today: datetime.date | None = No
         except ValueError:
             problems.append(f"{SITEMAP}: <lastmod>{raw}</lastmod> is not a real date")
             continue
-        if when > today:
+        if when > today + _LASTMOD_FUTURE_GRACE:
             problems.append(
-                f"{SITEMAP}: <lastmod>{raw}</lastmod> is in the future — a "
-                f"modification date that has not happened yet is not a date"
+                f"{SITEMAP}: <lastmod>{raw}</lastmod> is in the future: more "
+                f"than a day past {today.isoformat()} (UTC), which no timezone "
+                f"on Earth can explain. A modification date that has not "
+                f"happened yet is not a date."
             )
 
     for path_ in sorted(site.rglob("*")):
@@ -962,7 +993,7 @@ def wellknown_problems(site: pathlib.Path = SITE, today: datetime.date | None = 
         return [f"{WELLKNOWN}: cannot be read as UTF-8: {exc}"]
 
     if today is None:
-        today = datetime.date.today()
+        today = _utc_today()
 
     fields: dict[str, str] = {}
     for line in text.splitlines():

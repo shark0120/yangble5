@@ -137,11 +137,29 @@ the paths a user reaches *before* anything is installed - the ones nothing else 
 
 ```sh
 bash deploy/preflight.sh --self-test     # pure address/CIDR/ELF helpers, no network, no root
+bash deploy/smoke_test.sh --self-test    # the substring helper behind every header verdict
 for s in deploy/harden.sh deploy/install.sh deploy/preflight.sh deploy/smoke_test.sh \
          scripts/make_history.sh site/install.sh site/uninstall.sh; do
   bash "$s" --help > /dev/null && echo "ok $s"
 done
 ```
+
+`smoke_test.sh --self-test` is there because of a bug worth knowing about if you write shell
+here: **GNU grep 3.0 — the build Git Bash ships — aborts when `-i` and `-F` are combined.**
+
+```console
+$ printf nosniff | grep -qiF nosniff; echo $?
+134                     # 128 + SIGABRT
+```
+
+Either flag alone is fine. The exit status is indistinguishable from "no match", so on
+2026-07-23 the smoke test failed all eight security headers against an origin that was
+serving all eight correctly — `expected to contain 'nosniff', got 'nosniff'`. A gate that
+cannot pass gets waved away exactly like a gate that cannot fail gets trusted. For a
+case-insensitive substring test, use the shell: lowercase both sides with `tr`, then
+`case "$hay" in *"$needle"*)`. The quoted expansion matches literally, so glob characters in
+the needle stay literal. `tests/test_smoke_test_helpers.py` fails any `*.sh` that combines the
+two flags again.
 
 `--help`, `--dry-run` and `--self-test` must touch nothing. CI asserts that literally: it points
 `byok/setup.py --dry-run` at an empty directory and fails if the directory exists afterwards, and

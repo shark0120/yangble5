@@ -154,6 +154,11 @@ usage() {
   --timeout SECONDS    per-request timeout (default: 120)
   --no-spend           skip the two checks that actually call the upstream
   --json               print a JSON summary after the table
+  --self-test          exercise the pure helpers and exit. No network, no key,
+                       no origin. Run it if a header check ever reports
+                       "present but wrong" with an expected and a got that
+                       look identical -- that was a broken grep, not a broken
+                       server, and this is the check that tells them apart.
   -h, --help           this text
 
 The key may also come from $YANGBLE5_API_KEY, or be typed at a prompt.
@@ -167,8 +172,88 @@ the origin makes them prove nothing -- and check 11 fails rather than pretend.
     exit 0
 }
 
+# ── contains_ci: case-insensitive substring test, and why it is not grep ───
+#
+# GNU grep 3.0 — the build Git Bash ships, and the build this project's own
+# operator runs this script under — ABORTS when -i and -F are combined:
+#
+#     $ printf nosniff | grep -qiF nosniff; echo $?
+#     134                       # 128 + SIGABRT
+#
+# Either flag alone is fine; together they crash. A crashed grep exits
+# non-zero, so on 2026-07-23 check 9 reported all eight security headers as
+#
+#     FAIL hdr/X-Content-Type-Options  present but wrong:
+#          expected to contain 'nosniff', got 'nosniff'
+#
+# against an origin that was serving every one of them correctly.
+#
+# Eight red lines that are all false is worse than having no check at all.
+# This script's verdict is what stands between a deployment and an
+# announcement, and a gate that cries wolf on a healthy origin teaches its
+# operator to read `FAIL hdr/...` as "oh, that's the grep thing" — which is
+# exactly how the REAL eight-missing-headers outage survived a whole day.
+#
+# `case` with a QUOTED expansion compares literally: no globbing, no regex, no
+# fork, and nothing that differs between one platform's grep and another's.
+# `--self-test` below proves it against every pair this script actually uses,
+# including the ones full of glob metacharacters.
+contains_ci() {
+    local haystack needle
+    haystack="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    needle="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+    case "$haystack" in
+        *"$needle"*) return 0 ;;
+        *)           return 1 ;;
+    esac
+}
+
+# ── --self-test: the pure helpers, no network, no key, no origin ───────────
+#
+# Reachable before anything is configured, so CI can run it with no secrets.
+# It exists because contains_ci REPLACED a check that was silently broken: a
+# helper that decides whether a deployment is safe to announce has to be
+# demonstrably able to say both yes and no.
+self_test() {
+    local failures=0 desc hay ndl want got
+    # description | haystack | needle | expected (1 = contains, 0 = does not)
+    while IFS='|' read -r desc hay ndl want; do
+        [ -n "$desc" ] || continue
+        if contains_ci "$hay" "$ndl"; then got=1; else got=0; fi
+        if [ "$got" = "$want" ]; then
+            printf '  ok    %s\n' "$desc"
+        else
+            printf '  FAIL  %s (expected %s, got %s) hay=%s ndl=%s\n' \
+                   "$desc" "$want" "$got" "$hay" "$ndl"
+            failures=$((failures+1))
+        fi
+    done <<'EOF'
+hsts, the real header value|max-age=31536000; includeSubDomains|includeSubDomains|1
+hsts without includeSubDomains is the Cloudflare default, and must NOT pass|max-age=31536000|includeSubDomains|0
+nosniff, exact|nosniff|nosniff|1
+DENY, exact|DENY|DENY|1
+csp, needle contains a space and two apostrophes|default-src 'self'; frame-ancestors 'none'; base-uri 'none'|frame-ancestors 'none'|1
+csp WITHOUT frame-ancestors must not pass|default-src 'self'; base-uri 'none'|frame-ancestors 'none'|0
+permissions-policy, needle contains parentheses|geolocation=(), camera=(), usb=()|camera=()|1
+permissions-policy without camera must not pass|geolocation=(), microphone=()|camera=()|0
+case folds, header value upper|NOSNIFF|nosniff|1
+case folds, needle upper|nosniff|NOSNIFF|1
+a needle with a glob star is a LITERAL star, not a wildcard|max-age=31536000|max-*|0
+a needle with a glob question mark is literal too|nosniff|nosnif?|0
+a needle in brackets is literal, not a character class|DENY|[DE]ENY|0
+EOF
+    if [ "$failures" -gt 0 ]; then
+        printf '\nself-test: %s failure(s). contains_ci is broken; every header\n' "$failures"
+        printf 'verdict this script prints is unreliable until it is fixed.\n'
+        return 1
+    fi
+    printf '\nself-test: contains_ci says yes when it should and no when it should.\n'
+    return 0
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
+        --self-test)    self_test; exit $? ;;
         --base-url)     BASE_URL="${2:?--base-url needs a URL}"; shift 2 ;;
         --site-url)     SITE_URL="${2:?--site-url needs a URL}"; shift 2 ;;
         --api-key-file) API_KEY="$(head -n1 -- "${2:?--api-key-file needs a path}" 2>/dev/null | tr -d ' \r\n')"; shift 2 ;;
@@ -683,7 +768,7 @@ check_security_headers() {
         if [ -z "$got" ]; then
             fail "hdr/$name" "ABSENT — the origin is not serving it, and Cloudflare will not add it for you"
             missing=$((missing+1))
-        elif [ -n "$want" ] && ! printf '%s' "$got" | grep -qiF -- "$want"; then
+        elif [ -n "$want" ] && ! contains_ci "$got" "$want"; then
             fail "hdr/$name" "present but wrong: expected to contain '$want', got '$(printf '%s' "$got" | cut -c1-45)'"
             missing=$((missing+1))
         else
@@ -720,17 +805,44 @@ EOF
         fi
     fi
 
-    # PART 3d's `default_type text/plain`. The landing page tells visitors to
-    # read install.sh before running it; application/octet-stream makes the
-    # browser download it instead, so nobody reads it. Not fatal — a warning,
-    # because `curl | sh` is unaffected and some operators serve it deliberately.
+    # `default_type text/plain` — PART 3d, or the include that replaced it,
+    # deploy/nginx/static-content-type.conf. nginx's mime.types knows neither
+    # .sh nor .md, so both land on default_type, which panel configs set to
+    # application/octet-stream. With nosniff (correctly) set, a browser then
+    # DOWNLOADS the file instead of showing it.
+    #
+    # The two are not equally serious, so they are not reported equally:
+    #
+    #   install.sh  — a warning. The landing page tells visitors to read the
+    #                 script before running it and a download defeats that, but
+    #                 `curl | sh` is unaffected and some operators serve it as
+    #                 a download deliberately.
+    #   AGENTS.md   — a failure. The published one-liner sends an AI agent to
+    #                 this URL as step one of the entire install path. Fetchers
+    #                 that parse text/* and refuse everything else are common,
+    #                 so octet-stream here does not degrade the experience, it
+    #                 removes it: the agent cannot read its instructions and
+    #                 there is no second route.
     local ctype
     ctype="$(curl -sSI --max-time 20 "${BASE_URL}/install.sh" 2>/dev/null | tr -d '\r' \
              | grep -i '^content-type:' | head -1 | cut -d: -f2- | sed 's/^ *//')"
     case "$ctype" in
         text/plain*) pass "install.sh/content-type" "$ctype — readable in a browser" ;;
         '')          warn "install.sh/content-type" "no Content-Type at all" ;;
-        *)           warn "install.sh/content-type" "$ctype — a browser downloads this instead of showing it (PART 3d default_type)" ;;
+        *)           warn "install.sh/content-type" "$ctype — a browser downloads this instead of showing it (default_type)" ;;
+    esac
+
+    ctype="$(curl -sSI --max-time 20 "${BASE_URL}/AGENTS.md" 2>/dev/null | tr -d '\r' \
+             | grep -i '^content-type:' | head -1 | cut -d: -f2- | sed 's/^ *//')"
+    case "$ctype" in
+        text/*) pass "AGENTS.md/content-type" "$ctype" ;;
+        '')     fail "AGENTS.md/content-type" "no Content-Type — the document the published one-liner points an agent at"
+                note "Either /AGENTS.md is not deployed or the static-content-type include"
+                note "is not in the running config. Until it is, the one-liner's first step"
+                note "fails for any agent that will not parse a non-text body." ;;
+        *)      fail "AGENTS.md/content-type" "$ctype — an agent that only parses text/* cannot read its own instructions"
+                note "Apply deploy/nginx/static-content-type.conf at server level, then"
+                note "'nginx -t && nginx -s reload'. mime.types has no entry for .md." ;;
     esac
 }
 
@@ -928,6 +1040,91 @@ check_site_drift() {
 # What it catches that nothing else does: a deploy that copied install.sh and
 # install.sh.sha256 from different commits. CI proves they matched in the tree;
 # only this proves they still match after whatever moved them.
+# ===========================================================================
+# 12b. Whose robots.txt is the internet actually being served?
+# ===========================================================================
+# site/robots.txt exists because the live /robots.txt used to be a CLOUDFLARE
+# MANAGED DEFAULT: not in version control, written by nobody here, and saying
+# `Disallow: /` for ClaudeBot, GPTBot, Google-Extended and six others. This
+# project is MIT-licensed and its stated direction is to be a resource AI
+# agents read and quote, so blocking every AI crawler was not a decision anyone
+# made — it was a platform default nobody could see.
+#
+# Copying the file into the webroot does NOT fix that. A managed robots.txt is
+# injected at the edge and PREPENDS itself to the origin's, so the file in git
+# can be shadowed while looking perfectly deployed from the server's side. Only
+# an off-host fetch can tell.
+#
+# WARN and not FAIL, deliberately: the switch is a dashboard setting in an
+# account this repository cannot see, an operator may legitimately decide the
+# other way, and a red gate over something the person running it may not be
+# able to change today is how a gate gets ignored. But it is reported every
+# single run, because the file's own header says the check is the only thing
+# that does not move when the menu does.
+check_managed_robots() {
+    step "12b. robots.txt — ours, or the platform's?"
+
+    local repo="$SCRIPT_DIR/../site/robots.txt"
+    if [ ! -r "$repo" ]; then
+        skip "site/robots" "site/robots.txt not readable from here (run from a checkout)"
+        return
+    fi
+
+    local served
+    served="$(curl -sS --max-time 20 -H 'Cache-Control: no-cache' "${SITE_URL}/robots.txt" 2>/dev/null)"
+    if [ -z "$served" ]; then
+        warn "site/robots" "no /robots.txt served at all"
+        return
+    fi
+
+    # Compare DIRECTIVE lines, not bytes and not Cloudflare-specific strings.
+    #
+    # Not bytes: comments and ordering are cosmetic here, and a byte compare
+    # would make this fail for reasons that do not change any crawler's
+    # behaviour.
+    #
+    # Not "does it contain 'ai-train=no'": site/robots.txt's own header comment
+    # QUOTES all three of the obvious tells while explaining what it replaces,
+    # so a substring search over the whole body flags the correct file as the
+    # injected one. That is not hypothetical -- it is what the first version of
+    # this check did, and it reported a locally-served, unmodified
+    # site/robots.txt as "managed". Stripping `#` lines is what makes the
+    # question answerable.
+    #
+    # A directive the origin never wrote can only have come from something
+    # between the origin and the client, whatever that something calls itself
+    # this year.
+    local directives
+    directives() { grep -vE '^[[:space:]]*(#|$)' | tr -d '\r' | sed 's/[[:space:]]*$//'; }
+
+    local extra
+    extra="$(printf '%s\n' "$served" | directives \
+             | grep -vxF -f <(directives < "$repo") 2>/dev/null)"
+
+    if [ -n "$extra" ]; then
+        local n
+        n="$(printf '%s\n' "$extra" | grep -c .)"
+        warn "site/robots" "$n directive line(s) served that site/robots.txt does not contain"
+        note "Something between the origin and the client is INJECTING robots"
+        note "directives. On this zone that is Cloudflare's managed robots.txt,"
+        note "which prepends itself above the origin's file, so site/robots.txt"
+        note "looks perfectly deployed from the server's side and is inert."
+        note "Turn it off: Cloudflare dashboard -> this zone -> AI Crawl Control"
+        note "-> stop managing robots.txt. The menu moves; this check does not."
+        # Deduplicated: the managed block is nine `Disallow: /` under nine
+        # different agents, and printing it verbatim buries the one line that
+        # actually states the policy under eight copies of the mechanism.
+        note "The injected directives (deduplicated):"
+        printf '%s\n' "$extra" | awk '!seen[$0]++' | head -10 \
+            | while IFS= read -r line; do note "    $line"; done
+        note "In full, with the User-agent each one sits under:"
+        note "    curl -sS ${SITE_URL}/robots.txt | head -60"
+        return
+    fi
+
+    pass "site/robots" "every served directive is one site/robots.txt declares"
+}
+
 check_published_digests() {
     step "12. Published digests verify the published payloads"
 
@@ -1016,6 +1213,7 @@ check_security_headers
 check_registration_exposure
 check_site_drift
 check_published_digests
+check_managed_robots
 
 # ── summary ────────────────────────────────────────────────────────────────
 RULE="+--------+--------------------------------+---------------------------------------------------+"

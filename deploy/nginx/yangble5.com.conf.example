@@ -661,10 +661,26 @@
 
     # --- 3d. THE STATIC SITE -------------------------------------------------
     #
+    # ⚠ PREFER THE INCLUDE. The three directives in this block also ship as
+    #   deploy/nginx/static-content-type.conf, applied with one server-level
+    #   line. This block is the paste-the-whole-file path; that file is the
+    #   one that cannot be half-applied. On 2026-07-23 the live origin was
+    #   still serving /install.sh as application/octet-stream because this
+    #   block had never been pasted — exactly the way PART 2j was never
+    #   pasted. tests/test_deploy_static_content_type.py asserts the two
+    #   copies agree, so editing one and not the other is a red suite rather
+    #   than two configs that disagree.
+    #
     # Everything not matched above is served from the webroot. Copy the
     # contents of site/ there — index.html, verify.html, install.sh,
-    # install.ps1, uninstall.sh, uninstall.ps1, robots.txt and the four
-    # .sha256 files.
+    # install.ps1, uninstall.sh, uninstall.ps1, robots.txt, the four .sha256
+    # files, and the agent-facing set: AGENTS.md, llms.txt, sitemap.xml and
+    # .well-known/security.txt.
+    #
+    # AGENTS.md is not optional decoration. The one-liner published on the
+    # landing page — the one a human pastes into an AI agent — points at
+    # https://yangble5.com/AGENTS.md and nothing else. Deploy index.html
+    # without it and step one of the install path is a 404.
     #
     # robots.txt in particular: until it was added to site/, the live
     # /robots.txt was a CLOUDFLARE MANAGED DEFAULT that blocked every AI
