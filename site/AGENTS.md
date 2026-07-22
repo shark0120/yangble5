@@ -203,6 +203,35 @@ The Windows flags are the PowerShell spellings of the same things: `-DryRun`,
 `-YesRegister`, `-AllowNonDefaultEndpoint`, `-Email`, `-Invite`, `-ShowKey`.
 Everything in this file applies to them identically.
 
+**If the last line fails with `running scripts is disabled on this system`**,
+stop and read this. It is not a hash failure and it is not a bug in the
+installer — the first four lines succeeded, the digest matched, and PowerShell
+refused to load the file. `Restricted` is the out-of-box default on Windows
+client editions, and it blocks `-File`.
+
+Do not work around it. In particular, do not fall back to the `irm … | iex`
+form from the landing page, and do not re-run the same command through
+`-Command`. Both of those *do* run under `Restricted` — the policy applies to
+script **files**, not to code piped into the interpreter — which is exactly
+what makes them the wrong answer here. **You would be trading the one thing
+this whole procedure is for.** The file you verified against a published
+SHA-256 is the file the policy is refusing to run; anything you pipe into `iex`
+instead was never checked and cannot be.
+
+Report it to the user instead, with both options, and let them pick:
+
+* Run the one-liner from `https://yangble5.com/` themselves, in their own
+  shell, accepting that it is unverified — their machine, their call.
+* Or allow scripts for their own account, once, and tell you to try again:
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. That is a change to
+  their system settings. It is theirs to make, not yours.
+
+You may find the command works for you without any of this, because some agent
+harnesses start PowerShell with `-ExecutionPolicy Bypass` already set at
+process scope and child processes inherit it. That is luck, not a property of
+the instructions, and it is why this paragraph exists rather than a note saying
+"works on Windows".
+
 Then go to section 6.
 
 ---
@@ -314,12 +343,20 @@ already on disk and mints nothing at all.
 * **Never read out `~/.yangble5/machine-id`.** It holds the salt. The salt is
   what makes the fingerprint unguessable from public facts about the machine.
 * **Never retry with more privilege after a refusal.** No `sudo`, no elevated
-  shell, no `-ExecutionPolicy Bypass` — the published Windows command does not
-  use one and neither should you — and above all no second attempt carrying
-  the consent flag the first attempt asked for. A refusal is an answer, not an
-  error to route around. The installer never needs root: it writes to
-  `~/.yangble5` and `~/.local/bin`, uses no `sudo`, and touches neither the
-  user's existing `~/.claude` login nor their shell profile.
+  shell, and above all no second attempt carrying the consent flag the first
+  attempt asked for. A refusal is an answer, not an error to route around. The
+  installer never needs root: it writes to `~/.yangble5` and `~/.local/bin`,
+  uses no `sudo`, and touches neither the user's existing `~/.claude` login nor
+  their shell profile.
+* **Never add `-ExecutionPolicy Bypass` yourself.** Not because the flag is
+  exotic — this project's own `install.sh` prints it, and so does the
+  uninstall line in `install.ps1`. Those are instructions for a *human*
+  pasting into their *own* shell, and that is the difference. The execution
+  policy is a setting on someone else's machine, chosen (or left at the
+  default) by its owner. Turning it off for the duration of a command you run
+  on their behalf is a system-settings change made silently, on their box, to
+  get past a message that was telling you to stop. If the policy blocks the
+  install, say so and let them decide — see section 9.
 * **Never pass `--api` to a host the user did not name.** Section 2.
 * **Never invent a value to get past a validation error.** A rejected
   `machine_id` means send a correct one or omit the field — not a placeholder.

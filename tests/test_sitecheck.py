@@ -1179,3 +1179,73 @@ def test_robots_problems_reports_each_way_it_can_rot(site_copy, mutation, expect
 
     problems = sitecheck.robots_problems(site_copy)
     assert any(expect in p for p in problems), (expect, problems)
+
+
+# ── the Windows execution policy, which blocks the verified path only ──────
+#
+# `Restricted` is the out-of-box default on Windows client editions and it
+# blocks `powershell -File script.ps1` -- the last line of AGENTS.md section 5,
+# reached only AFTER the download and the SHA-256 check have both succeeded.
+# Measured 2026-07-23: `-File` exits 1 with "running scripts is disabled on this
+# system"; the same code via `-Command`, and via `irm ... | iex`, both run fine.
+#
+# That asymmetry is the danger. The policy blocks the path that can be
+# verified against a published digest and waves through the path that cannot,
+# so an agent that improvises its way past the error lands on the unverified
+# one -- which is the single outcome this whole document exists to prevent.
+
+
+def test_agents_md_names_the_execution_policy_failure():
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    assert "running scripts is disabled on this system" in agents, (
+        "AGENTS.md no longer quotes the exact error an agent will see on a stock "
+        "Windows box. Without the literal string it cannot match what it is looking at"
+    )
+    assert "It is not a hash failure" in agents, (
+        "the guidance no longer distinguishes this from a digest mismatch, which is "
+        "the other reason section 5 tells an agent to stop"
+    )
+
+
+def test_agents_md_forbids_the_fallback_that_drops_the_digest_check():
+    """`iex` runs under Restricted. That is why it must be named and refused."""
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    lowered = agents.lower()
+    assert "do not fall back to the `irm" in lowered, (
+        "AGENTS.md no longer names the iex fallback as the thing not to do"
+    )
+    assert "never checked and cannot be" in agents, (
+        "AGENTS.md no longer says WHY the iex fallback is wrong. 'Do not' without "
+        "'because' is the kind of rule that gets optimised away"
+    )
+
+
+def test_agents_md_does_not_claim_the_project_never_uses_the_bypass_flag():
+    """It did, and the project's own installer contradicted it.
+
+    The rule against adding `-ExecutionPolicy Bypass` is right; the REASON given
+    was false. `site/install.sh` prints that exact flag to Windows users, and
+    `site/install.ps1` uses it in the uninstall line. An agent that reads the
+    justification, then reads install.sh, learns that this file states things
+    that are not so -- which is corrosive to every other rule in it.
+
+    Checked against install.sh rather than pinned as a string, so that if the
+    installer ever stops printing the flag, this test says the wording may now
+    be safe again instead of silently guarding a fact that changed.
+    """
+    agents = (sitecheck.SITE / "AGENTS.md").read_text(encoding="utf-8")
+    install_sh = (sitecheck.SITE / "install.sh").read_text(encoding="utf-8")
+    install_ps1 = (sitecheck.SITE / "install.ps1").read_text(encoding="utf-8")
+
+    flag = "-ExecutionPolicy Bypass"
+    project_uses_it = flag in install_sh or flag in install_ps1
+    assert project_uses_it, (
+        "neither published installer mentions -ExecutionPolicy Bypass any more. "
+        "AGENTS.md's careful wording about 'this project's own install.sh prints "
+        "it' is now stale -- re-read section 8 and simplify it."
+    )
+    assert "the published Windows command does not" not in agents, (
+        "AGENTS.md is claiming the published Windows command never uses "
+        "-ExecutionPolicy Bypass. site/install.sh prints it at least once, so the "
+        "claim is false and an agent can catch this file being wrong"
+    )

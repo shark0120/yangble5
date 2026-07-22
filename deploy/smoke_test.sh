@@ -269,6 +269,8 @@ case folds, needle upper|nosniff|NOSNIFF|1
 a needle with a glob star is a LITERAL star, not a wildcard|max-age=31536000|max-*|0
 a needle with a glob question mark is literal too|nosniff|nosnif?|0
 a needle in brackets is literal, not a character class|DENY|[DE]ENY|0
+check 9b: no-store is present, so the API is not publicly cacheable|no-store, no-transform|no-store|1
+check 9b: THE DEFECT -- a public API response must not read as no-store|public, max-age=300|no-store|0
 EOF
 
     # ---- stream_verdict: events | gap seconds | expected verdict -----------
@@ -944,6 +946,55 @@ EOF
 }
 
 # ===========================================================================
+# 9b. The API must not be publicly cacheable
+# ===========================================================================
+# `$yb5_cc` defaults to "public, max-age=300" -- correct for the landing page,
+# wrong for every API path. /usage is authenticated and per-user; telling each
+# intermediary between the gateway and the caller that the response is `public`
+# and reusable for five minutes invites one account's usage being served to
+# another. PART 2c of the nginx snippet overrides it with `no-store` per
+# location, using `set` rather than `add_header` because add_header does not
+# merge across levels and would silently drop the whole CSP.
+#
+# On 2026-07-23 the live deployment served `GET /usage` as
+# `Cache-Control: public, max-age=300`. The override had never been pasted --
+# the THIRD block-you-must-remember to go missing, after the security headers
+# (PART 2j) and the static Content-Type (PART 3d). Two of those three are now
+# includable files and this check is the third answer: make the omission loud
+# from outside, where it can actually be observed.
+check_api_not_cacheable() {
+    step "9b. API responses are not publicly cacheable"
+
+    if [ "$TLS_REACHABLE" -ne 1 ]; then
+        skip "cache" "host unreachable"
+        return
+    fi
+
+    local path cc bad=0
+    for path in /usage /byok /auth/register /pool/status /health; do
+        cc="$(curl -sSI --max-time 20 "${BASE_URL}${path}" 2>/dev/null | tr -d '
+'               | grep -i '^cache-control:' | head -1 | cut -d: -f2- | sed 's/^ *//')"
+        if [ -z "$cc" ]; then
+            warn "cache${path}" "no Cache-Control at all"
+        elif contains_ci "$cc" "no-store"; then
+            pass "cache${path}" "$cc"
+        else
+            fail "cache${path}" "$cc"
+            bad=$((bad+1))
+        fi
+    done
+
+    if [ "$bad" -gt 0 ]; then
+        note "an API response marked \`public\` may be stored by Cloudflare, by a"
+        note "corporate proxy, or by any cache between here and the caller. /usage"
+        note "is per-user: that is one account's data served to another."
+        note "Add to each API location (NOT add_header -- it does not merge):"
+        note "    set \$yb5_cc \"no-store, no-transform\";"
+        note "See PART 2c of deploy/nginx/yangble5.com.conf.example."
+    fi
+}
+
+# ===========================================================================
 # 10. Open registration vs. what is backing the pool
 # ===========================================================================
 # docs/OPERATING_A_PUBLIC_SERVICE.md §1 states the hard rule: pooled PERSONAL
@@ -1307,6 +1358,7 @@ check_streaming
 check_management_blocked
 check_engine_port_closed
 check_security_headers
+check_api_not_cacheable
 check_registration_exposure
 check_site_drift
 check_published_digests
