@@ -26,6 +26,20 @@ fail.  So: the self-test runs first, it asserts both directions (a bogus
 figure IS reported, the authoritative figure is NOT), and a failure there is a
 harder error than any page finding.
 
+The coverage invariant
+----------------------
+THE SET OF FILES PRESENT MUST EQUAL THE SET OF FILES CLASSIFIED.
+The page list used to be a literal tuple, ``FILES = ("index.html",
+"verify.html")``, which made coverage opt-in by filename: the guard looked at
+whatever somebody last remembered to type, and the share of ``site/`` it
+covered shrank every time a file was added.  That was not a hypothetical.
+``site/README.md``, ``site/install.sh`` and ``site/install.ps1`` each publish
+``99.53%`` and ``748,918`` — two of them are 75 KB scripts users pipe into a
+shell — and not one of them was ever read by this checker.  Coverage is now
+discovered and total: every file under ``site/`` is an HTML page, a
+text-bearing file, or named in ``EXEMPT`` with a written reason, and anything
+else is a finding.  A new file cannot be born outside the guard.
+
 The tokeniser invariant
 -----------------------
 THE SET OF CHARACTERS CONSUMED MUST EQUAL THE SET OF CHARACTERS CHECKED.
@@ -48,7 +62,98 @@ from html.parser import HTMLParser
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
-FILES = ("index.html", "verify.html")
+
+# ── which files the guard looks at (see "The coverage invariant" above) ─────
+PAGE_SUFFIXES = (".html", ".htm")
+
+# Suffixes whose contents are prose, configuration or script text that a
+# published figure could plausibly be restated in.  Deliberately NOT .css/.js/
+# .svg: those carry hundreds of geometry and percentage literals, and a guard
+# that cries wolf on `100%` in a stylesheet is a guard nobody reads.  They are
+# not silently ignored either — with no suffix rule they land in the "neither
+# checked nor exempt" bucket below and somebody has to write down why.
+TEXT_SUFFIXES = (
+    ".bat",
+    ".cmd",
+    ".conf",
+    ".csv",
+    ".ini",
+    ".json",
+    ".md",
+    ".ps1",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+)
+
+_DIGEST_REASON = (
+    "a bare SHA-256 digest and a filename: no prose, no figure, nothing that "
+    "could misstate a measurement. The installer-digests CI job checks it "
+    "against the payload it names."
+)
+
+# The escape hatch, and the only one.  An entry here is a decision somebody
+# made in writing; a file with no entry and no known suffix is a finding.
+EXEMPT: dict[str, str] = {
+    "install.ps1.sha256": _DIGEST_REASON,
+    "install.sh.sha256": _DIGEST_REASON,
+    "uninstall.ps1.sha256": _DIGEST_REASON,
+    "uninstall.sh.sha256": _DIGEST_REASON,
+}
+
+# The file that documents this guard, and therefore the one file that has to be
+# able to print the figures the guard rejects.  See TEXT_ALLOW.
+GUARD_DOC = "README.md"
+
+
+def classify(site: pathlib.Path = SITE) -> tuple[list[str], list[str], list[str]]:
+    """Partition every file under `site` into (pages, texts, problems).
+
+    The coverage invariant, enforced: a file that is neither a page, nor a
+    text-bearing file, nor exempt is reported by name.  So is an EXEMPT entry
+    naming a file that no longer exists — a stale exemption is cover for the
+    next file that lands on that name.
+    """
+    pages: list[str] = []
+    texts: list[str] = []
+    problems: list[str] = []
+    if not site.is_dir():
+        return pages, texts, [f"{site} is not a directory, so nothing was checked"]
+    seen: set[str] = set()
+    for path in sorted(site.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(site).as_posix()
+        seen.add(rel)
+        if rel in EXEMPT:
+            continue
+        suffix = path.suffix.lower()
+        if suffix in PAGE_SUFFIXES:
+            pages.append(rel)
+        elif suffix in TEXT_SUFFIXES:
+            texts.append(rel)
+        else:
+            problems.append(
+                f"{rel}: neither checked nor exempt — the published-numbers "
+                f"guard does not know what this file is, so every figure in it "
+                f"is unguarded. Give it a checked suffix "
+                f"({', '.join(PAGE_SUFFIXES + TEXT_SUFFIXES)}) or add it to "
+                f"EXEMPT in tools/sitecheck.py with a reason."
+            )
+    for rel in sorted(set(EXEMPT) - seen):
+        problems.append(
+            f"EXEMPT names {rel!r}, which is not in {site} — a stale exemption "
+            f"is cover for the next file that lands on that name"
+        )
+    return pages, texts, problems
+
+
+# Discovered, not typed.  Kept under the old name because the CSP check, the
+# inventory and the tests all read it.
+FILES = tuple(classify()[0])
 
 VOID = {
     "area",
@@ -119,6 +224,15 @@ for _label, _c, _p in _PAIRS:
     for _dp in (1, 2):
         PERCENT.setdefault(f"{_r:.{_dp}f}", f"{_label} hit rate = {_c}/{_p} = {_r:.4f}%")
 
+# A PAGE may print a hit rate only to the 1 or 2 places a page would publish.
+# Files that quote this checker's own output also carry the 4-place provenance
+# string it prints (`= 99.5333%`).  Recompute those separately rather than
+# widening PERCENT, so nothing changes about what a page is allowed to say.
+TEXT_PERCENT: dict[str, str] = dict(PERCENT)
+for _label, _c, _p in _PAIRS:
+    _r = 100.0 * _c / _p
+    TEXT_PERCENT.setdefault(f"{_r:.4f}", f"{_label} hit rate to 4 dp = {_c}/{_p}")
+
 # ── non-measurement numerals that legitimately appear as page text ──────────
 # Every entry must be REACHED by a real run.  An entry nothing matches is
 # reported as a finding: an allow-list that is not exercised is a wish list,
@@ -163,6 +277,15 @@ COMMA_FORM = re.compile(r"^[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?$")
 HISTORICAL_BROKEN = re.compile(
     r"(?<![0-9A-Za-z_.])\d{1,3}(?:,\d{3})+(?![0-9A-Za-z_])"
     r"|(?<![0-9A-Za-z_.])\d+(?![0-9A-Za-z_])"
+)
+
+# ── the three shapes a published measurement wears outside an HTML page ─────
+# A percentage, a comma-grouped total, a figure carrying a unit.  See
+# check_text for why a text file is not put through the whole page audit.
+TEXT_PERCENT_RE = re.compile(r"(?<![0-9A-Za-z_.,])([0-9]+(?:\.[0-9]+)?)%")
+TEXT_GROUPED_RE = re.compile(r"(?<![0-9A-Za-z_.,])([0-9]{1,3}(?:,[0-9]{3})+)(?![0-9A-Za-z_])")
+TEXT_UNIT_RE = re.compile(
+    r"(?<![0-9A-Za-z_.,])([0-9][0-9.,]*(?:" + "|".join(UNITS) + r"))(?![0-9A-Za-z_])"
 )
 
 
@@ -238,6 +361,60 @@ def account_figures(figures, used: set[str]) -> list[str]:
     for canonical, raw in sorted(unknown.items()):
         problems.append(f"unaccounted figure: {canonical}  (as written: {raw})")
     return problems
+
+
+def check_text(name: str, text: str, used: set[tuple[str, str]]) -> list[str]:
+    """Published-figure claims in a file under site/ that is not an HTML page.
+
+    NOT the page audit, and the difference is deliberate.  A 75 KB installer
+    legitimately carries ports, HTTP status codes, file modes, retry counts and
+    array offsets; demanding a provenance for each of them would bury the two
+    figures that matter under ninety that do not, and a guard nobody reads is
+    the exact failure mode this file exists to prevent.  So only the three
+    shapes a published measurement wears are checked — a percentage, a
+    comma-grouped total, a figure with a unit — plus the non-ASCII digit
+    invariant, because a numeral the scanner cannot see is worse than one it
+    rejects.  A bare 1- or 2-digit integer is left alone, exactly as it is on a
+    page.
+
+    `used` collects (file, token) pairs so a per-file allowance that nothing
+    matches is reported as drift, the same rule the page allow-list lives by.
+    """
+    allow = TEXT_ALLOW.get(name, {})
+    problems: list[str] = []
+
+    def rule(token: str, kind: str, accounted: bool) -> None:
+        if token in allow:
+            used.add((name, token))
+        elif not accounted:
+            problems.append(
+                f"unaccounted {kind}: {token} — not in the authoritative "
+                f"measurement record, and not allow-listed for this file"
+            )
+
+    for m in TEXT_PERCENT_RE.finditer(text):
+        value = m.group(1)
+        if "." not in value and len(value) < 3:
+            continue  # `50%` in prose is not a measurement claim
+        rule(value, "percentage", value in TEXT_PERCENT)
+    shaped = ((TEXT_GROUPED_RE, "grouped figure"), (TEXT_UNIT_RE, "figure with a unit"))
+    for pattern, kind in shaped:
+        for m in pattern.finditer(text):
+            canonical = m.group(1).replace(",", "")
+            rule(canonical, kind, any(canonical in t for t in (MEASURED, PERCENT, ALLOW)))
+
+    for i, ch in enumerate(text):
+        if ch.isdigit() and ch not in DIGITS:
+            if ch in allow:
+                used.add((name, ch))
+            else:
+                problems.append(
+                    f"non-ASCII digit {ch!r} (U+{ord(ch):04X}) at offset {i}: the "
+                    f"figure scanner only understands ASCII digits, so a number "
+                    f"written this way would never be checked"
+                )
+    # The same figure repeated forty times is one finding, not forty.
+    return sorted(set(problems))
 
 
 class Doc(HTMLParser):
@@ -451,6 +628,23 @@ def unused_allow_problems(used: set[str]) -> list[str]:
     ]
 
 
+def unused_text_allow_problems(used: set[tuple[str, str]]) -> list[str]:
+    """Same rule as the page allow-list, applied per file.
+
+    Only the EXPLICIT entries are held to it.  The fixture-derived ones
+    (TEXT_ALLOW below) follow MUST_FAIL mechanically, and requiring the
+    documentation to name every fixture would couple two things that have no
+    reason to move together.
+    """
+    return [
+        f"text allow-list entry never matched (stale, or the checker cannot "
+        f"see it): {name}: {token!r} — {why}"
+        for name, entries in sorted(TEXT_ALLOW_EXPLICIT.items())
+        for token, why in sorted(entries.items())
+        if (name, token) not in used
+    ]
+
+
 # ───────────────────────────── self-test ─────────────────────────────────────
 
 _PAGE = (
@@ -493,6 +687,78 @@ MUST_PASS = [
     ("versions", "Python 3.14.3, CLIProxyAPI 7.1.23, engine 7.2.93"),
     ("identifiers are not figures", "sha256 i5-11400H shark0120 index.html yangble5"),
     ("short bare integers are not figures", "1 2 4 80 99"),
+]
+
+
+def _fixture_figures() -> dict[str, str]:
+    """The figures this checker's own must-fail fixtures contain.
+
+    site/README.md documents the negative control, so it has to be able to
+    name the figures that control plants — it prints `99.54%` in prose as the
+    thing CI proves the guard rejects.  Deriving that set from MUST_FAIL rather
+    than retyping it means the only bogus figures the documentation may print
+    are ones this guard demonstrably rejects on a page.  It is scoped to that
+    one file: the same string in site/install.sh is still a finding.
+    """
+    out: dict[str, str] = {}
+    for case, payload, _needle in MUST_FAIL:
+        for pattern in (TEXT_PERCENT_RE, TEXT_GROUPED_RE, TEXT_UNIT_RE):
+            for m in pattern.finditer(payload):
+                out.setdefault(
+                    m.group(1).replace(",", ""),
+                    f"planted by the must-fail fixture {case!r}, which {GUARD_DOC} documents",
+                )
+    return out
+
+
+# Per-file allowances, each with a reason, each held to unused_text_allow_problems.
+TEXT_ALLOW_EXPLICIT: dict[str, dict[str, str]] = {
+    GUARD_DOC: {
+        "1ms": (
+            "the ~1ms poll interval in the grab-a-copy-of-the-page recipe — a "
+            "loop delay, not a measurement"
+        ),
+        # U+FF19 FULLWIDTH DIGIT NINE.  The fixture character is the key on
+        # purpose: README quotes the transcript in which the guard names it.
+        "９": (  # noqa: RUF001
+            "this checker's own report of the full-width-digit fixture, quoted "
+            "verbatim in the self-test transcript"
+        ),
+    },
+}
+
+TEXT_ALLOW: dict[str, dict[str, str]] = {k: dict(v) for k, v in TEXT_ALLOW_EXPLICIT.items()}
+for _fig, _why in _fixture_figures().items():
+    TEXT_ALLOW.setdefault(GUARD_DOC, {}).setdefault(_fig, _why)
+
+# (name, file the payload is pretending to live in, file text, substring that
+# MUST appear in some problem).  The filename matters: allowances are per file.
+TEXT_MUST_FAIL = [
+    ("a bogus hit rate in an installer", "install.sh", "warm rounds hit 99.6%", "99.6"),
+    ("a bogus token total in an installer", "install.sh", "a 748,919-token prefix", "748919"),
+    ("a bogus prefix shorthand in an installer", "install.sh", "~750K prefix", "750K"),
+    ("a bogus context claim in an installer", "install.sh", "3M context", "3M"),
+    # The allowance that lets the documentation quote the negative control must
+    # not follow the figure into a file users pipe into a shell.
+    ("a per-file allowance does not leak to another file", "install.sh", "99.54%", "99.54"),
+    (
+        "full-width digits evade an ASCII scanner",
+        "install.sh",
+        "９９.５３%",  # noqa: RUF001 - the fixture is the point
+        "non-ASCII digit",
+    ),
+    ("a file with no per-file allowance of its own", "llms.txt", "hit rate 99.61%", "99.61"),
+]
+
+# (name, file, file text) — must produce NO problem at all
+TEXT_MUST_PASS = [
+    ("the authoritative warm hit rate", "install.sh", "99.53% — warm rounds only"),
+    ("grouped totals", "install.sh", "748,918 tokens in a 1,000,000 window"),
+    ("unit figures", "install.sh", "a ~749K prefix, 200K assumed, 12h affinity"),
+    ("short bare percentages are prose, not claims", "install.sh", "0% 24% 50%"),
+    ("a batch substring expression is not a percentage", "install.ps1", "%KEY:~0,24%"),
+    ("the checker's own 4-place provenance", GUARD_DOC, "= 99.5333% and = 74.6485%"),
+    ("the negative control, in the file that documents it", GUARD_DOC, "CI plants `99.54%`"),
 ]
 
 
@@ -586,6 +852,34 @@ def selftest(verbose: bool = True) -> bool:
             failures.append(f"CSP CASE {_name!r} behaved wrong: {got!r}")
             say(f"    FAIL  csp  {_name} -> {got!r}")
 
+    # ── the non-HTML cases, and why they are silent ─────────────────────────
+    # These run on every invocation and turn the self-test red exactly like the
+    # cases above.  They print nothing when they pass, and that is a compromise
+    # rather than an oversight: site/README.md quotes this transcript verbatim
+    # and tests/test_sitecheck.py holds it to that, so a new PASS line here
+    # would make the published documentation stale the moment this file grew a
+    # case.  Silence on success, loud on failure, and `--coverage` shows the
+    # scope on demand.  tests/test_sitecheck.py proves they are not decorative
+    # by breaking one and requiring selftest() to return False.
+    for case, fname, payload, needle in TEXT_MUST_FAIL:
+        got = check_text(fname, payload, set())
+        if not any(needle in p for p in got):
+            failures.append(
+                f"TEXT MUST-FAIL CASE DID NOT FAIL: {case}: {payload!r} in "
+                f"{fname} produced {got!r}, expected a problem naming {needle!r}"
+            )
+    for case, fname, payload in TEXT_MUST_PASS:
+        got = check_text(fname, payload, set())
+        if got:
+            failures.append(
+                f"TEXT MUST-PASS CASE FAILED: {case}: {payload!r} in {fname} produced {got!r}"
+            )
+    if not classify()[0]:
+        failures.append(
+            "NO PAGES DISCOVERED under site/ — the page set is discovered, so "
+            "an empty one means this run would certify nothing while printing OK"
+        )
+
     say("self-test: 99.54 must not be reachable from the record at any printed precision")
     if "99.54" in PERCENT or "99.54" in MEASURED or "99.54" in ALLOW:
         failures.append("99.54 IS ACCEPTED BY SOME TABLE — the record is wrong")
@@ -640,6 +934,34 @@ def inventory() -> int:
     return 0
 
 
+def coverage(site: pathlib.Path = SITE) -> int:
+    """Print how every file under `site` is checked, or why it is not.
+
+    `--inventory` answers "which figures are in scope"; this answers the
+    question one level up, "which FILES are in scope", which is the one the
+    literal page tuple used to make unanswerable.
+    """
+    pages, texts, problems = classify(site)
+    width = max([28, *(len(f) for f in pages + texts + list(EXEMPT))])
+    for f in pages:
+        print(f"{f:{width}s}  page audit: structure, references, every figure accounted")
+    for f in texts:
+        n = len(TEXT_ALLOW.get(f, {}))
+        extra = f" ({n} allow-listed for this file)" if n else ""
+        print(f"{f:{width}s}  figure claims: percentages, grouped totals, units{extra}")
+    for f, why in sorted(EXEMPT.items()):
+        print(f"{f:{width}s}  EXEMPT — {why}")
+    print(
+        f"\n{len(pages)} page(s), {len(texts)} text file(s), {len(EXEMPT)} exempt; "
+        f"every file under {site.name}/ is accounted for."
+        if not problems
+        else f"\n{len(problems)} COVERAGE PROBLEM(S)"
+    )
+    for p in problems:
+        print(f"    - {p}")
+    return 1 if problems else 0
+
+
 def main(argv: list[str]) -> int:
     # The report names figures as they appear on a Traditional-Chinese page.
     # Left on the platform default, that output is cp950 on a Windows dev box
@@ -655,6 +977,8 @@ def main(argv: list[str]) -> int:
             "\nOptions:\n"
             "  --self-test   run only the checker's own self-test\n"
             "  --inventory   list every figure in scope and its provenance\n"
+            "  --coverage    list every FILE in scope and how it is checked\n"
+            "  --site DIR    check a copy of the site somewhere else\n"
             "  --quiet       suppress the per-case self-test log\n"
             "  --help        this text"
         )
@@ -663,8 +987,6 @@ def main(argv: list[str]) -> int:
         return 2
     if "--self-test" in argv:
         return 0
-    if "--inventory" in argv:
-        return inventory()
 
     # --site DIR checks a copy of the pages somewhere else. It exists so the
     # negative control (plant a bogus figure, require a red run) never has to
@@ -682,18 +1004,61 @@ def main(argv: list[str]) -> int:
             print(f"--site {site} is not a directory", file=sys.stderr)
             return 2
 
+    if "--inventory" in argv:
+        return inventory()
+    if "--coverage" in argv:
+        return coverage(site)
+
+    pages, texts, coverage_problems = classify(site)
     used: set[str] = set()
+    used_text: set[tuple[str, str]] = set()
     rc = 0
     reports = []
-    for f in FILES:
-        problems = check_page(f, (site / f).read_text(encoding="utf-8"), used)
-        reports.append((f, problems))
+
+    def read(name: str) -> str | None:
+        """Undecodable bytes are a finding, not a traceback.
+
+        A file the checker cannot read is a file it cannot check, and a
+        UnicodeDecodeError escaping to the top would abandon every remaining
+        page mid-run -- an unchecked site reported as a crash rather than as
+        the coverage hole it is.
+        """
+        try:
+            return (site / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reports.append(
+                (name, [f"cannot be read as UTF-8, so nothing in it was checked: {exc}"])
+            )
+            return None
+
+    for f in pages:
+        src = read(f)
+        if src is not None:
+            reports.append((f, check_page(f, src, used)))
     stale = unused_allow_problems(used)
     if site == SITE:
         # Only meaningful against the real tree: --site points at a copy whose
         # consumers (deploy/, README) are not copied with it.
         csp = csp_problems()
         reports.append(("CSP hashes", csp))
+
+    # Text files, the coverage invariant and the per-file allow-list are
+    # appended ONLY when they have something to say.  That silence is a
+    # compromise, not an oversight: site/README.md quotes this program's stdout
+    # verbatim and tests/test_sitecheck.py holds it to that, so an extra "OK"
+    # line per installer would make the published documentation stale.
+    # `--coverage` prints the whole scope on demand and CI runs it on every
+    # push, so nothing here is invisible -- it is just not pinned into prose
+    # that has to be re-pasted by hand.
+    for f in texts:
+        body = read(f)
+        if body is not None and (problems := check_text(f, body, used_text)):
+            reports.append((f, problems))
+    if coverage_problems:
+        reports.append(("site/ coverage", coverage_problems))
+    text_stale = unused_text_allow_problems(used_text)
+    if text_stale:
+        reports.append(("text allow-list", text_stale))
 
     for f, problems in reports:
         if problems:

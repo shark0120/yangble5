@@ -1,6 +1,6 @@
 # X / Twitter thread
 
-**8 posts.** Post 1 must stand alone — assume 90% of readers see only that one, and that it will
+**9 posts.** Post 1 must stand alone — assume 90% of readers see only that one, and that it will
 be screenshotted and quoted out of context. So post 1 must be true *in isolation*, with no
 qualifier living in a later post that a screenshot would cut off.
 
@@ -95,26 +95,39 @@ Cold round 1 is 0% by construction. Every session you start pays exactly one.
 
 ---
 
-## 7/ (268 chars) — the caveats, in the thread, not in a reply
+## 7/ (275 chars) — the caveats, in the thread, not in a reply
 
 ```
 Where that number is weak, before you ask:
 
 - warm-only; all 4 rounds incl. cold = 74.6%
-- prefix-dependent, and an upper bound: the tail grows 15 tok/round, the most
-  cache-friendly shape there is. Not a universal number.
+- an upper bound: the tail grows 15 tok/round, the most cache-friendly shape
 - one machine, one run, no error bars
-- latency did NOT reliably improve — 2 warm rounds were slower than cold
+- latency did NOT reliably improve: 2 warm rounds were slower than cold
 ```
 
 ---
 
-## 8/ (261 chars) — credit, "what this is not", link
+## 8/ (277 chars) — "what this is not", and the one thing I do run
 
 ```
-Not a model. Not a hosted service. Not free credits — every token bills to your own upstream.
-No live web search: asked the year, Gemini said 2024, Grok said 2025.
+Not a model. Not free credits — every token bills to an upstream account you pay for.
+No live web search: asked the year, Gemini said 2024, Grok 2025.
 
+I do run one public instance: yangble5.com, open signup, my own accounts, no SLA, and I can read every request. Run your own.
+```
+
+This post is the reason the thread is nine posts instead of eight. "Not a hosted service" used to
+sit in the credit post; it is now false — there is an instance, registration is open, and the
+author is a third party in every prompt path that touches it. A disclosure a reader has to already
+suspect in order to go looking for is not a disclosure, so it gets its own post rather than a
+clause squeezed into one.
+
+---
+
+## 9/ (96 chars) — credit and link
+
+```
 The Go engine doing the real work is CLIProxyAPI (MIT), not mine. Star that first.
 
 Repo: [LINK]
@@ -122,7 +135,7 @@ Repo: [LINK]
 
 ---
 
-## Optional 9/ — only if the thread gets traction
+## Optional 10/ — only if the thread gets traction
 
 ```
 The "pools cap you at ~50%" line going around this thread is MINE and it is not a measurement.

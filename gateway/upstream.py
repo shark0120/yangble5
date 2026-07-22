@@ -127,16 +127,34 @@ class Upstream(Protocol):
 class HttpxUpstream:
     """Real transport. One pooled AsyncClient for the process lifetime."""
 
-    def __init__(self, base_url: str, *, timeout: float = 900.0, connect_timeout: float = 10.0):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = 900.0,
+        connect_timeout: float = 10.0,
+        pool_timeout: float = 15.0,
+        max_connections: int = 32,
+    ):
         self.base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             # Long read timeout: a 748K-token prompt legitimately takes minutes
             # before the first token arrives. A short connect timeout keeps a
             # dead engine from parking every worker.
-            timeout=httpx.Timeout(timeout, connect=connect_timeout),
+            #
+            # `pool` is set EXPLICITLY and short. httpx applies the default
+            # timeout to the pool-acquire wait as well, so `Timeout(900,
+            # connect=10)` meant a request that found the connection pool full
+            # waited up to fifteen minutes before it was even sent — a queue
+            # indistinguishable, from the caller's side, from a hung engine.
+            # Failing fast is the only answer a client can act on.
+            timeout=httpx.Timeout(timeout, connect=connect_timeout, pool=pool_timeout),
             follow_redirects=False,  # a redirect off-host would leak the engine key
-            limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
+            limits=httpx.Limits(
+                max_connections=max_connections,
+                max_keepalive_connections=min(40, max_connections),
+            ),
         )
 
     @asynccontextmanager

@@ -49,7 +49,7 @@ production, yangble5's benchmark pointed at whatever they already run*.
 | **Observability / dashboards** | 🔴 A sidecar that writes `stats.json`. That's it. | 🟢 Dashboards, callbacks, logging integrations | 🟢 Hosted dashboard and usage UI | 🟡 Provider console |
 | **Enterprise features** (SSO, RBAC, audit, teams) | 🔴 **None.** | 🟢 Yes | 🟡 Org/team features | 🟡 Varies |
 | **Benchmark rigour of published claims** | 🔴 **n=1.** One machine, one run, one afternoon, no error bars, no cross-provider comparison. | ⚪ Not directly comparable | ⚪ Not directly comparable | ⚪ n/a |
-| **Hosted option** | 🔴 **None from us.** Nobody operates a yangble5 you can sign up for. The repo *ships* a gateway and a landing page so **you** can become the operator — with the bill, the abuse reports and the provider terms. | 🟡 Self-host or their cloud | 🟢 Fully hosted | 🟢 Fully hosted |
+| **Hosted option** | 🔴 **One, and it is a hobby instance.** The maintainer runs a public instance at [yangble5.com](https://yangble5.com); registration is **open** — `POST /auth/register` issues a key to anyone who asks. The tokens are billed to the **operator's own personal upstream accounts**, the 1M-context tier is served by **exactly one** personal OAuth credential, and there is **no SLA, no support, no company and no uptime commitment**. Treat it as a demo that can vanish. The repo also *ships* the gateway and landing page so **you** can become the operator instead — with the bill, the abuse reports and the provider terms. See [`OPERATING_A_PUBLIC_SERVICE.md`](../OPERATING_A_PUBLIC_SERVICE.md). | 🟡 Self-host or their cloud | 🟢 Fully hosted | 🟢 Fully hosted |
 | **Breadth of tested configurations** | 🔴 One OS (Windows 11), one engine version (7.1.23), one upstream channel. | 🟢 Broad | 🟢 Broad | 🟢 Broad |
 | **Failure modes you inherit** | 🔴 Ours **plus** CLIProxyAPI's — a third-party engine we don't control and didn't write. | 🟡 Theirs | 🟡 Theirs | 🟢 Fewest — one hop |
 | **Documentation breadth** | 🟡 Deep on a narrow topic; nonexistent outside it. | 🟢 Broad | 🟢 Broad | 🟢 Broad |
@@ -64,7 +64,8 @@ For the majority of readers, one of the other three columns is the correct answe
 | Dimension | yangble5 | LiteLLM | OpenRouter | Direct API |
 |---|---|---|---|---|
 | **Ships a standalone prompt-cache hit-rate benchmark** | 🟢 Token-weighted, cold round separated, denominator normalised across provider conventions, fails loudly when it can't measure. Runs against **any** Anthropic-format `/v1/messages` endpoint — including the other three columns. | 🟡 Exposes cache metrics; we did **not** evaluate whether they answer this question. Tell us if they do. | 🔴 Not to our knowledge | 🔴 You build it |
-| **Do your prompts leave your infrastructure?** | 🟢 No third party — you → your upstream | 🟢 Self-hosted: no third party | 🔴 By design, they see your traffic | 🟢 No third party |
+| **Do your prompts leave your infrastructure?** *(self-hosted / BYOK / localhost)* | 🟢 No third party — you → your own upstream | 🟢 Self-hosted: no third party | 🔴 By design, they see your traffic | 🟢 No third party |
+| **Do your prompts leave your infrastructure?** *(using the maintainer's instance at yangble5.com)* | 🔴 **Yes.** The operator is a third party in your prompt path and can read every request. Same trust question as any hosted proxy — it is not privileged by being open source. If that is unacceptable, run your own or use BYOK. | ⚪ n/a | 🔴 Same, by design | ⚪ n/a |
 | **Documented source-level cache-splitting finding + fix** | 🟢 With line-level references and a `strings` check you can run on your own binary | ⚪ n/a | ⚪ n/a | ⚪ n/a |
 | **Long-agent-session cache tuning documented** | 🟢 Session affinity, TTL, `fill-first` rationale, and why the engine's shipped defaults are cache-hostile | 🟡 Configurable; less written about this specific failure | ⚪ Abstracted away | 🔴 Your problem |
 | **Client-side 1M context unlock documented** | 🟢 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, Codex `model_context_window`, with the caveat that it doesn't create context | ⚪ Out of scope | ⚪ Out of scope | ⚪ Out of scope |
@@ -112,9 +113,15 @@ themselves after a weekend:
 - **You need someone to call.** Single maintainer, no support, no SLA, no company.
 - **You're deploying to production this quarter.** The published measurements are n=1 and days
   old. That's not a foundation to build a business on yet.
-- **You want a hosted endpoint.** We don't operate one, and a public endpoint backed by pooled
-  personal accounts is specifically what
-  [`OPERATING_A_PUBLIC_SERVICE.md`](../OPERATING_A_PUBLIC_SERVICE.md) tells you not to build.
+- **You want a hosted endpoint you can rely on.** One exists —
+  [yangble5.com](https://yangble5.com), run by the maintainer, registration open — but it is a
+  single-maintainer hobby instance with no SLA, no support and no company behind it, and its
+  1M-context tier is served by **exactly one** personal OAuth credential. It is also precisely
+  the shape of deployment [`OPERATING_A_PUBLIC_SERVICE.md`](../OPERATING_A_PUBLIC_SERVICE.md)
+  §1 warns you not to build: a public endpoint funded by the operator's own personal accounts.
+  That warning is not retracted by the fact that the author ignored it — read it before you copy
+  the pattern, and do not build a business on the demo. If you want a hosted endpoint with
+  uptime and a support contract, use OpenRouter or the provider directly.
 - **Your sessions are short.** Prompt caching is a long-session optimisation. If you start a fresh
   conversation per task you pay a cold write every time and the warm hit rate is nearly irrelevant
   to you.

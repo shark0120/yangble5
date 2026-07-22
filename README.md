@@ -22,7 +22,8 @@ Fixing that is worth more than any prompt engineering.
 |---|---|
 | **What yangble5 is** | A config, a shim, and two measurement tools that make an existing OSS Go proxy ([CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) cache-correct for long agent sessions, plus the client-side settings that raise your client's assumed context window. |
 | **What yangble5 is not** | Not a model. Not a training run. Not a fine-tune. Not a source of free credits - every token is billed to whatever upstream account *you* configure. |
-| **Is it a hosted service?** | **This repository is not one, but it ships the software to run one.** `gateway/` is a self-serve edge (key issuance, registration, quotas, spend caps) and `site/` is a landing page plus a client installer that registers against it. Cloning this repo gives you nothing hosted; running `deploy/` makes *you* the operator, with the bill and the liability. If you use somebody else's deployment, you are trusting that operator - not this repository. Read [`docs/OPERATING_A_PUBLIC_SERVICE.md`](docs/OPERATING_A_PUBLIC_SERVICE.md) first. |
+| **Is it a hosted service?** | **This repository is not one, but it ships the software to run one — and the maintainer runs one.** `gateway/` is a self-serve edge (key issuance, registration, quotas, spend caps) and `site/` is a landing page plus a client installer that registers against it. Cloning this repo gives you nothing hosted; running `deploy/` makes *you* the operator, with the bill and the liability. |
+| **Is there an instance I can just sign up for?** | **Yes, one: [`https://yangble5.com`](https://yangble5.com), run by the maintainer, registration open** - `POST /auth/register` issues a key to anyone who asks, and `GET /health` reports the live `registration` mode. Read this before you use it: the tokens are billed to the **operator's own personal upstream accounts**, the 1M-context tier is served by **exactly one** personal OAuth credential, there is **no SLA, no support and no uptime commitment**, and **the operator is a third party who can read every request you send**. It is a demo that can disappear. If your prompts are confidential, run your own instance or use BYOK against your own upstream - see [`byok/`](byok/) and [`docs/OPERATING_A_PUBLIC_SERVICE.md`](docs/OPERATING_A_PUBLIC_SERVICE.md), which also explains why a public endpoint funded by personal accounts is a pattern you should not copy. |
 | **Who wrote what** | CLIProxyAPI (the Go engine, MIT) is somebody else's excellent work - see [Credits](#credits-and-attribution). Everything in `tools/`, `gateway/`, `byok/`, `site/`, `deploy/`, `docs/` and `assets/` is ours. |
 
 ---
@@ -455,6 +456,13 @@ bad afternoon.
   never back such a service. Read
   [`docs/OPERATING_A_PUBLIC_SERVICE.md`](docs/OPERATING_A_PUBLIC_SERVICE.md) before you expose
   any of this beyond localhost.
+- **The maintainer's own instance breaks that rule, and you should know it before you use it.**
+  `https://yangble5.com` is up with registration open, and it is backed by the operator's
+  personal OAuth credentials - one of them for the entire 1M-context tier. That is the exact
+  configuration the paragraph above tells you not to build. The advice is not withdrawn; the
+  instance is a demo run at the operator's own risk, with no SLA, and with the operator able to
+  read every request. Use BYOK or your own deployment for anything you would not paste into a
+  stranger's server.
 
 ---
 

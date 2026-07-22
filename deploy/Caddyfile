@@ -115,7 +115,7 @@
 		# THESE HASHES CHANGE WHENEVER A <script> BLOCK IS EDITED — by one byte,
 		# including whitespace. site/README.md carries the recompute snippet and
 		# is the source of truth for the current values.
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-azlzgFYelw1E8Ku3E8GqYH1fE6nmHMTP3Cy/CCWrGT8=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI=' ; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 		# Strip anything that advertises the stack.
 		-Server
 		-X-Powered-By

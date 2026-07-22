@@ -66,7 +66,23 @@ build. `gateway/` may use its declared extras (`fastapi`, `httpx`).
   full of examples.
 * **Pure functions where the logic lives**, I/O at the edges. That is why the interesting parts
   of `cache_bench.py` and `claude_shim.py` are unit-testable without a socket.
-* `ruff check .` and `ruff format --check .` must pass.
+* **Lint everything, format only what CI formats.** Run exactly what CI runs:
+
+  ```sh
+  python -m ruff check .
+  python -m ruff format --check tools byok
+  ```
+
+  `ruff check` is repo-wide and must be clean. `ruff format` is deliberately **scoped to `tools`
+  and `byok`** — the only directories `ruff format` has ever been applied to. `gateway/` and
+  `tests/` have not been, so `ruff format --check .` reports a double-digit pile of files it
+  would rewrite. (No count is quoted here on purpose: it changes every time a file is added, and
+  a stale count in a contributing guide is a small lie that teaches people to skim it.) **Do not
+  run `ruff format .` to "fix" that in your PR.** A repo-wide reformat buried inside an
+  unrelated change makes that change impossible to review, which is the reason CI is scoped this
+  way (`.github/workflows/ci.yml`, the `Format check (ruff)` step). If you want the rest
+  formatted, do it as its own commit that touches nothing else and widens the CI scope to `.` in
+  the same commit — that PR is welcome on its own.
 
 ## Tests
 

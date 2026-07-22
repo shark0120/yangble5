@@ -379,6 +379,15 @@ jobs:
         # "0 problems" is also what a checker that examined nothing prints.
         run: python tools/sitecheck.py --inventory --quiet
 
+      - name: Which FILES the guard covers, and which it does not
+        # The page list used to be a literal tuple, so coverage was opt-in by
+        # filename and shrank as a share of site/ every time a file was added.
+        # site/README.md, site/install.sh and site/install.ps1 all publish
+        # 99.53% and 748,918 and none of them was ever read. This prints the
+        # classification of every file under site/ and fails on any file that
+        # is neither checked nor exempt with a written reason.
+        run: python tools/sitecheck.py --coverage --quiet
+
       - name: Negative control -- a bogus hit rate must turn this job red
         # Without this step the job is one silent tokeniser change away from
         # being decorative again. Plant 99.54 in a COPY of the pages and require
@@ -405,6 +414,34 @@ jobs:
             echo "$out"; exit 1; }
           echo "ok    planted 99.54% was reported:"
           echo "$out" | grep "99.54"
+          git diff --quiet -- site || {
+            echo "::error::the negative control modified the working tree"; exit 1; }
+          echo "ok    working tree untouched"
+
+      - name: Negative control -- a new file must not be able to escape the guard
+        # The other half of the same defect. Above proves the checker can see a
+        # bogus figure on a page it already knew about; this proves a file that
+        # did not exist when anyone last edited the checker cannot be born
+        # outside it. Two plants in a COPY of site/: a text file restating the
+        # headline figure wrongly (the AGENTS.md / llms.txt case), and a file
+        # with a suffix the guard has no rule for (the "nobody decided" case).
+        run: |
+          work="$(mktemp -d)/site"
+          cp -r site "$work"
+          printf 'warm-round cache hit rate 99.61%%, prefix 748,919 tokens\n' > "$work/llms.txt"
+          printf 'an unclassified file\n' > "$work/notes.rst"
+          if out=$(python tools/sitecheck.py --quiet --site "$work" 2>&1); then
+            echo "::error::a new file restating the measurements passed the guard"
+            echo "$out"
+            exit 1
+          fi
+          for needle in llms.txt 99.61 748919 notes.rst; do
+            echo "$out" | grep -q -- "$needle" || {
+              echo "::error::the checker failed, but never named $needle"
+              echo "$out"; exit 1; }
+          done
+          echo "ok    both plants were reported:"
+          echo "$out" | grep -E 'llms\.txt|notes\.rst'
           git diff --quiet -- site || {
             echo "::error::the negative control modified the working tree"; exit 1; }
           echo "ok    working tree untouched"

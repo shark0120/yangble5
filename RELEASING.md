@@ -67,9 +67,15 @@ Every box must be ticked on the exact tree that will be tagged. Not "on a simila
 ```bash
 python -m pip install -e ".[dev]"
 python -m ruff check .
-python -m ruff format --check tools
+python -m ruff format --check tools byok
 python -m pytest -q
 ```
+
+The `ruff format` scope is `tools byok` — not `.` — and it must stay identical to the
+`Format check (ruff)` step in `.github/workflows/ci.yml` and to `CONTRIBUTING.md`. Three
+documents quoting three different scopes is how a release checklist stops being run. `gateway/`
+and `tests/` are not `ruff format`-clean yet; widening the scope is a standalone commit, never
+part of a release.
 
 - [ ] Full suite green locally.
 - [ ] Green in CI on **both** operating systems and **all three** Python versions. A skipped
@@ -226,8 +232,13 @@ Reproduce with:
   year, the Gemini upstream answered 2024 and the Grok upstream answered 2025.
 - `tools/claude_shim.py` is a **workaround** for engines older than v7.2.93, which fixed the bug
   upstream. On a newer engine, delete it.
-- yangble5 is **not a model**, not a training run, not a fine-tune, not a hosted service and not a
-  source of free credits. Every token is billed to the upstream account *you* configure.
+- yangble5 is **not a model**, not a training run, not a fine-tune and not a source of free
+  credits. Every token is billed to an upstream account someone configures and pays for.
+- **This repository is software, not a service — but one public instance does exist.** The
+  maintainer runs `https://yangble5.com` with self-serve registration **open**; it is funded by
+  the operator's own personal upstream accounts, carries no SLA and no support, and the operator
+  is a third party who can read every request sent to it. Do not describe the project as "not a
+  hosted service" in release notes while that instance is up.
 
 ### Checksums
 | File | SHA-256 |

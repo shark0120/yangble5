@@ -190,6 +190,24 @@ class Settings:
     engine_management_key: str | None
     upstream_timeout_seconds: float
     upstream_connect_timeout_seconds: float
+    # How long a request may wait for a free connection in the httpx pool before
+    # it fails. WITHOUT this, httpx applies the (deliberately long) read timeout
+    # to the pool-acquire wait too, so a queued request sits for the full
+    # UPSTREAM_TIMEOUT_SECONDS before it is even sent. A caller deserves a fast
+    # "we are full" instead of a fifteen-minute silence.
+    upstream_pool_timeout_seconds: float
+    # Hard ceiling on TCP connections to the engine. Sized to the engine, not to
+    # the shared account (BYOK traffic uses these connections too).
+    upstream_max_connections: int
+    # PROCESS-WIDE ceiling on in-flight SHARED-POOL requests. The per-key
+    # concurrency limit bounds one key; this bounds the sum across every key,
+    # which is what the single upstream account behind the pool actually sees.
+    # BYOK traffic is deliberately NOT counted here — byok_instructions promises
+    # "no queue behind anyone else" and that promise has to be true.
+    upstream_max_concurrency: int
+    # Rolling-window upstream failure detector, reported by /pool/status.
+    upstream_health_window_seconds: float
+    upstream_health_failure_threshold: int
 
     # --- storage -------------------------------------------------------------
     db_path: str
@@ -282,6 +300,22 @@ class Settings:
         key must not mean an open admin surface."""
         return bool(self.admin_api_key)
 
+    def usd_budget_token_ceiling(self, usd: float) -> int | None:
+        """Most tokens `usd` could possibly buy at the default price row.
+
+        Uses the INPUT rate, which is the cheapest column, so this is an upper
+        bound: a real request mixes in output and cache-write tokens at higher
+        rates and therefore exhausts the dollar budget sooner. If even this
+        optimistic number is below a token budget, the dollar budget is the one
+        that binds — and that conclusion cannot be an artefact of the estimate.
+        """
+        if usd <= 0:
+            return None
+        rate = self.prices["default"].input
+        if rate <= 0:
+            return None
+        return int(usd / rate * 1_000_000)
+
     def price_for(self, model: str | None) -> ModelPrice:
         """Exact match, then longest prefix match, then 'default'.
 
@@ -337,7 +371,22 @@ class Settings:
         daily_token_budget = _int(
             env, "DAILY_TOKEN_BUDGET", _int(env, "USER_DAILY_TOKENS", 2_000_000)
         )
-        daily_cost_usd_budget = _float(env, "DAILY_COST_USD_BUDGET", 2.0)
+        # DEFAULT 0 (= ration in tokens only), and that is a deliberate change of
+        # unit rather than a loosening.
+        #
+        # The old default was $2.00, which at the PLACEHOLDER input price of
+        # $5.00/1M is 400,000 tokens — less than a fifth of the 2,000,000-token
+        # allowance advertised in the same registration response, and less than
+        # ONE request of the 748,918-token size this project exists to serve. So
+        # the USD ceiling always bound first, and it bound on a number
+        # DEFAULT_PRICES says out loud is "NOT a claim about what any provider
+        # charges". Rationing in a unit you cannot state truthfully is not
+        # rationing; it is an arbitrary refusal wearing a dollar sign.
+        #
+        # Tokens are the honest unit here. An operator who has calibrated
+        # PRICE_TABLE_JSON can set DAILY_COST_USD_BUDGET and get a meaningful
+        # dollar ceiling; until then `startup_warnings()` says what it is made of.
+        daily_cost_usd_budget = _float(env, "DAILY_COST_USD_BUDGET", 0.0)
         global_monthly_usd_budget = _float(env, "GLOBAL_MONTHLY_USD_BUDGET", 0.0)
         # A second ceiling in TOKENS. It exists because an operator who has not
         # calibrated a price table cannot express their limit in USD honestly,
@@ -426,6 +475,43 @@ class Settings:
         if trusted_proxy_hops < 1:
             raise ConfigError("TRUSTED_PROXY_HOPS must be >= 1")
 
+        # AGGREGATE upstream limits. The per-key limits below bound ONE caller;
+        # these bound the sum of all of them, which is the only number the
+        # single account behind the shared pool ever experiences. The default is
+        # a single digit on purpose: this instance's 1M tier is served by ONE
+        # upstream credential, and fifty keys at four in flight each is 200
+        # simultaneous requests onto it.
+        upstream_max_concurrency = _int(env, "UPSTREAM_MAX_CONCURRENCY", 6)
+        if upstream_max_concurrency < 0:
+            raise ConfigError("UPSTREAM_MAX_CONCURRENCY must be >= 0 (0 means unlimited)")
+        upstream_max_connections = _int(env, "UPSTREAM_MAX_CONNECTIONS", 32)
+        if upstream_max_connections < 1:
+            raise ConfigError("UPSTREAM_MAX_CONNECTIONS must be >= 1")
+        if upstream_max_concurrency > upstream_max_connections:
+            # Otherwise the concurrency limiter admits requests the connection
+            # pool then queues invisibly, which is the failure this pair exists
+            # to make visible.
+            raise ConfigError(
+                "UPSTREAM_MAX_CONCURRENCY must not exceed UPSTREAM_MAX_CONNECTIONS "
+                f"({upstream_max_concurrency} > {upstream_max_connections}); admitted "
+                "requests would queue in the connection pool instead of being refused."
+            )
+        upstream_pool_timeout = _float(env, "UPSTREAM_POOL_TIMEOUT_SECONDS", 15.0)
+        if upstream_pool_timeout <= 0:
+            raise ConfigError(
+                "UPSTREAM_POOL_TIMEOUT_SECONDS must be > 0 — an unbounded pool wait "
+                "makes a full connection pool indistinguishable from a hung engine."
+            )
+        upstream_health_window = _float(env, "UPSTREAM_HEALTH_WINDOW_SECONDS", 120.0)
+        if upstream_health_window <= 0:
+            raise ConfigError("UPSTREAM_HEALTH_WINDOW_SECONDS must be > 0")
+        upstream_health_threshold = _int(env, "UPSTREAM_HEALTH_FAILURE_THRESHOLD", 3)
+        if upstream_health_threshold < 1:
+            raise ConfigError(
+                "UPSTREAM_HEALTH_FAILURE_THRESHOLD must be >= 1 — 0 would mark the "
+                "upstream unhealthy before it had failed once."
+            )
+
         # A successful response whose usage report we could not parse used real
         # upstream capacity. Charging it zero makes it invisible to every budget,
         # so a client that can reliably provoke an unparseable response gets an
@@ -446,6 +532,11 @@ class Settings:
             engine_management_key=_raw(env, "ENGINE_MANAGEMENT_KEY"),
             upstream_timeout_seconds=_float(env, "UPSTREAM_TIMEOUT_SECONDS", 900.0),
             upstream_connect_timeout_seconds=_float(env, "UPSTREAM_CONNECT_TIMEOUT_SECONDS", 10.0),
+            upstream_pool_timeout_seconds=upstream_pool_timeout,
+            upstream_max_connections=upstream_max_connections,
+            upstream_max_concurrency=upstream_max_concurrency,
+            upstream_health_window_seconds=upstream_health_window,
+            upstream_health_failure_threshold=upstream_health_threshold,
             db_path=_str(env, "DB_PATH", default_db),
             registration_mode=registration_mode,
             allow_multiple_keys_per_email=_bool(env, "ALLOW_MULTIPLE_KEYS_PER_EMAIL", False),
@@ -502,6 +593,27 @@ class Settings:
                 "GLOBAL_MONTHLY_USD_BUDGET and GLOBAL_MONTHLY_TOKEN_BUDGET are both 0 "
                 "(unlimited). There is no operator spend ceiling; only per-key budgets "
                 "apply, so total spend scales with the number of keys you have issued."
+            )
+        # A per-key DOLLAR ceiling is only as honest as the price table under it,
+        # and it silently overrides the token allowance the same registration
+        # response advertises. Both halves are said out loud.
+        if self.daily_cost_usd_budget > 0 and self.prices_are_placeholder:
+            warnings.append(
+                f"DAILY_COST_USD_BUDGET is ${self.daily_cost_usd_budget:g} but "
+                "PRICE_TABLE_JSON is not set, so that ceiling is denominated in "
+                "PLACEHOLDER prices and does not correspond to any real invoice. "
+                "Ration in tokens (DAILY_TOKEN_BUDGET) until you have calibrated "
+                "prices, or set DAILY_COST_USD_BUDGET=0."
+            )
+        ceiling = self.usd_budget_token_ceiling(self.daily_cost_usd_budget)
+        tokens = self.daily_token_budget
+        if ceiling is not None and tokens > 0 and ceiling < tokens:
+            warnings.append(
+                f"DAILY_COST_USD_BUDGET (${self.daily_cost_usd_budget:g}) is reached "
+                f"after at most {ceiling:,} tokens at the configured input price, "
+                f"which is BELOW DAILY_TOKEN_BUDGET ({self.daily_token_budget:,}). "
+                "The dollar ceiling is the one that will actually stop your users, "
+                "so do not advertise the token number as their allowance."
             )
         if self.registration_mode == "invite" and not self.admin_enabled:
             warnings.append(

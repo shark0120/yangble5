@@ -120,8 +120,12 @@ cross-provider comparison. **Latency did not improve predictably — no speed cl
 rounds 3 and 4 were *slower* than cold while reading 99.5% of their prompt from cache. Caching
 reduces cost predictably; on this evidence it does not reduce wall-clock predictably.
 
-*What this is not:* not a model, not a fine-tune, not a training run, not a hosted service, and
-not a source of free credits — every token bills to whatever upstream account you configure. The
+*What this is not:* not a model, not a fine-tune, not a training run, and not a source of free
+credits — every token bills to whatever upstream account you configure. *What it is, and I should
+say it before someone finds it:* I do run one public instance at https://yangble5.com with open
+registration, funded by my own personal upstream accounts, no SLA, and me able to read every
+request that goes through it. Treat it as a demo, not a service; the repo exists so you can run
+your own or point the client at your own upstream instead. The
 Go engine that does all the real protocol work is **CLIProxyAPI**, MIT, someone else's excellent
 work; I did not write it and this is useless without it. What is mine is the finding, the config,
 a compatibility shim, and two measurement tools. **There is no live web search through it** —

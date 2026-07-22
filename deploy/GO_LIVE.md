@@ -197,6 +197,25 @@ Paste PART 1–3 of [`nginx/yangble5.com.conf.example`](nginx/yangble5.com.conf.
 into your vhost. On aaPanel, use the file [`AAPANEL.md`](AAPANEL.md) §2 tells
 you to — **not** the vhost file itself, which the panel regenerates.
 
+**Install the security headers as a file, not as a paste.** This is the part of
+the snippet that got skipped on yangble5.com's own deployment: the live site
+served no CSP, no `nosniff`, no `X-Frame-Options` and no `Referrer-Policy`, and
+nothing anywhere errored. An `include` is atomic — either it is there and all
+eight headers apply, or the path is wrong and `nginx -t` fails loudly.
+
+```sh
+sudo install -D -m 0644 -o root -g root \
+  /opt/yangble5/app/deploy/nginx/security-headers.conf \
+  /etc/nginx/yangble5/security-headers.conf
+# then, at SERVER level in the vhost (not inside a location):
+#   include /etc/nginx/yangble5/security-headers.conf;
+```
+
+Cloudflare does **not** add these for you. A proxied zone passes origin
+response headers through; it invents nothing. The one header the broken
+deployment did serve came from Cloudflare's own HSTS toggle, which is why
+"there is an HSTS header, so the config must have loaded" was wrong.
+
 Back up first:
 
 ```sh
@@ -211,6 +230,10 @@ cp -a /www/server/panel/vhost/rewrite/yangble5.com.conf \
 - [ ] If you are not behind Cloudflare, PART 1a is deleted.
 - [ ] You added no `add_header` and no `proxy_set_header` inside any location.
       Either one silently drops the whole inherited set (snippet PART 2j).
+- [ ] The `include` for `security-headers.conf` is present at **server** level,
+      or PART 2j's eight `add_header` lines are pasted there verbatim.
+      Grep for it rather than trusting your memory of pasting it:
+      `nginx -T | grep -c 'Content-Security-Policy'` must be ≥ 1.
 
 **ABORT IF** you cannot find where the vhost is loaded from. `nginx -T | grep -n
 'configuration file'` — editing a file nginx does not load is the failure that
@@ -287,6 +310,18 @@ talks to the public URL:
 - [ ] **The streaming round trip delivers events progressively, not in one burst.**
 - [ ] `/v0/management/*` returns **404** from the internet.
 - [ ] The engine's port 8318 does not answer from the internet.
+- [ ] **All eight security headers are served** (check 9). Not "an HSTS header
+      exists" — the values, from off-host. This is the check that was missing
+      when yangble5.com went live without a CSP.
+
+If check 9 is red, the header block is not in the running config. Confirm from
+outside; a `curl` on the VPS skips Cloudflare and answers a different question:
+
+```sh
+curl -sSI https://yangble5.com/ | grep -icE \
+  'content-security-policy|x-content-type-options|x-frame-options|referrer-policy|strict-transport-security|cross-origin-|permissions-policy'
+# 8, not 1 and not 0
+```
 
 Two behind-proxy-specific checks the standalone path does not need:
 
@@ -623,23 +658,80 @@ sudo bash /opt/yangble5/app/deploy/harden.sh --no-cloudflare-only
 Until now registration has been `invite` (the installer's default) and the only
 key is yours.
 
+### 8.0 — The question that is not about money
+
+Ask this one first, because the budget caps below do not answer it and cannot.
+
+> **Is every upstream credential the engine holds licensed for serving third
+> parties?**
+
+If any of them is a personal OAuth account — your Google/antigravity account,
+your xAI accounts, a Codex account, a friend's account — the answer is **no**,
+and opening registration creates exactly the configuration
+[`docs/OPERATING_A_PUBLIC_SERVICE.md` §1](../docs/OPERATING_A_PUBLIC_SERVICE.md)
+declares must never exist.
+
+The budget caps bound what abuse can **cost** you. They say nothing about what
+abuse can get **suspended**:
+
+- Your gateway multiplexes every public user onto those credentials from one
+  origin IP. The provider sees one egress producing the request-shape diversity
+  of dozens of unrelated humans — different working hours, different languages,
+  different repositories.
+- The documented escalation is rate-limit, then suspension of the **account**,
+  not of yangble5. It takes out everything else that Google/xAI/OpenAI account
+  is used for.
+- If a tier is served by **one** credential, a single suspension is a total
+  outage for that tier with **no failover**.
+
+- [ ] Every credential is on a plan whose terms permit resale / redistribution
+      / proxying / multi-user access, and you have that in writing.
+
+If you cannot tick that box, do **not** go open. Two supported alternatives:
+
+- **Stay on `invite`.** Safer default, costs you nothing but minting codes
+  (`runbook.md` §3).
+- **Make BYOK the front door.** `/byok` lets a user bring their own key; point
+  the installer and the landing page at that as the default path and keep the
+  shared pool as the opt-in fallback, not the reverse. A pool nobody is
+  depending on cannot disappoint anybody when it is suspended.
+
+If you go open anyway with a pool you know is best-effort, then the disclosure
+is not optional — it is the only honest version of the offer:
+
+- [ ] The landing page and the AI/install flow both say, in plain language,
+      that the shared pool is **best-effort and experimental** and **may vanish
+      without notice**.
+- [ ] If a tier is served by a single credential, that fact is stated too.
+
+### 8.1 — The money gate
+
 - [ ] Confirm the budget ceilings in `deploy/.env` are numbers you are willing
       to actually pay: `YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET`,
       `YANGBLE5_DAILY_COST_USD_BUDGET`, `YANGBLE5_DAILY_TOKEN_BUDGET`.
 - [ ] Confirm `YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY` is set.
 - [ ] Decide deliberately between staying on `invite` and moving to `open`.
 
-Staying on **invite** is the safer default and costs you nothing but the effort
-of minting codes (`runbook.md` §3). Going **open** means anyone on the internet
-can create a key that spends your money, protected only by the budget caps you
-just checked.
+Going **open** means anyone on the internet can create a key that spends your
+money, protected only by the budget caps you just checked.
+
+### 8.2 — Flipping it
+
+Both lines below are required. Editing only the mode is how the credential
+question gets skipped — `install.sh` refuses `open` while the assertion is
+`no`, and a bare `sed` on the mode bypasses that refusal entirely, so the
+assertion is set here explicitly rather than assumed.
 
 ```sh
 cd /opt/yangble5/app/deploy
+sudo sed -i 's/^YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES=.*/YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES=yes/' .env
 sudo sed -i 's/^YANGBLE5_REGISTRATION_MODE=.*/YANGBLE5_REGISTRATION_MODE=open/' .env
 docker compose up -d --force-recreate gateway
 curl -sS https://api.example.com/health     # "registration":"open"
 ```
+
+**ABORT IF** you could not tick the box in 8.0. A suspension is not
+rate-limited by your budget cap and is not undone by lowering it.
 
 **ABORT IF** the global monthly budget is unset, zero, or larger than you can
 absorb. An open registration mode with no cap is the most expensive mistake

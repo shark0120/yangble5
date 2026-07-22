@@ -329,15 +329,63 @@ create_env() {
     fi
     ok "domain, e-mail, uid/gid and log dir set"
 
-    # The gateway refuses to start in open mode without a spend ceiling. Catch
-    # it here, where the message can be useful, instead of in a crash loop.
-    local mode budget
+    # Two independent gates on `open`. Both are here rather than in the
+    # gateway because here the message can name the file and the fix.
+    local mode budget licensed
     mode="$(env_get YANGBLE5_REGISTRATION_MODE "$envfile" || echo invite)"
     budget="$(env_get YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET "$envfile" || echo 0)"
+    licensed="$(env_get YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES "$envfile" || echo no)"
     if [ "$mode" = "open" ]; then
+        # GATE 1 — money. A stranger minting keys against an uncapped balance.
         case "$budget" in
             ''|0|0.0|0.00) die "REGISTRATION_MODE=open needs YANGBLE5_GLOBAL_MONTHLY_USD_BUDGET > 0 in $envfile. Open registration against an uncapped balance means a stranger can spend your money without limit." ;;
             *) warn "open registration with a \$${budget}/month cap — that cap is the most you can lose to abuse before signups stop" ;;
+        esac
+
+        # GATE 2 — the accounts. This one is newer and it is the one that was
+        # missing, because the gate above only ever asked about money.
+        #
+        # docs/OPERATING_A_PUBLIC_SERVICE.md §1 is unambiguous: pooled PERSONAL
+        # OAuth credentials must never back a public endpoint. The engine's
+        # multi-credential failover exists so ONE person can spread THEIR OWN
+        # traffic across THEIR OWN accounts; it is not a multi-tenant licence.
+        # Put strangers behind it and one origin IP starts producing the
+        # request-shape diversity of dozens of unrelated humans, which is
+        # exactly what provider abuse detection is built to find. The
+        # escalation is rate-limit, then suspension, and the suspension lands
+        # on the Google/xAI/OpenAI ACCOUNT — taking out everything else that
+        # account is used for, not just yangble5. Where a tier is served by a
+        # single credential, that is a total outage for the tier with no
+        # failover.
+        #
+        # This script cannot inspect the engine's credential store, so it
+        # cannot decide for you. What it CAN do is refuse to be the reason
+        # nobody thought about it: `open` now requires a deliberate, recorded,
+        # greppable statement in .env, not the absence of an objection.
+        case "$(printf '%s' "$licensed" | tr 'A-Z' 'a-z' | tr -d '"'"'"' ')" in
+            yes|true|1) ok "operator asserts the upstream pool is licensed for third-party serving" ;;
+            *) die "REGISTRATION_MODE=open is refused while YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES is '$licensed'.
+
+  Open registration points every stranger on the internet at whatever
+  credentials the engine holds. If any of them is a personal OAuth account
+  (Google/antigravity, xAI, Codex, a friend's account), this is the exact
+  configuration docs/OPERATING_A_PUBLIC_SERVICE.md §1 says must never exist,
+  and the ban lands on the ACCOUNT, not on this service.
+
+  Pick one, deliberately:
+
+    a) Keep personal credentials  -> use invite or closed:
+         --registration invite        (mint codes: deploy/runbook.md §3)
+    b) BYOK-first                 -> stay on invite, and point users at
+         /byok so they bring their own key; the shared pool is the fallback.
+    c) You have keys that are actually licensed for serving third parties
+       (a paid plan whose terms permit proxying/multi-user access, in
+       writing) -> set YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES=yes in
+         $envfile and re-run.
+
+  If you choose (c) and the pool is still best-effort or single-credential,
+  say so publicly on the landing page and in the installer output: users
+  planning around a tier deserve to know it can vanish without notice." ;;
         esac
     fi
 }

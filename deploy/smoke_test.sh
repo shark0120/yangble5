@@ -19,6 +19,13 @@
 #      into a single blob and leave the agent looking frozen
 #   7. /v0/management/* is NOT reachable from the internet
 #   8. the engine's port is not published to the internet
+#   9. the eight security response headers are ACTUALLY SERVED, by value —
+#      this one is here because its absence shipped a hole: the old test
+#      passed on the presence of any Strict-Transport-Security header, and
+#      Cloudflare adds one of those itself, so a deployment serving no CSP,
+#      no nosniff, no X-Frame-Options and no Referrer-Policy tested green
+#  10. registration mode, against the "no pooled personal OAuth behind a
+#      public endpoint" rule in docs/OPERATING_A_PUBLIC_SERVICE.md §1
 #
 # CHECKS 5 AND 6 SPEND TOKENS on whatever upstream account you configured.
 # Two requests, max_tokens=16. Pass --no-spend to skip them.
@@ -268,15 +275,13 @@ check_tls() {
         skip "tls/expiry" "openssl not installed"
     fi
 
-    # HSTS is set by the Caddyfile; its absence means the config did not load.
-    if [ "$TLS_REACHABLE" -ne 1 ]; then
-        skip "tls/hsts" "host unreachable"
-        return
-    fi
-    local hsts
-    hsts="$(curl -sSI --max-time 15 "${BASE_URL}/health" 2>/dev/null | grep -i '^strict-transport-security:' | tr -d '\r')"
-    if [ -n "$hsts" ]; then pass "tls/hsts" "$(printf '%s' "$hsts" | cut -c1-60)"
-    else warn "tls/hsts" "no Strict-Transport-Security header — is the Caddyfile the one from this repo?"; fi
+    # HSTS is checked properly in check_security_headers (9), against the value
+    # this repo actually sets. It is NOT checked here any more, and that is a
+    # deliberate removal: the old check passed on the presence of ANY
+    # Strict-Transport-Security header, and on a Cloudflare-proxied zone CF
+    # supplies one of its own (max-age only, no includeSubDomains). So the
+    # check went green on a deployment whose origin set no headers at all.
+    :
 }
 
 # ===========================================================================
@@ -568,6 +573,139 @@ check_engine_port_closed() {
 }
 
 # ===========================================================================
+# 9. Security response headers
+# ===========================================================================
+# THIS CHECK EXISTS BECAUSE ITS ABSENCE SHIPPED A HOLE.
+#
+# deploy/nginx/yangble5.com.conf.example PART 2j (and deploy/Caddyfile) declare
+# eight response headers as mandatory. On 2026-07-22 the live deployment served
+# exactly one of them, and the smoke test was green anyway: the only header it
+# looked for was Strict-Transport-Security, and Cloudflare adds an HSTS header
+# of its own on a proxied zone. A presence test for "any security header"
+# cannot distinguish "origin configured" from "CDN default".
+#
+# So this check asserts the VALUE, not the presence, wherever the value is
+# ours, and it FAILS rather than warns. A CSP that is not being served is not a
+# CSP: site/index.html and site/verify.html each run one inline <script> that
+# the policy pins by sha256 precisely so that a page whose job is to convince
+# someone to pipe a URL into a shell cannot be made to run injected script.
+#
+# It is checked on `/` — the static page — because that is where the CSP
+# matters and where a webroot `location /` block with its own add_header would
+# have silently dropped the lot.
+check_security_headers() {
+    step "9. Security response headers"
+
+    if [ "$TLS_REACHABLE" -ne 1 ]; then
+        skip "headers" "host unreachable"
+        return
+    fi
+
+    local hdrs
+    hdrs="$(curl -sSI --max-time 20 "${BASE_URL}/" 2>/dev/null | tr -d '\r')"
+    if [ -z "$hdrs" ]; then
+        fail "headers" "no response headers from ${BASE_URL}/"
+        return
+    fi
+
+    # header name -> substring that must appear in its value. The substring is
+    # the part that is ours; matching the whole line would break on harmless
+    # ordering or spacing differences between nginx and Caddy.
+    hdr_value() { printf '%s' "$hdrs" | grep -i "^$1:" | head -1 | cut -d: -f2- | sed 's/^ *//'; }
+
+    local name want got missing=0
+    while IFS='|' read -r name want; do
+        [ -n "$name" ] || continue
+        got="$(hdr_value "$name")"
+        if [ -z "$got" ]; then
+            fail "hdr/$name" "ABSENT — the origin is not serving it, and Cloudflare will not add it for you"
+            missing=$((missing+1))
+        elif [ -n "$want" ] && ! printf '%s' "$got" | grep -qiF -- "$want"; then
+            fail "hdr/$name" "present but wrong: expected to contain '$want', got '$(printf '%s' "$got" | cut -c1-45)'"
+            missing=$((missing+1))
+        else
+            pass "hdr/$name" "$(printf '%s' "$got" | cut -c1-45)"
+        fi
+    done <<'EOF'
+Strict-Transport-Security|includeSubDomains
+X-Content-Type-Options|nosniff
+X-Frame-Options|DENY
+Referrer-Policy|no-referrer
+Content-Security-Policy|frame-ancestors 'none'
+Cross-Origin-Opener-Policy|same-origin
+Cross-Origin-Resource-Policy|same-origin
+Permissions-Policy|camera=()
+EOF
+
+    if [ "$missing" -gt 0 ]; then
+        note "nginx: PART 2j of deploy/nginx/yangble5.com.conf.example is not in the"
+        note "running config. Prefer the include — deploy/nginx/security-headers.conf —"
+        note "then 'nginx -t && nginx -s reload' and re-run this from OFF the VPS."
+        note "Also check no location block declares an add_header of its own: one is"
+        note "enough to drop every server-level add_header on that location."
+    fi
+
+    # The CSP pins two inline scripts by hash. An unpinned script-src is worse
+    # than no CSP here, because the page then claims a protection it lacks.
+    local csp
+    csp="$(hdr_value Content-Security-Policy)"
+    if [ -n "$csp" ]; then
+        if printf '%s' "$csp" | grep -qi "script-src[^;]*unsafe-inline"; then
+            fail "hdr/csp-unsafe-inline" "script-src allows 'unsafe-inline' — the sha256 pinning is decorative"
+        else
+            pass "hdr/csp-unsafe-inline" "script-src does not allow 'unsafe-inline'"
+        fi
+    fi
+
+    # PART 3d's `default_type text/plain`. The landing page tells visitors to
+    # read install.sh before running it; application/octet-stream makes the
+    # browser download it instead, so nobody reads it. Not fatal — a warning,
+    # because `curl | sh` is unaffected and some operators serve it deliberately.
+    local ctype
+    ctype="$(curl -sSI --max-time 20 "${BASE_URL}/install.sh" 2>/dev/null | tr -d '\r' \
+             | grep -i '^content-type:' | head -1 | cut -d: -f2- | sed 's/^ *//')"
+    case "$ctype" in
+        text/plain*) pass "install.sh/content-type" "$ctype — readable in a browser" ;;
+        '')          warn "install.sh/content-type" "no Content-Type at all" ;;
+        *)           warn "install.sh/content-type" "$ctype — a browser downloads this instead of showing it (PART 3d default_type)" ;;
+    esac
+}
+
+# ===========================================================================
+# 10. Open registration vs. what is backing the pool
+# ===========================================================================
+# docs/OPERATING_A_PUBLIC_SERVICE.md §1 states the hard rule: pooled PERSONAL
+# OAuth credentials must never back a public service. This script cannot see
+# what credentials the engine holds, so it cannot decide that for you — it can
+# only make the combination impossible to ship without noticing.
+check_registration_exposure() {
+    step "10. Registration mode"
+
+    local r body code mode
+    r="$(get_plain /health 20)"; code="${r##*|}"; body="${r%|*}"
+    [ "$code" = "200" ] || { skip "registration/mode" "/health did not answer 200"; return; }
+
+    mode="$(printf '%s' "$body" | sed -n 's/.*"registration"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')"
+    case "$mode" in
+        open)
+            warn "registration/mode" "open — anyone on the internet can mint a key against your pool"
+            note "CONFIRM, before announcing, that every upstream credential behind this"
+            note "endpoint is licensed for serving third parties. Personal OAuth accounts"
+            note "are not (docs/OPERATING_A_PUBLIC_SERVICE.md §1). The suspension lands on"
+            note "the Google/xAI/OpenAI ACCOUNT, not on yangble5, and takes out everything"
+            note "else that account is used for."
+            note "If a tier is served by a single credential, its suspension is a total"
+            note "outage for that tier with no failover. Say so publicly, or close it:"
+            note "  YANGBLE5_REGISTRATION_MODE=closed  (existing keys keep working)"
+            ;;
+        invite)  pass "registration/mode" "invite — new keys need a code you minted" ;;
+        closed)  pass "registration/mode" "closed — no new keys" ;;
+        '')      skip "registration/mode" "/health did not report a registration mode" ;;
+        *)       warn "registration/mode" "unrecognised mode '$mode'" ;;
+    esac
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 check_tls
@@ -578,6 +716,8 @@ check_roundtrip
 check_streaming
 check_management_blocked
 check_engine_port_closed
+check_security_headers
+check_registration_exposure
 
 # ── summary ────────────────────────────────────────────────────────────────
 RULE="+--------+--------------------------------+---------------------------------------------------+"

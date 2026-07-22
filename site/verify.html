@@ -330,8 +330,14 @@ sha256sum install.sh
 curl -fsSL https://yangble5.com/install.sh.sha256 -o install.sh.sha256
 shasum -a 256 -c install.sh.sha256
 
-<span class="c"># 5. 自己讀過一遍再執行</span>
-less install.sh
+<span class="c"># 5. 自己讀過一遍。用編輯器或 cat,不要用 less/more ——</span>
+<span class="c">#    AI agent 的 shell 沒有 tty,分頁器不是把整份倒進對話紀錄就是卡住等按鍵。</span>
+cat install.sh
+
+<span class="c"># 6. 先空跑:把它打算做的每一件事印出來,一個檔案都不寫</span>
+shasum -a 256 -c install.sh.sha256 &amp;&amp; sh install.sh --dry-run
+
+<span class="c"># 7. 看過計畫、同意了,才真的安裝</span>
 sh install.sh</pre>
 
   <h3>Windows(PowerShell)</h3>
@@ -346,12 +352,36 @@ $expected = '&lt;貼上上面公告的值&gt;'
 $actual = (Get-FileHash .\install.ps1 -Algorithm SHA256).Hash
 if ($actual -ieq $expected) { 'OK - 相符' } else { 'MISMATCH - 不要執行' }
 
-<span class="c"># 4. 自己讀過一遍再執行</span>
+<span class="c"># 3b. 或者讓機器幫你抓公告值來比,不符就 throw,後面都不會跑</span>
+irm https://yangble5.com/install.ps1.sha256 -OutFile install.ps1.sha256
+$expected = ((Get-Content .\install.ps1.sha256 -Raw) -split '\s+')[0]
+if ((Get-FileHash .\install.ps1 -Algorithm SHA256).Hash -ine $expected) { throw 'MISMATCH' }
+
+<span class="c"># 4. 自己讀過一遍</span>
 notepad .\install.ps1
-.\install.ps1</pre>
+
+<span class="c"># 5. 先空跑,再真的安裝</span>
+powershell -NoProfile -File .\install.ps1 -DryRun
+powershell -NoProfile -File .\install.ps1</pre>
 
   <h3>用 certutil（不想開 PowerShell 的話）</h3>
   <pre class="block">certutil -hashfile install.ps1 SHA256</pre>
+
+  <h3>要傳 e-mail／邀請碼的話</h3>
+  <p>
+    管線<strong>不會</strong>把參數傳進去：<code>curl … | sh</code> 給不了腳本 argv，
+    <code>irm … | iex</code> 給不了 scriptblock 參數。而且安裝腳本是<strong>全自動</strong>的，
+    它不會停下來問你任何事，所以該問的必須事先問完再傳進去：
+  </p>
+  <pre class="block">curl -fsSL https://yangble5.com/install.sh | sh -s -- --email you@example.com
+sh install.sh --dry-run --invite YOUR-INVITE-CODE
+
+&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Email you@example.com
+powershell -NoProfile -File .\install.ps1 -DryRun -Invite YOUR-INVITE-CODE
+
+<span class="c"># 或用環境變數,兩支腳本都認</span>
+YANGBLE5_EMAIL=you@example.com YANGBLE5_INVITE=YOUR-INVITE-CODE sh install.sh
+$env:YANGBLE5_EMAIL = 'you@example.com'</pre>
 
   <!-- ── mismatch ─────────────────────────────────────────────────── -->
   <div class="warnbox">
@@ -549,10 +579,14 @@ cd yangble5
 <span class="c"># 讀原始碼、看 commit 歷史,然後自己決定要不要跑</span>
 git log --oneline -20</pre>
   <p class="fine">
-    這一頁跟首頁一樣是單一檔案，沒有任何<strong>第三方</strong>請求：沒有 CDN、沒有網頁字型、沒有分析追蹤、沒有 cookie。
-    唯一的執行期請求是<strong>同源</strong>的那兩個 <code>.sha256</code> 檔（首頁另外會讀同源的
-    <code>/api/health</code>）。整頁存下來離線讀也可以 —— 那兩個雜湊會顯示「尚未公告」，
-    頁面不會拿一個看起來合理的舊值來充數。
+    這一頁跟首頁一樣是單一檔案：<strong>HTML 裡沒有任何第三方請求</strong> —— 沒有 CDN、沒有網頁字型、沒有分析追蹤、沒有 cookie。
+    頁面自己發出的執行期請求只有<strong>同源</strong>的那兩個 <code>.sha256</code> 檔（首頁另外會讀同源的
+    <code>/pool/status</code>，讀不到才退回 <code>/health</code>）。整頁存下來離線讀也可以 —— 那兩個雜湊會顯示「尚未公告」，
+    頁面不會拿一個看起來合理的舊值來充數。<br>
+    <strong>但邊緣會加東西，這點必須講：</strong>本站經 Cloudflare 供應，回應帶有 <code>Report-To</code> 與
+    <code>Nel</code> 標頭，指向 <code>a.nel.cloudflare.com</code>。那是網路錯誤回報（NEL），
+    不在這個檔案裡，但它確實會讓瀏覽器在連線失敗時把錯誤回報給 Cloudflare。
+    你開 devtools 就看得到，所以我們自己先說。要完全避開就從 GitHub 拿原始碼，別經過這個網域。
   </p>
 </div>
 </main>
@@ -568,7 +602,8 @@ git log --oneline -20</pre>
     <p class="fine" style="margin:0">
       核心引擎 <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a>
       由 Luis Pater / Router-For.ME 開發並以 MIT 授權釋出，不是我們的作品。
-      yangble5 是社群開源專案，與任何模型供應商沒有從屬或合作關係。本站沒有 cookie、沒有追蹤。
+      yangble5 是社群開源專案，與任何模型供應商沒有從屬或合作關係。本站沒有 cookie、沒有追蹤；
+      頁面本身不發出第三方請求，但 Cloudflare 邊緣會加上網路錯誤回報標頭（說明在上面）。
     </p>
   </div>
 </footer>

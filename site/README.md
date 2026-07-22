@@ -106,7 +106,7 @@ server {
     add_header Referrer-Policy "no-referrer" always;
     add_header X-Frame-Options "DENY" always;
     add_header Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()" always;
-    add_header Content-Security-Policy "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
+    add_header Content-Security-Policy "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-azlzgFYelw1E8Ku3E8GqYH1fE6nmHMTP3Cy/CCWrGT8=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI=' ; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
 
     # Never cache the digests or the installers.
     location ~ ^/install\.(sh|ps1)(\.sha256)?$ {
@@ -150,7 +150,7 @@ yangble5.com {
 ### CSP hashes for the inline scripts
 
 ```
-index.html    'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c='
+index.html    'sha256-azlzgFYelw1E8Ku3E8GqYH1fE6nmHMTP3Cy/CCWrGT8='
 verify.html   'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='
 ```
 
@@ -279,8 +279,17 @@ turns amber at ≤30% and red at ≤10%.
 
 ## What the installers do when there is no registration endpoint
 
-An instance is not required to issue keys. A self-hosted or BYOK-only deployment — including
-`yangble5.com` as it stands — simply does not expose `POST /auth/register`, and answers **404**.
+An instance is not required to issue keys. A self-hosted or BYOK-only deployment simply does not
+expose `POST /auth/register`, and answers **404**.
+
+**Do not look that up in this file — ask the instance.** `GET /health` reports the live value in
+its `registration` field (`open`, `invite` or `closed`; `gateway/app.py`), and `GET /pool/status`
+adds `registration_open`, which also goes false when the operator's cap is reached. A static
+sentence in a README cannot track a runtime setting, and a stale one is worse than none: it tells
+a reader — or an AI agent about to run the one-liner — to expect BYOK-with-no-key from an
+instance that would have handed them a key. This paragraph named `yangble5.com` as an example of
+an instance with no registration endpoint; that was wrong at the time it was read, because
+registration on that host is **open**. The generic behaviour below is what this section is for.
 
 Both installers treat that as a **normal outcome, not a failure**: `404` and `501` fall through
 to BYOK mode exactly like `403` / `409` / `429` / `503` do. The installer still writes the
@@ -337,37 +346,84 @@ A = [(132,r'^YB5_HOME='),(151,r'^PRINT_KEY=0'),(127,r'^EX_VERIFY=8'),
      (764,r'^CRED_FILE='),(882,r'^\s+reg_body='),(894,r'chmod 600 "\$reg_body"'),
      (987,r'ensure_dir "\$YB5_HOME"'),
      (1008,r'cred_tmp="\$\{TMPD\}/credentials'),(1043,r'env_tmp="\$\{TMPD\}/env'),
-     (1150,r'toml_tmp="\$\{TMPD\}/codex'),(1236,r'info_tmp="\$\{TMPD\}/install_info'),
-     (1466,r'v_body="\$\{TMPD\}/probe\.json'),
+     (1216,r'toml_tmp="\$\{TMPD\}/codex'),(1302,r'info_tmp="\$\{TMPD\}/install_info'),
+     (1532,r'v_body="\$\{TMPD\}/probe\.json'),
      (179,r'^cleanup\(\)'),(578,r'^\s+cat > "\$wf_tmp"'),
      (682,r'x-api-key: %s'),(683,r'authorization: Bearer %s'),
      (688,r'output = "%s"'),(1031,r'^\s+\} > "\$cred_tmp"'),
-     (1034,r'write_file "\$CRED_FILE" 600'),(1054,r'yb5_load_credentials\(\)'),
-     (1117,r'^export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL'),
-     (1123,r'^export CLAUDE_CONFIG_DIR'),(1140,r'^unset ANTHROPIC_API_KEY'),
-     (1143,r'^export CODEX_HOME'),(1146,r'write_file "\$\{YB5_HOME\}/env\.sh" 600'),
-     (1171,r'codex/config\.toml" 600'),(1245,r'INSTALL_INFO" 600 nobackup'),
-     (1265,r'for ll_name in yangble5-claude'),(1280,r'>> ~/\.profile'),
-     (1420,r'http_call GET /health'),(1467,r'"max_tokens":16'),(1482,r'COLD request'),
-     (1504,r'PRINT_KEY" -ne 1'),(1544,r'^print_backups\(\)'),
-     (1555,r'Exempt on purpose'),(1638,r'verification FAILED')]
+     (1034,r'write_file "\$CRED_FILE" 600'),(1072,r'yb5_load_credentials\(\)'),
+     (1183,r'^export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL'),
+     (1189,r'^export CLAUDE_CONFIG_DIR'),(1206,r'^unset ANTHROPIC_API_KEY'),
+     (1209,r'^export CODEX_HOME'),(1212,r'write_file "\$\{YB5_HOME\}/env\.sh" 600'),
+     (1237,r'codex/config\.toml" 600'),(1311,r'INSTALL_INFO" 600 nobackup'),
+     (1331,r'for ll_name in yangble5-claude'),(1346,r'>> ~/\.profile'),
+     (1486,r'http_call GET /health'),(1533,r'"max_tokens":16'),(1548,r'COLD request'),
+     (1570,r'PRINT_KEY" -ne 1'),(1610,r'^print_backups\(\)'),
+     (1621,r'Exempt on purpose'),(1704,r'verification FAILED')]
 # install.ps1 is cited by four rows and drifts on its own schedule, so it needs
 # its own anchors — a .sh-only checker reports "0 mismatches" while every
 # Windows row is stale, which is precisely the shape of failure this table is
 # supposed to prevent.
 B = [(129,r'\[switch\] \$ShowKey'),(557,r'Copy-Item -LiteralPath \$Path'),
-     (1073,r'^setlocal'),(1168,r'^set "CLAUDE_CONFIG_DIR'),
-     (1169,r'^set "ANTHROPIC_BASE_URL'),(1181,r'^set "ANTHROPIC_API_KEY="'),
-     (1191,r"yangble5-claude\.cmd'\) -Content"),(1204,r"yangble5-codex\.cmd'\) -Content"),
-     (1235,r'^function Add-Yb5ToPath'),(1236,r'if \(-not \$AddToPath\)'),
-     (1237,r"GetEnvironmentVariable\('Path', 'User'\)"),
-     (1263,r"SetEnvironmentVariable\('Path', \$updated, 'User'\)"),
-     (1266,r'^\}'),(1474,r'if \(-not \$ShowKey\)'),(1486,r'Pass -ShowKey if you'),
-     (1493,r'shown once, and only once'),
-     (1509,r'^function Show-Backups'),(1519,r'restore with:  Copy-Item -LiteralPath')]
+     (1073,r'^setlocal'),(1284,r'^set "CLAUDE_CONFIG_DIR'),
+     (1285,r'^set "ANTHROPIC_BASE_URL'),(1297,r'^set "ANTHROPIC_API_KEY="'),
+     (1307,r"yangble5-claude\.cmd'\) -Content"),(1320,r"yangble5-codex\.cmd'\) -Content"),
+     (1351,r'^function Add-Yb5ToPath'),(1352,r'if \(-not \$AddToPath\)'),
+     (1353,r"GetEnvironmentVariable\('Path', 'User'\)"),
+     (1379,r"SetEnvironmentVariable\('Path', \$updated, 'User'\)"),
+     (1382,r'^\}'),(1590,r'if \(-not \$ShowKey\)'),(1602,r'Pass -ShowKey if you'),
+     (1609,r'shown once, and only once'),
+     (1625,r'^function Show-Backups'),(1635,r'restore with:  Copy-Item -LiteralPath')]
+# Everything above roughly install.sh:1050 and install.ps1:1100 has never moved;
+# everything below it has moved twice. The lists below close that gap: they are
+# the rest of the numbers the table cites in prose, which used to be checked by
+# nothing at all. That asymmetry is why a "0 mismatches" reading was possible
+# while half the table was stale — the checker only ever looked at the numbers
+# somebody had remembered to add to it.
+A += [(1086,r"YANGBLE5_KEY_ID=''"),(1139,r'YANGBLE5_KEY_ID\)\s+YANGBLE5_KEY_ID='),
+      (1149,r'^case "\$YANGBLE5_API" in'),(1192,r'^export ANTHROPIC_MODEL'),
+      (1200,r'CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s'),(1202,r'API_TIMEOUT_MS=%s'),
+      (1213,r'rm -f "\$env_tmp"'),(1224,r'^model_provider = "yangble5"'),
+      (1228,r'model_context_window = %s'),(1229,r'model_max_output_tokens = %s'),
+      (1231,r'base_url = "%s/v1"'),(1233,r'^env_key = "YANGBLE5_API_KEY"'),
+      (1241,r'claude/README\.txt" 600'),(1247,r'^CLAUDEDIR'),
+      (1250,r'yangble5-claude" 700'),(1256,r'^\. "\$\{HOME\}/\.yangble5/env\.sh"'),
+      (1262,r'^exec claude "\$@"'),(1265,r'yangble5-codex" 700'),
+      (1271,r'^\. "\$\{HOME\}/\.yangble5/env\.sh"'),(1276,r'^exec codex "\$@"'),
+      (1279,r'yangble5-env" 700'),(1318,r'LINK_BIN" -eq 1'),
+      (1333,r'\[ -e "\$ll_dest" \] && \[ ! -L "\$ll_dest" \]'),
+      (1341,r'case ":\$\{PATH\}:" in'),(1344,r'is NOT on your PATH'),
+      (1347,r'call the launcher by its full path'),
+      (1353,r'yangble5-uninstall" 700'),(1367,r'uninstall\.sh" 700'),
+      (1188,r'damage the credentials in ~/\.claude'),
+      (1220,r'Your normal ~/\.codex is untouched'),
+      (1245,r'here is separate from your real ~/\.claude'),
+      (1401,r'It will NOT touch ~/\.claude'),
+      (1511,r'http_call GET /v1/models'),(1537,r'http_call POST /v1/messages'),
+      (1543,r'HTTP_STATUS" = "200"'),
+      (1549,r'99\.53% figure applies to warm rounds'),(1554,r'^\s+v_msg='),
+      (1575,r'mode 0600\) and nowhere else'),
+      (1578,r"grep '\^YANGBLE5_API_KEY='"),(1590,r'^\s+cat <<KEY'),(1604,r'^KEY'),
+      (1611,r'-z "\$BACKUPS"'),(1623,r'Nothing else is exempt'),
+      (1629,r'^\s+print_backups'),(1707,r'exit "\$EX_VERIFY"')]
+B += [(1370,r"GetEnvironmentVariable\('Path', 'User'\)")]
+# A mismatch used to print only "this line no longer matches", which left the
+# reader to re-derive 35 numbers by hand -- and the last time that happened the
+# hand-derivation was done with a blind regex and made things worse (below).
+# So the checker now says WHICH of the three things went wrong, and for the
+# only benign one it prints the replacement number. Repair is copy-and-paste.
 def scan(anchors, lines, tag):
-    bad = [(tag, n, rx, (lines[n-1] if 0 < n <= len(lines) else "")[:64])
-           for n, rx in anchors if not re.search(rx, lines[n-1] if 0 < n <= len(lines) else "")]
+    bad = []
+    for n, rx in anchors:
+        if re.search(rx, lines[n-1] if 0 < n <= len(lines) else ""):
+            continue
+        hits = [i + 1 for i, ln in enumerate(lines) if re.search(rx, ln)]
+        if len(hits) == 1:
+            bad.append((tag, n, f"MOVED -> {hits[0]}", rx))
+        elif not hits:
+            bad.append((tag, n, "GONE - read the diff, the BEHAVIOUR may have changed", rx))
+        else:
+            bad.append((tag, n, f"AMBIGUOUS -> {hits}, pattern no longer names one line", rx))
     return bad
 bad = scan(A, L, "install.sh") + scan(B, P, "install.ps1")
 print(f"anchors: {len(A) + len(B)}  mismatches: {len(bad)}")
@@ -375,10 +431,29 @@ for b in bad: print("  MISMATCH", b)
 PY
 ```
 
-Last run: **`anchors: 74  mismatches: 0`**. If it reports mismatches, the numbers moved — re-derive
-them from the diff and update this table. **The claims do not expire when line numbers do.** Only
-change the prose if the *behaviour* changed; a moved line is a bookkeeping fix, a changed behaviour
-is a page edit.
+Last run: **`anchors: 120  mismatches: 0`**, against the installers **as committed** — see the
+next paragraph, which is the part that matters.
+
+**These numbers describe `git show HEAD:site/install.sh`, not your working tree.** That is the
+file a reader who clones the repo will open, so it is the only version the table can honestly be
+about. The practical consequence: **if you edit an installer, this checker goes red until you
+update the table in the same commit.** That is the intended behaviour, not a nuisance — run it,
+paste the `MOVED -> n` numbers back into the lists above and into the prose rows, and commit the
+two changes together. `GONE` and `AMBIGUOUS` are different: those mean a construct was renamed or
+duplicated, and they need a human to decide whether the *claim* changed.
+
+**Nothing runs this for you.** `.github/workflows/ci.yml` has six jobs — `test`,
+`tools-are-stdlib-only`, `offline-self-checks`, `installer-digests`, `published-numbers`,
+`no-secrets` — and not one of them executes the block above. It runs only when somebody
+remembers, which is why 35 of 74 anchors were stale at one point while this file still read
+"mismatches: 0". The fix is the one already applied to `tools/sitecheck.py`, which was extracted
+out of this same README for this same reason: move the block to `tools/anchorcheck.py`, run it
+from the `offline-self-checks` job, and let a red build do the remembering. **Until that lands,
+treat "mismatches: 0" in this file as a claim about the last time a human ran it, not a
+guarantee.**
+
+**The claims do not expire when line numbers do.** Only change the prose if the *behaviour*
+changed; a moved line is a bookkeeping fix, a changed behaviour is a page edit.
 
 This has already earned its keep once: a fifteen-line comment added to `json_string` moved every
 `install.sh` reference above 694, and the checker reported 28 mismatches in one run. Two lessons
@@ -476,51 +551,51 @@ must come from the `chmod` calls the run actually executed, which `sh -x` prints
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
 | Creates `~/.yangble5/` plus `claude/`, `codex/`, `bin/`, all mode `700` | `write_config` → four `ensure_dir` calls (987–990); `ensure_dir` does `mkdir -p` + `chmod 700` (563–564) | ran `write_config`; the four directories appear and nothing else does |
-| Four symlinks in `~/.local/bin` | `link_launchers` loop over exactly four names (1265–1272); `YB5_LINK_DIR` defined 134 | source read; the loop names are the only four |
-| `--no-bin-link` turns that off | flag 380; guard 1252 | ran with `LINK_BIN=0` → `skipping ~/.local/bin symlinks (--no-bin-link)` |
-| A same-named **non**-symlink there is left alone with a warning | 1267–1270 (`[ -e ] && [ ! -L ]` → `warn` + `continue`) | planted a plain file at `~/.local/bin/yangble5-env` and re-ran → `warn … exists and is not a symlink — leaving it alone`, and the planted file's contents were unchanged afterwards |
-| Those two are the locations it **leaves things in** | every *persistent* write goes through `write_file` (10 call sites: 1034, 1146, 1171, 1175, 1184, 1199, 1213, 1245, 1287, 1301) or `ensure_machine_salt` (636); every one of those destinations is `$YB5_HOME` (132) or `$YB5_BIN` (133), and `link_launchers` adds the four symlinks in `$YB5_LINK_DIR` (134) | ran a real install against a stub gateway with a throwaway `$HOME`; `find` afterwards returns exactly 10 files under `.yangble5` plus the 4 links, and nothing else |
-| There is a **third** location, a `mktemp -d` temp directory under `$TMPDIR`, and it is not permanent | `TMPD` assigned once at 539, `chmod 700` at 541; ten paths are built from it — `write.$$` 577, `resp.$$` 662, `curlrc.$$` 663, `curlerr.$$` 694, `register.json` 882, `credentials.$$` 1008, `env.$$` 1043, `codex.$$` 1150, `install_info.$$` 1236, `probe.json` 1466. Note 577: `write_file`'s **own** staging file is in `$TMPD`, so "every write goes through `write_file`, which targets `$YB5_HOME`" was never a closed argument | concurrent watcher over an owned `$TMPDIR` during a real install → **11 paths recorded: 1 directory + exactly those 10 files**, no others |
+| Four symlinks in `~/.local/bin` | `link_launchers` loop over exactly four names (1331–1338); `YB5_LINK_DIR` defined 134 | source read; the loop names are the only four |
+| `--no-bin-link` turns that off | flag 380; guard 1318 | ran with `LINK_BIN=0` → `skipping ~/.local/bin symlinks (--no-bin-link)` |
+| A same-named **non**-symlink there is left alone with a warning | 1333–1336 (`[ -e ] && [ ! -L ]` → `warn` + `continue`) | planted a plain file at `~/.local/bin/yangble5-env` and re-ran → `warn … exists and is not a symlink — leaving it alone`, and the planted file's contents were unchanged afterwards |
+| Those two are the locations it **leaves things in** | every *persistent* write goes through `write_file` (10 call sites: 1034, 1212, 1237, 1241, 1250, 1265, 1279, 1311, 1353, 1367) or `ensure_machine_salt` (636); every one of those destinations is `$YB5_HOME` (132) or `$YB5_BIN` (133), and `link_launchers` adds the four symlinks in `$YB5_LINK_DIR` (134) | ran a real install against a stub gateway with a throwaway `$HOME`; `find` afterwards returns exactly 10 files under `.yangble5` plus the 4 links, and nothing else |
+| There is a **third** location, a `mktemp -d` temp directory under `$TMPDIR`, and it is not permanent | `TMPD` assigned once at 539, `chmod 700` at 541; ten paths are built from it — `write.$$` 577, `resp.$$` 662, `curlrc.$$` 663, `curlerr.$$` 694, `register.json` 882, `credentials.$$` 1008, `env.$$` 1043, `codex.$$` 1216, `install_info.$$` 1302, `probe.json` 1532. Note 577: `write_file`'s **own** staging file is in `$TMPD`, so "every write goes through `write_file`, which targets `$YB5_HOME`" was never a closed argument | concurrent watcher over an owned `$TMPDIR` during a real install → **11 paths recorded: 1 directory + exactly those 10 files**, no others |
 | Four of the ten hold the API key in plaintext | `curlrc.$$` gets `header = "x-api-key: %s"` and the `authorization` header (682–683); `resp.$$` is curl's `output` for `/auth/register` (688), i.e. where the key arrives; `credentials.$$` is the staged credentials file (1008–1031); `write.$$` receives its bytes on the way to disk (578) | the watcher kept a copy of every version of every temp file; `grep -l <the key>` over those copies matched **exactly four**: `curlrc`, `resp`, `credentials`, `write`. Confirming the count matters — reading the code suggests two |
 | Only two of the ten get an extra `chmod 600`; the `700` directory is the real boundary | `chmod 600 "$hc_cfg"` (666) and `chmod 600 "$reg_body"` (894). The other eight inherit the process `umask` | `sh -x` trace of a full run: the only `chmod 600` lines naming a `$TMPD` path are those two (real output under Validation) |
 | A `trap` removes the directory on `EXIT HUP INT TERM`, so a normal exit leaves nothing | `cleanup()` 179–183 (`rm -rf "$TMPD"`), `trap` 184 | after a successful run, `find "$TMPDIR" -mindepth 1 \| wc -l` → **0** |
 | `SIGKILL` (and power loss) defeats it, and what is left can contain the key | `SIGKILL` is uncatchable; `register.json` and `probe.json` additionally have no per-file `rm -f` at all, so only the trap ever deletes them | `kill -9` during an in-flight HTTP call → **4 files left** (`curlrc`, `curlerr`, `register.json`, `probe.json`), and `grep` finds the full key in `curlrc`. Real output under Validation |
-| Does not look for, read or modify `.bashrc` / `.zshrc` / `.profile` | **absence.** `grep -nE 'bashrc\|zshrc\|\.profile' site/install.sh` → 3 hits, all of them text: header comment 30, banner 455, and the `info` at 1280 that *prints* a suggested line | grep output pasted under Validation below |
-| Does not change `PATH`; only prints the line to add | `link_launchers` 1275 reads `":${PATH}:"`; 1278–1281 `warn`/`info` only | source read — there is no assignment to `PATH` anywhere in the file |
-| Windows only touches the **user** PATH, and only with `-AddToPath` | `install.ps1` `Add-Yb5ToPath` 1235–1266: the no-flag branch 1236–1248 only reads and advises; the single write is 1263, and every one of the three `[Environment]` calls in the function passes scope `'User'` (1237, 1254, 1263) | source read |
+| Does not look for, read or modify `.bashrc` / `.zshrc` / `.profile` | **absence.** `grep -nE 'bashrc\|zshrc\|\.profile' site/install.sh` → 3 hits, all of them text: header comment 30, banner 455, and the `info` at 1346 that *prints* a suggested line | grep output pasted under Validation below |
+| Does not change `PATH`; only prints the line to add | `link_launchers` 1341 reads `":${PATH}:"`; 1344–1347 `warn`/`info` only | source read — there is no assignment to `PATH` anywhere in the file |
+| Windows only touches the **user** PATH, and only with `-AddToPath` | `install.ps1` `Add-Yb5ToPath` 1351–1382: the no-flag branch 1352–1364 only reads and advises; the single write is 1379, and every one of the three `[Environment]` calls in the function passes scope `'User'` (1353, 1370, 1379) | source read |
 
 ### 2. The key is not printed
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| **(hero `cmd-foot`)** The installer does not print the API key by default | `PRINT_KEY=0` (151); `print_key_once` 1504–1521 takes the "NOT printed" branch | ran `print_key_once` — real output pasted under Validation |
+| **(hero `cmd-foot`)** The installer does not print the API key by default | `PRINT_KEY=0` (151); `print_key_once` 1570–1587 takes the "NOT printed" branch | ran `print_key_once` — real output pasted under Validation |
 | Key is written to `~/.yangble5/credentials`, mode `0600` | `CRED_FILE` 764; `write_file "$CRED_FILE" 600` (1034) | ran `write_config`; the file contains the four `YANGBLE5_*` lines and nothing else |
-| What is printed is the path, not the key | 1509–1512, which also prints the `grep '^YANGBLE5_API_KEY=' …` line | in the captured output |
-| `--show-key` / `-ShowKey` opts back in, with a warning about the agent transcript | 381 / 1524–1538; `install.ps1` 129, 1474, 1486, 1493 | ran the POSIX side with `--show-key`: the key is printed under `Your yangble5 API key — shown once, and only once (--show-key)`, followed by `You asked for this with --show-key. If an AI agent ran the installer, that key is now in its transcript.` The Windows equivalent is source-read |
+| What is printed is the path, not the key | 1575–1578, which also prints the `grep '^YANGBLE5_API_KEY=' …` line | in the captured output |
+| `--show-key` / `-ShowKey` opts back in, with a warning about the agent transcript | 381 / 1590–1604; `install.ps1` 129, 1590, 1602, 1609 | ran the POSIX side with `--show-key`: the key is printed under `Your yangble5 API key — shown once, and only once (--show-key)`, followed by `You asked for this with --show-key. If an AI agent ran the installer, that key is now in its transcript.` The Windows equivalent is source-read |
 | The key never appears in `argv`; curl reads it from a `0600` config file | `http_call` 656–691: `chmod 600 "$hc_cfg"` (666), headers written into the file (682–683), `curl --config "$hc_cfg"` (694) | source read — the key is never an argument to any command |
 
 ### 3. Eleven exports and one unset
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| `~/.yangble5/env.sh` exports **eleven** variables and unsets one | generated 1043–1147: 1117 (3 names on one line), 1123–1126 (4), 1134–1136 (3), 1143 (1) = 11; `unset` at 1140 | generated the real file and counted: **`exports total: 11`, `unsets total: 1`** (output under Validation) |
+| `~/.yangble5/env.sh` exports **eleven** variables and unsets one | generated 1043–1213: 1183 (3 names on one line), 1189–1192 (4), 1200–1202 (3), 1209 (1) = 11; `unset` at 1206 | generated the real file and counted: **`exports total: 11`, `unsets total: 1`** (output under Validation) |
 | The eleven break down 3 `YANGBLE5_*` / 4 Claude Code / 3 numeric / 1 `CODEX_HOME` | same lines, in that order | the ordered name list is pasted under Validation |
-| Values live only in the launcher's process | launchers source `env.sh` then `exec` (1190+1196, 1205+1210); they are never appended to any rc file | source read |
-| `ANTHROPIC_API_KEY` is unset because it outranks `ANTHROPIC_AUTH_TOKEN` | 1138–1140 | source read |
-| Windows uses the same names split across two `.cmd` launchers under `setlocal` | `install.ps1` 1073 (`setlocal`), 1168–1181 (the shared body: `CLAUDE_CONFIG_DIR` 1168, `ANTHROPIC_BASE_URL` 1169), written out at 1191 (claude) and 1204 (codex); 1181 clears `ANTHROPIC_API_KEY` with `set "ANTHROPIC_API_KEY="` | source read |
-| **(verify.html)** `YANGBLE5_KEY_ID` is assigned but not exported, so it is not one of the eleven | assigned 1073, absent from the `export` at 1117 | in the generated file: it appears in `yb5_load_credentials`, not in any `export` line |
-| **(verify.html)** `credentials` is parsed as `KEY=VALUE`, never sourced | `yb5_load_credentials` 1054–1077 (`while IFS= read -r`) | in the generated file |
-| **(verify.html)** three of those values are re-checked against the same allow-lists, exit `6` on failure | 1083–1115: `YANGBLE5_API` (twice), `YANGBLE5_MODEL`, `YANGBLE5_API_KEY` (twice) — `YANGBLE5_KEY_ID` is **not** re-checked | counted in the generated file. The page said "four" during drafting and was corrected to "three" by this row |
+| Values live only in the launcher's process | launchers source `env.sh` then `exec` (1256+1262, 1271+1276); they are never appended to any rc file | source read |
+| `ANTHROPIC_API_KEY` is unset because it outranks `ANTHROPIC_AUTH_TOKEN` | 1204–1206 | source read |
+| Windows uses the same names split across two `.cmd` launchers under `setlocal` | `install.ps1` 1073 (`setlocal`), 1284–1297 (the shared body: `CLAUDE_CONFIG_DIR` 1284, `ANTHROPIC_BASE_URL` 1285), written out at 1307 (claude) and 1320 (codex); 1297 clears `ANTHROPIC_API_KEY` with `set "ANTHROPIC_API_KEY="` | source read |
+| **(verify.html)** `YANGBLE5_KEY_ID` is assigned but not exported, so it is not one of the eleven | assigned 1086 and 1139, absent from the `export` at 1183 | in the generated file: it appears in `yb5_load_credentials`, not in any `export` line |
+| **(verify.html)** `credentials` is parsed as `KEY=VALUE`, never sourced | `yb5_load_credentials` 1072–1143 (`while IFS= read -r`) | in the generated file |
+| **(verify.html)** three of those values are re-checked against the same allow-lists, exit `6` on failure | 1149–1181: `YANGBLE5_API` (twice), `YANGBLE5_MODEL`, `YANGBLE5_API_KEY` (twice) — `YANGBLE5_KEY_ID` is **not** re-checked | counted in the generated file. The page said "four" during drafting and was corrected to "three" by this row |
 
 ### 4. Its own Codex config — not yours
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| Writes `~/.yangble5/codex/config.toml` (mode `600`) | 1150–1171 | generated file inspected |
-| Sets `model_provider`, `base_url`, context/output ceilings, `env_key` | 1158, 1165, 1162, 1163, 1167 | all five appear in the generated TOML |
-| Points Codex at it with `CODEX_HOME` | 1143 | in the generated `env.sh` |
-| **Does not open, read or modify `~/.codex/config.toml`** | **absence.** `grep -nE '~/\.codex\|~/\.claude' site/install.sh` → 6 hits, all of them prose in comments or printed text (25, 452, 1122, 1154, 1179, 1335). No file operation names either path | grep output pasted under Validation |
-| Plain `claude` keeps your login because `CLAUDE_CONFIG_DIR` is separate | 1123, plus the `claude/README.txt` marker 1175–1181 | generated file inspected |
+| Writes `~/.yangble5/codex/config.toml` (mode `600`) | 1216–1237 | generated file inspected |
+| Sets `model_provider`, `base_url`, context/output ceilings, `env_key` | 1224, 1231, 1228, 1229, 1233 | all five appear in the generated TOML |
+| Points Codex at it with `CODEX_HOME` | 1209 | in the generated `env.sh` |
+| **Does not open, read or modify `~/.codex/config.toml`** | **absence.** `grep -nE '~/\.codex\|~/\.claude' site/install.sh` → 6 hits, all of them prose in comments or printed text (25, 452, 1188, 1220, 1245, 1401). No file operation names either path | grep output pasted under Validation |
+| Plain `claude` keeps your login because `CLAUDE_CONFIG_DIR` is separate | 1189, plus the `claude/README.txt` marker 1241–1247 | generated file inspected |
 
 ### 5. Backups, and the one deliberate exemption
 
@@ -528,19 +603,19 @@ must come from the `chmod` calls the run actually executed, which `sh -x` prints
 |---|---|---|
 | Existing file with different content → `cp -p` to `<file>.bak-<timestamp>` | `write_file` 591–603; `timestamp()` 556 (`date +%Y%m%d-%H%M%S`) | ran `write_config` twice with changed values; two real `.bak-…` files were produced |
 | Identical content → prints `unchanged`, no backup | 592–595 | in the captured second-run output |
-| Every backup is printed at the end with the exact restoring command | `print_backups` 1544–1558, called from `next_steps` 1563 | real output pasted under Validation — one `restore with: cp -p "…" "…"` line per backup |
-| Nothing backed up → says so instead of staying silent | 1545–1548 | ran `print_backups` with `BACKUPS=""` → `no existing file was overwritten, so nothing was backed up` |
-| `INSTALL_INFO` is the **only** file exempt from backup, and the script says so | `write_file`'s third argument (571–572, 597); `grep -c 'nobackup'` on the call sites → the single site is 1245; the exemption text is printed at 1555–1557 | the second run rewrote `INSTALL_INFO` and it is **absent** from the printed backup list, with the exemption paragraph printed underneath |
+| Every backup is printed at the end with the exact restoring command | `print_backups` 1610–1624, called from `next_steps` 1629 | real output pasted under Validation — one `restore with: cp -p "…" "…"` line per backup |
+| Nothing backed up → says so instead of staying silent | 1611–1614 | ran `print_backups` with `BACKUPS=""` → `no existing file was overwritten, so nothing was backed up` |
+| `INSTALL_INFO` is the **only** file exempt from backup, and the script says so | `write_file`'s third argument (571–572, 597); `grep -c 'nobackup'` on the call sites → the single site is 1311; the exemption text is printed at 1621–1623 | the second run rewrote `INSTALL_INFO` and it is **absent** from the printed backup list, with the exemption paragraph printed underneath |
 | `machine-id` is created once and never overwritten, so it is never a backup candidate | `ensure_machine_salt` 621–638 returns early at 624–628 when the file exists | source read |
-| Windows prints `Copy-Item -LiteralPath … -Destination … -Force` | `install.ps1` `Show-Backups` 1509; the restore line is emitted at 1519 (the backup itself is taken at 557) | source read |
+| Windows prints `Copy-Item -LiteralPath … -Destination … -Force` | `install.ps1` `Show-Backups` 1625; the restore line is emitted at 1635 (the backup itself is taken at 557) | source read |
 
 ### 6. One real call, honestly reported
 
 | Sentence on the page | Implemented by | How it was verified |
 |---|---|---|
-| `GET /health` → `GET /v1/models` → `POST /v1/messages` with `max_tokens` 16 | `verify()` 1420, 1445, 1466–1471 (`"max_tokens":16` at 1467) | source read |
-| On success it prints the status and time **and says the call was cold, 0%** | 1477–1485; the cold-cache disclosure is 1482–1483 | source read |
-| On failure it does not call it a success; exit code 8 | 1488–1493; `EX_VERIFY=8` (127); `main` 1638–1641 | pointed the installer at a stub answering `/auth/register`, `/health` and `/v1/models` with `200` and `/v1/messages` with `500` → `exit=8`, and the output says `the config was written, but the stack did NOT answer. Not calling this a success.` |
+| `GET /health` → `GET /v1/models` → `POST /v1/messages` with `max_tokens` 16 | `verify()` 1486, 1511, 1532–1537 (`"max_tokens":16` at 1533) | source read |
+| On success it prints the status and time **and says the call was cold, 0%** | 1543–1551; the cold-cache disclosure is 1548–1549 | source read |
+| On failure it does not call it a success; exit code 8 | 1554–1559; `EX_VERIFY=8` (127); `main` 1704–1707 | pointed the installer at a stub answering `/auth/register`, `/health` and `/v1/models` with `200` and `/v1/messages` with `500` → `exit=8`, and the output says `the config was written, but the stack did NOT answer. Not calling this a success.` |
 | Server text is stripped of ANSI/control bytes, flattened, capped, prefixed `server says>` | `sanitize_remote` 274–292, `print_remote` 295–301 | unit-tested by `tests/test_installer_validation.py` against this same file |
 
 ### The "never" list
@@ -1028,7 +1103,7 @@ $ grep -nE "\beval\b" site/install.sh
 707:# Deliberately dumb: no eval, no shell expansion of server data, and every
 ```
 
-Every hit is a comment or a string that gets *printed*. `install.sh:1280` is the `info` line that
+Every hit is a comment or a string that gets *printed*. `install.sh:1346` is the `info` line that
 shows the user the `>> ~/.profile` command to run themselves; it is not executed. There is no
 `systemd` / `launchd` / `launchctl` / `crontab` match at all, and both `eval` matches are prose in
 comments.

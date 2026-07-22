@@ -66,6 +66,7 @@ from .ratelimit import (
     FailureBackoff,
     SlidingWindowLimiter,
     TimedThrottle,
+    UpstreamHealth,
 )
 from .storage import (
     MACHINE_ID_MAX_CHARS,
@@ -115,6 +116,31 @@ _SPENDING_METHODS = frozenset({"POST"})
 # provider's error text can name the account, and a user who just hit a wall
 # needs the BYOK instructions far more than they need a provider stack trace.
 _UPSTREAM_QUOTA_STATUSES = frozenset({402, 429})
+
+# The ONLY non-2xx statuses forwarded verbatim on shared-pool traffic.
+#
+# WHY an allowlist and not a denylist: the failure modes of one personal OAuth
+# credential are not confined to 402/429. An account that needs re-verification
+# answers 403 and names the account in the body; an engine that cannot mint a
+# token answers 5xx and can name the internal host; a 3xx carries a Location
+# header pointing at infrastructure the public has no business seeing. Every one
+# of those used to stream straight to the caller. These four, by contrast, are
+# verdicts on the CALLER'S OWN request — "your JSON is malformed", "that is too
+# big", "wrong media type", "that field is invalid" — and withholding them would
+# leave a user unable to fix a request only they can fix.
+#
+# BYOK traffic is never intercepted at all: that is the caller's own account
+# answering the caller, and it is theirs to read.
+_UPSTREAM_PASSTHROUGH_STATUSES = frozenset({400, 413, 415, 422})
+
+# Identifier for the single process-wide upstream concurrency bucket. A constant
+# on purpose: ConcurrencyLimiter buckets per identifier, so one constant is
+# exactly what turns a per-caller cap into an aggregate one.
+_UPSTREAM_SLOT = "__shared_pool__"
+
+# Used in user-facing text so a "month" window never renders as "monthly" via
+# naive string concatenation ("dayly").
+_WINDOW_ADJECTIVE = {"day": "daily", "month": "monthly"}
 
 # Bounded scan for the model name, used only to select a price-table row.
 _MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"\\]{1,200})"')
@@ -417,6 +443,85 @@ class PoolState:
         return self.capped and self.remaining_pct <= 0.0
 
 
+@dataclass(frozen=True)
+class ServiceState:
+    """The ONE answer to "can this service serve a shared-pool request now?".
+
+    It exists because there used to be two. `/pool/status` computed
+    `registration_open` from the monthly cap AND the daily pool, while
+    `POST /auth/register` gated on the monthly cap alone — so during a
+    daily-exhausted window the widget advertised "registration closed" while the
+    endpoint kept returning 201 with a key that could not be used. Two surfaces
+    describing the same service must not compute the answer twice.
+
+    The three questions are kept SEPARATE on purpose, because they have
+    genuinely different answers:
+
+      * `registration_allowed` — will /auth/register mint a key? Yes unless the
+        monthly cap is tripped. A pool that is dry *today* is not a reason to
+        refuse a key: attaching a BYOK credential is the documented way out of
+        exactly that situation, and it needs a key to attach to.
+      * `accepting` — will a shared-pool request be served? Needs budget AND a
+        working upstream.
+      * `usable_now` — `accepting` and the caller is not locked out by the
+        operator reserve. This is what the registration response reports, so an
+        installer never stores a key while believing it will work.
+    """
+
+    pool: PoolState
+    cap: BudgetVerdict
+    daily: BudgetVerdict
+    reserve: BudgetVerdict           # always evaluated for a NON-operator caller
+    upstream_ok: bool
+    upstream_failures: int
+
+    @property
+    def registration_allowed(self) -> bool:
+        return self.cap.allowed
+
+    @property
+    def accepting(self) -> bool:
+        return self.cap.allowed and self.daily.allowed and self.upstream_ok
+
+    @property
+    def reserve_engaged(self) -> bool:
+        return not self.reserve.allowed
+
+    @property
+    def usable_now(self) -> bool:
+        return self.accepting and self.reserve.allowed
+
+    @property
+    def remaining_pct(self) -> float:
+        """Budget headroom, CAPPED AT ZERO while the upstream is failing.
+
+        `pool.remaining_pct` is a pure budget ratio, and a budget ratio cannot
+        move when the upstream refuses: the refusal path writes no usage row and
+        adds no spend. Reporting 100% through an outage is the single most
+        misleading thing this endpoint could do, because its entire job is to
+        answer "is there room for me right now?".
+        """
+        return 0.0 if not self.upstream_ok else self.pool.remaining_pct
+
+    def blocking_verdict(self) -> BudgetVerdict | None:
+        """The reason a shared-pool request would be refused, or None."""
+        for verdict in (self.cap, self.daily, self.reserve):
+            if not verdict.allowed:
+                return verdict
+        if not self.upstream_ok:
+            return BudgetVerdict(
+                False,
+                503,
+                "upstream_unavailable",
+                "The upstream account behind the shared pool is not serving "
+                "requests at the moment. This is not a problem with your key, and "
+                "no budget of yours has been spent. Attach your own upstream "
+                "credential to keep working now.",
+                60,
+            )
+        return None
+
+
 def byok_instructions(settings: Settings) -> dict[str, Any]:
     """The "here is how to keep working" payload.
 
@@ -529,6 +634,14 @@ class GatewayState:
         self.started_at = time.monotonic()
         self.key_rpm = SlidingWindowLimiter(settings.rate_limit_rpm)
         self.key_concurrency = ConcurrencyLimiter(settings.rate_limit_concurrency)
+        # AGGREGATE, not per-key. `key_concurrency` buckets on key_id, so N keys
+        # get N x rate_limit_concurrency simultaneous requests; the single
+        # account behind the shared pool sees that product, not the factor.
+        self.upstream_concurrency = ConcurrencyLimiter(settings.upstream_max_concurrency)
+        self.upstream_health = UpstreamHealth(
+            settings.upstream_health_window_seconds,
+            settings.upstream_health_failure_threshold,
+        )
         self.auth_ip_rpm = SlidingWindowLimiter(settings.auth_rpm_per_ip)
         self.auth_backoff = FailureBackoff(
             settings.auth_fail_lockout_threshold, settings.auth_fail_lockout_seconds
@@ -577,6 +690,23 @@ class GatewayState:
         reset = _next_utc_midnight() if window == "day" else _next_utc_month_start()
         return PoolState(round(fraction, 4), reset.isoformat(), window, True)
 
+    def service_state(self) -> ServiceState:
+        """Every capacity question answered once, from one set of reads.
+
+        `/pool/status`, `POST /auth/register` and `/admin/stats` all call this,
+        so they cannot disagree about whether the service is usable.
+        """
+        pool = self.pool_state()
+        healthy, _last_status, failures = self.upstream_health.snapshot()
+        return ServiceState(
+            pool=pool,
+            cap=self.global_cap_state(),
+            daily=self.daily_pool_verdict(),
+            reserve=self.reserve_verdict(pool, is_operator=False),
+            upstream_ok=healthy,
+            upstream_failures=failures,
+        )
+
     def reserve_verdict(self, pool: PoolState, is_operator: bool) -> BudgetVerdict:
         """Gate the bottom slice of the pool for the operator's own keys.
 
@@ -591,15 +721,31 @@ class GatewayState:
             return BudgetVerdict(True)
         if pool.remaining_pct > fraction:
             return BudgetVerdict(True)
+        # RETRY-AFTER MUST FOLLOW THE WINDOW THAT IS ACTUALLY BINDING.
+        #
+        # This used to hardcode "seconds until 00:00 UTC" no matter which cap
+        # produced `pool.remaining_pct`. On this deployment the binding window is
+        # the MONTH, and nothing refills a monthly counter before the 1st — so
+        # the header said "try again in a few hours" while the `reset_at` field
+        # in the very same JSON body said "2026-08-01". A client that trusts the
+        # header retries every night for up to four weeks and is refused every
+        # time; a client that trusts the body gives up. Both were told the truth
+        # by one half of the response and a lie by the other.
+        retry = (
+            _seconds_until_month_end()
+            if pool.window == "month"
+            else _seconds_until_utc_midnight()
+        )
         return BudgetVerdict(
             False,
             429,
             "operator_reserve_engaged",
             "The shared pool is down to its reserved slice, which is held for the "
-            "operator's own account so this service can keep running at all. Your "
-            "requests resume when the pool refills — or immediately if you attach "
-            "your own upstream credential.",
-            _seconds_until_utc_midnight(),
+            "operator's own account so this service can keep running at all. The "
+            f"binding ceiling is the {_WINDOW_ADJECTIVE.get(pool.window, pool.window)} "
+            f"one, so your requests resume at {pool.reset_at} — or immediately if "
+            "you attach your own upstream credential.",
+            retry,
         )
 
     def daily_pool_verdict(self) -> BudgetVerdict:
@@ -938,6 +1084,8 @@ def create_app(
         settings.engine_url,
         timeout=settings.upstream_timeout_seconds,
         connect_timeout=settings.upstream_connect_timeout_seconds,
+        pool_timeout=settings.upstream_pool_timeout_seconds,
+        max_connections=settings.upstream_max_connections,
     )
     state = GatewayState(settings, storage, upstream)
 
@@ -980,6 +1128,67 @@ def create_app(
     _register_proxy_routes(app, state)
     _register_admin_routes(app, state)
     return app
+
+
+def _daily_allowance(settings: Settings) -> dict[str, Any]:
+    """The per-key daily ceilings, with the one that BINDS named explicitly.
+
+    A registration response that lists a 2,000,000-token allowance and a $2.00
+    allowance side by side invites the reader — especially an AI agent following
+    an install script — to quote the looser one. At the shipped placeholder
+    prices those two numbers are not two views of the same allowance: $2.00 is
+    reached after 400,000 tokens, so four fifths of the advertised token budget
+    is unreachable. Whoever reads this gets told which number stops them.
+    """
+    limits: list[dict[str, Any]] = []
+    if settings.daily_token_budget > 0:
+        limits.append({"unit": "tokens", "value": settings.daily_token_budget})
+    if settings.daily_cost_usd_budget > 0:
+        limits.append({"unit": "usd", "value": settings.daily_cost_usd_budget})
+    if not limits:
+        return {"limits": [], "binds": None, "note": "No per-key daily ceiling is configured."}
+
+    binds = limits[0]["unit"] if len(limits) == 1 else None
+    if binds is None:
+        # Both configured. `usd_budget_token_ceiling` uses the cheapest price
+        # column, so it OVER-states how far the dollar budget reaches; if even
+        # that over-statement lands below the token budget, the dollar ceiling
+        # binds and the conclusion cannot be an artefact of the estimate.
+        ceiling = settings.usd_budget_token_ceiling(settings.daily_cost_usd_budget)
+        if ceiling is not None and ceiling < settings.daily_token_budget:
+            binds = "usd"
+    note = (
+        "Whichever ceiling is reached first stops requests until 00:00 UTC."
+        if binds is None
+        else f"The {binds} ceiling is the one that will stop you first."
+    )
+    return {"limits": limits, "binds": binds, "note": note}
+
+
+def _issuance_status(state: GatewayState) -> dict[str, Any]:
+    """Whether a key handed out RIGHT NOW would actually be served.
+
+    A registration response used to describe only the allowance the key was
+    granted. That is what the key is *permitted*, not what it will *get*: the
+    daily pool can be spent, the operator reserve can be engaged, or the single
+    upstream account can be refusing — and in every one of those cases the key
+    is perfectly valid and every request it makes is refused. An installer that
+    stores such a key and reports success is lying to its user on this gateway's
+    behalf, so the facts and the way out ship with the key itself.
+    """
+    svc = state.service_state()
+    payload: dict[str, Any] = {
+        "usable_now": svc.usable_now,
+        "pool_remaining_pct": svc.remaining_pct,
+    }
+    blocking = svc.blocking_verdict()
+    if blocking is not None:
+        payload["not_usable_reason"] = blocking.kind
+        payload["not_usable_detail"] = blocking.message
+        payload["retry_after_seconds"] = max(1, blocking.retry_after)
+        payload["reset_at"] = svc.pool.reset_at
+        payload["byok_instructions"] = byok_instructions(state.settings)
+    return payload
 
 
 def _package_version() -> str:
@@ -1053,6 +1262,8 @@ async def _reissue_for_machine(state: GatewayState, binding: Any, ip_hash: str) 
             ),
             "daily_token_budget": settings.daily_token_budget or None,
             "daily_cost_usd_budget": settings.daily_cost_usd_budget or None,
+            "daily_allowance": _daily_allowance(settings),
+            **_issuance_status(state),
         },
         status_code=200,
     )
@@ -1110,20 +1321,24 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         identifier and no engine detail: a visitor needs to know whether there is
         room for them, and nobody needs to know how much the operator spends.
         """
-        pool = state.pool_state()
-        cap = state.global_cap_state()
-        daily = state.daily_pool_verdict()
-        accepting = cap.allowed and daily.allowed
-        reserve_engaged = not state.reserve_verdict(pool, is_operator=False).allowed
+        svc = state.service_state()
+        pool = svc.pool
         return JSONResponse(
             {
-                "remaining_pct": pool.remaining_pct,
+                # Capped at 0 while the upstream is refusing: a budget ratio
+                # cannot move during an outage, so the raw ratio would report
+                # "plenty of room" through a total failure to serve.
+                "remaining_pct": svc.remaining_pct,
                 "reset_at": pool.reset_at,
                 "reset_window": pool.window,
-                "registration_open": settings.registration_open and accepting,
-                "accepting_requests": accepting,
+                # Exactly the expression POST /auth/register uses. It is
+                # deliberately NOT `accepting_requests`: a dry pool today is the
+                # moment BYOK matters most, and attaching a credential needs a
+                # key to attach it to.
+                "registration_open": settings.registration_open and svc.registration_allowed,
+                "accepting_requests": svc.accepting,
                 "capped": pool.capped,
-                "reserve_engaged": reserve_engaged,
+                "reserve_engaged": svc.reserve_engaged,
                 "operator_reserve_fraction": settings.operator_reserve_fraction,
                 "byok_available": settings.byok_enabled,
             }
@@ -1156,10 +1371,11 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "Self-service registration is disabled on this instance.",
             )
 
-        # Refuse to hand out new keys while the operator cap is tripped: a key
-        # issued now could not be used anyway, and issuing it invites support load.
-        cap = state.global_cap_state()
-        if not cap.allowed:
+        # ONE expression, shared with /pool/status's `registration_open`, so the
+        # widget and the endpoint can never disagree about whether a key will be
+        # issued. `svc` is also what fills in `usable_now` on the way out.
+        svc = state.service_state()
+        if not svc.registration_allowed:
             return _error(
                 503, "registration_unavailable",
                 "This instance is at its operator budget cap and is not issuing new "
@@ -1327,8 +1543,15 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 ),
                 "daily_token_budget": settings.daily_token_budget or None,
                 "daily_cost_usd_budget": settings.daily_cost_usd_budget or None,
+                "daily_allowance": _daily_allowance(settings),
                 "machine_bound": machine_hash is not None,
                 "reused": False,
+                # Re-read rather than reusing the `svc` from the top of the
+                # handler: issuing a key involves a KDF and several awaits, and
+                # the pool can be exhausted by another caller in that window.
+                # The status shipped with the key describes the moment the key
+                # is handed over, not the moment the request arrived.
+                **_issuance_status(state),
             },
             status_code=201,
         )
@@ -1583,7 +1806,32 @@ def _make_proxy_handler(state: GatewayState, path: str):
                     message=verdict.message, retry_after=verdict.retry_after,
                 )
 
+        # AGGREGATE FIRST, then per-key.
+        #
+        # `key_concurrency` buckets on key_id, so it caps ONE caller at
+        # RATE_LIMIT_CONCURRENCY and says nothing about the sum. Fifty registered
+        # keys at four in flight each is two hundred simultaneous requests landing
+        # on the ONE upstream credential that serves the shared pool. This
+        # limiter is the only thing in the request path that counts across keys.
+        #
+        # BYOK traffic is exempt on purpose: it is served by the caller's own
+        # account, and `byok_instructions` promises attaching a credential means
+        # "no queue behind anyone else". Charging BYOK callers for shared-pool
+        # congestion would make that sentence false.
+        if billable and not state.upstream_concurrency.acquire(_UPSTREAM_SLOT):
+            _log(logging.INFO, "request.upstream_saturated", key_id=ctx.key_id, endpoint=path)
+            return _error(
+                429, "upstream_busy",
+                "The shared pool is serving as many simultaneous requests as its "
+                f"upstream account will take ({settings.upstream_max_concurrency}). "
+                "Nothing is wrong with your key and no allowance was spent. Retry "
+                "in a moment, or attach your own upstream credential to stop "
+                "sharing this queue.",
+                retry_after_seconds=2,
+            )
         if not state.key_concurrency.acquire(ctx.key_id):
+            if billable:
+                state.upstream_concurrency.release(_UPSTREAM_SLOT)
             return _error(
                 429, "concurrency_limit_error",
                 f"Too many concurrent requests for this key "
@@ -1591,18 +1839,23 @@ def _make_proxy_handler(state: GatewayState, path: str):
                 retry_after_seconds=1,
             )
 
+        def release_slots() -> None:
+            state.key_concurrency.release(ctx.key_id)
+            if billable:
+                state.upstream_concurrency.release(_UPSTREAM_SLOT)
+
         try:
             await check_abuse(state, ctx)
             # check_abuse may have just tripped the soft binding throttle on
             # this very request; honour it now rather than one request late.
             held = state.binding_throttle.remaining(ctx.key_id)
             if held > 0:
-                state.key_concurrency.release(ctx.key_id)
+                release_slots()
                 return _binding_throttled(state, held)
 
             body = await read_body_capped(request, settings.max_request_bytes)
             if body is None:
-                state.key_concurrency.release(ctx.key_id)
+                release_slots()
                 return _error(
                     413, "request_too_large",
                     f"Request body exceeds {settings.max_request_bytes} bytes.",
@@ -1614,7 +1867,7 @@ def _make_proxy_handler(state: GatewayState, path: str):
                 byok=byok_credential is not None,
             )
         except Exception:
-            state.key_concurrency.release(ctx.key_id)
+            release_slots()
             raise
 
     handler.__name__ = f"proxy_{path.strip('/').replace('/', '_')}"
@@ -1665,6 +1918,10 @@ async def _proxy(
         if not released:
             released = True
             state.key_concurrency.release(ctx.key_id)
+            # Mirrors the acquisition in the handler: the aggregate slot is only
+            # taken for shared-pool traffic, so it is only given back for it.
+            if billable:
+                state.upstream_concurrency.release(_UPSTREAM_SLOT)
 
     stack = AsyncExitStack()
     try:
@@ -1689,29 +1946,78 @@ async def _proxy(
 
     status = response.status_code
 
-    # The upstream account behind the shared pool is out of quota or being
-    # rate-limited. Answer it ourselves: the provider's body can name the
-    # operator's account, and a user who just hit this wall needs the BYOK
-    # instructions rather than a provider stack trace. BYOK callers are passed
-    # through untouched — that is their own account's error, and theirs to read.
-    if billable and status in _UPSTREAM_QUOTA_STATUSES:
+    # THE SHARED UPSTREAM FAILED. Answer it ourselves.
+    #
+    # This used to fire on 402 and 429 only, and everything else fell through to
+    # the passthrough below, which filters hop-by-hop headers and streams the
+    # provider's body unchanged. The failure modes of one personal OAuth
+    # credential are not confined to two statuses: an account awaiting
+    # re-verification answers 403 with text that names it, and an engine that
+    # cannot obtain a token answers 5xx with text that can name the internal
+    # host. Those bodies reached the public client raw. Now the allowlist of
+    # forwarded statuses is explicit and small (see
+    # `_UPSTREAM_PASSTHROUGH_STATUSES`), and everything else gets the same
+    # sanitised envelope with a reason that distinguishes "out of quota" from
+    # "not working". BYOK callers are still passed through untouched — that is
+    # their own account's error, and theirs to read.
+    intercept = (
+        billable
+        and not (200 <= status < 300)
+        and status not in _UPSTREAM_PASSTHROUGH_STATUSES
+    )
+    if billable and 200 <= status < 300:
+        # Proof the SHARED account is serving. Clears the failure window, so a
+        # burst of errors followed by a success does not leave /pool/status
+        # claiming an outage that has ended.
+        #
+        # `billable` is load-bearing and must match the guard on record_failure
+        # below. A BYOK request is served by the CALLER'S own credential, so its
+        # 200 says nothing whatsoever about the operator's account -- but it was
+        # clearing the window anyway. The shared pool could be returning 500 to
+        # everyone while one active BYOK user kept /pool/status reporting
+        # `accepting_requests: true` and `remaining_pct: 1.0`, which is the exact
+        # outage-masking UpstreamHealth exists to prevent.
+        state.upstream_health.record_success()
+    if intercept:
+        quota = status in _UPSTREAM_QUOTA_STATUSES
+        state.upstream_health.record_failure(status)
         await stack.aclose()
         release_once()
         _log(
-            logging.WARNING, "upstream.quota", key_id=ctx.key_id, endpoint=path, status=status,
+            logging.WARNING,
+            "upstream.quota" if quota else "upstream.failed",
+            key_id=ctx.key_id,
+            endpoint=path,
+            status=status,          # the REAL upstream status, operator-side only
         )
+        if quota:
+            return _degraded(
+                settings,
+                state.pool_state(),
+                status=429,
+                reason="upstream_quota_exhausted",
+                message=(
+                    "The upstream account behind the shared pool is out of quota or "
+                    "rate-limited right now, so this request was not served. This is a "
+                    "capacity limit, not a problem with your key. Attach your own "
+                    "upstream credential to keep working immediately."
+                ),
+                retry_after=60,
+            )
         return _degraded(
             settings,
             state.pool_state(),
-            status=429,
-            reason="upstream_quota_exhausted",
+            status=503,
+            reason="upstream_unavailable",
             message=(
-                "The upstream account behind the shared pool is out of quota or "
-                "rate-limited right now, so this request was not served. This is a "
-                "capacity limit, not a problem with your key. Attach your own "
-                "upstream credential to keep working immediately."
+                "The upstream account behind the shared pool refused this request "
+                "for a reason that is not a quota limit — it may need to be "
+                "re-authorised, or the engine could not reach it. Nothing is wrong "
+                "with your key and no allowance was spent. The operator has the "
+                "real status in the gateway log. Attach your own upstream "
+                "credential to keep working now."
             ),
-            retry_after=60,
+            retry_after=30,
         )
 
     out_headers = filter_response_headers(response.headers)
@@ -1998,8 +2304,9 @@ def _register_admin_routes(app: FastAPI, state: GatewayState) -> None:
             return denied
         cost, tokens = state.spend.current()
         day_cost, day_tokens = state.spend.current_day()
-        cap = state.global_cap_state()
-        pool = state.pool_state()
+        svc = state.service_state()
+        pool = svc.pool
+        healthy, last_status, failures = state.upstream_health.snapshot()
         return JSONResponse(
             {
                 "month": month_key(),
@@ -2018,11 +2325,19 @@ def _register_admin_routes(app: FastAPI, state: GatewayState) -> None:
                     "remaining_pct": pool.remaining_pct,
                     "reset_at": pool.reset_at,
                     "reserve_fraction": settings.operator_reserve_fraction,
-                    "reserve_engaged": not state.reserve_verdict(
-                        pool, is_operator=False
-                    ).allowed,
+                    "reserve_engaged": svc.reserve_engaged,
                 },
-                "accepting_requests": cap.allowed and state.daily_pool_verdict().allowed,
+                # Budget headroom and "is the account serving" are different
+                # questions; the operator needs both, separately.
+                "upstream": {
+                    "ok": healthy,
+                    "recent_failures": failures,
+                    "last_failure_status": last_status,
+                    "window_seconds": settings.upstream_health_window_seconds,
+                    "max_concurrency": settings.upstream_max_concurrency,
+                    "in_flight": state.upstream_concurrency.active(_UPSTREAM_SLOT),
+                },
+                "accepting_requests": svc.accepting,
                 "prices_are_placeholder": settings.prices_are_placeholder,
                 "byok_encrypted_at_rest": state.byok_cipher.encrypts,
             }

@@ -242,6 +242,10 @@ header.site nav a:hover,header.site nav a:focus-visible{color:var(--fg); text-de
 .cmd-body{padding:var(--s-5) var(--s-4) var(--s-4)}
 .cmd-hint{font-size:var(--t-0); color:var(--fg-2); margin:0 0 var(--s-3)}
 .cmd-row{display:flex; gap:var(--s-3); align-items:stretch; flex-wrap:wrap}
+.cmd-row + .cmd-row{margin-top:var(--s-3)}
+/* `display:flex` beats the UA sheet's [hidden]{display:none}. Without this the
+   script's row-hiding is a no-op and every OS variant stays on screen. */
+.cmd-row[hidden]{display:none}
 .cmd{
   flex:1 1 min(360px,100%); min-width:0; margin:0;
   background:var(--bg); border:1px solid var(--line); border-radius:var(--r-2);
@@ -250,6 +254,9 @@ header.site nav a:hover,header.site nav a:focus-visible{color:var(--fg); text-de
   overflow-x:auto; white-space:pre; color:var(--fg);
   display:flex; align-items:center;
 }
+/* A multi-step block is text, not a one-liner: centring it vertically inside a
+   flex box collapses the lines. */
+.cmd.cmd-block{display:block; align-items:stretch; font-size:clamp(.78rem,2.1vw,.94rem)}
 .copybtn{
   flex:0 0 auto; font:inherit; font-weight:650; font-size:var(--t-1);
   background:var(--accent); color:var(--accent-ink); border:1px solid var(--accent);
@@ -560,18 +567,60 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
       </div>
 
       <div class="cmd-body" id="cmdpanel" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
-        <p class="cmd-hint" id="cmdHint">直接把這行貼給你的 agent，它會替你執行並完成設定。</p>
-        <div class="cmd-row">
+        <p class="cmd-hint" id="cmdHint">給 agent 的是「下載 → 對雜湊 → 空跑」這一段，它<strong>不會安裝任何東西</strong>；先把 <code>--dry-run</code> 印出來的計畫給人看過，再執行最後那一行。</p>
+
+        <!-- All four commands are written into the HTML. Nothing here is
+             reachable only through JavaScript: an agent that reads the served
+             markup must be able to see the Windows command and the reviewable
+             agent sequence without running anything. The script only HIDES the
+             three rows that do not match the selected tabs. -->
+        <div class="cmd-row" data-cmd-target="agent" data-cmd-os="unix">
+          <pre class="cmd cmd-block" id="cmdAgentUnix"># AI agent · macOS / Linux —— 下載、核對雜湊、空跑。任何一步失敗就停，不會安裝。
+curl -fsSL https://yangble5.com/install.sh -o install.sh \
+  &amp;&amp; curl -fsSL https://yangble5.com/install.sh.sha256 -o install.sh.sha256 \
+  &amp;&amp; shasum -a 256 -c install.sh.sha256 \
+  &amp;&amp; sh install.sh --dry-run
+# 上面只是空跑。把它印出來的計畫拿給人看，得到同意之後才執行下面這行：
+#   sh install.sh                      # 需要 e-mail 就加 --email you@example.com</pre>
+          <button type="button" class="copybtn"
+                  data-copy-target="cmdAgentUnix" data-copy-status="copyStatus" data-label="複製指令">複製指令</button>
+        </div>
+
+        <div class="cmd-row" data-cmd-target="agent" data-cmd-os="win">
+          <pre class="cmd cmd-block" id="cmdAgentWin"># AI agent · Windows PowerShell —— 雜湊不符會 throw，不會安裝。
+irm https://yangble5.com/install.ps1 -OutFile install.ps1
+irm https://yangble5.com/install.ps1.sha256 -OutFile install.ps1.sha256
+$expected = ((Get-Content .\install.ps1.sha256 -Raw) -split '\s+')[0]
+$actual   = (Get-FileHash .\install.ps1 -Algorithm SHA256).Hash
+if ($actual -ine $expected) { throw 'SHA256 MISMATCH —— 不要執行' }
+powershell -NoProfile -File .\install.ps1 -DryRun
+# 上面只是空跑。人看過同意之後才執行下面這行：
+#   powershell -NoProfile -File .\install.ps1     # 需要 e-mail 就加 -Email you@example.com</pre>
+          <button type="button" class="copybtn"
+                  data-copy-target="cmdAgentWin" data-copy-status="copyStatus" data-label="複製指令">複製指令</button>
+        </div>
+
+        <div class="cmd-row" data-cmd-target="term" data-cmd-os="unix">
           <pre class="cmd" id="cmdText">curl -fsSL https://yangble5.com/install.sh | sh</pre>
           <button type="button" class="copybtn" id="copyMain"
                   data-copy-target="cmdText" data-copy-status="copyStatus" data-label="複製指令">複製指令</button>
         </div>
+
+        <div class="cmd-row" data-cmd-target="term" data-cmd-os="win">
+          <pre class="cmd" id="cmdTextWin">irm https://yangble5.com/install.ps1 | iex</pre>
+          <button type="button" class="copybtn"
+                  data-copy-target="cmdTextWin" data-copy-status="copyStatus" data-label="複製指令">複製指令</button>
+        </div>
+
         <p class="copy-status" id="copyStatus" role="status" aria-live="polite"></p>
         <p class="cmd-foot">
           <strong>貼給 agent 之前先知道這件事：安裝腳本預設<em>不會</em>把 API key 印到畫面上。</strong>
           它寫進 <code>~/.yangble5/credentials</code>（權限 <code>0600</code>），印出來的只有那個路徑。
           因為在這個情境下 stdout 就是你的 agent 的對話紀錄，密鑰印在那裡等於已經外洩。
           真的要看得加 <code>--show-key</code>（Windows 是 <code>-ShowKey</code>）。<br>
+          <strong>兩支腳本都支援 <code>--dry-run</code>（Windows 是 <code>-DryRun</code>）：把每一個它<em>打算</em>做的動作印出來，一個檔案都不寫。</strong>
+          不確定的時候，那是最該先跑的一次。管線本身<strong>不會</strong>把參數傳給腳本 ——
+          要傳 e-mail 或邀請碼，用<a href="#args">下面那一節的寫法</a>。<br>
           管線安裝要求你信任這個網域。所以我們把腳本做的每一件事都<a href="#installer">逐條列在下面</a>，原始碼在
           <a href="https://github.com/shark0120/yangble5">GitHub</a> 公開，校驗方式在 <a href="verify.html">verify.html</a>。不想管線？先下載、讀完、再執行 —— 我們反而希望你這樣做。
         </p>
@@ -967,7 +1016,8 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
       <p class="eyebrow">即時狀態</p>
       <h2>共用池現在還有沒有</h2>
       <p class="lede">
-        這一塊直接讀本站閘道的 <code>/api/health</code>。讀不到就寫「狀態未知」——
+        這一塊先讀本站閘道的 <code>/pool/status</code> —— 它才是把<strong>每日池</strong>與<strong>營運者保留額</strong>都算進去的那一個；
+        讀不到才退回 <code>/health</code>。讀不到就寫「狀態未知」——
         我們不會在這裡放一個好看的假數字，也不會把「讀不到」當成「用完了」。
       </p>
     </div>
@@ -994,8 +1044,15 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
       </dl>
 
       <p class="pool-note" id="poolNote">
-        本站閘道的 <code>/health</code> 是未經驗證的公開端點，依設計<strong>不會</strong>吐出花費金額或帳號數量。若營運者沒有另外公開數值容量欄位，上面的「剩餘額度」就會是 <em>未提供</em> ——
-        那是真的沒有這個數字，不是載入失敗。
+        <code>/pool/status</code> 與 <code>/health</code> 都是未經驗證的公開端點，依設計<strong>不會</strong>吐出花費金額或帳號數量。若營運者沒有另外公開數值容量欄位，上面的「剩餘額度」就會是 <em>未提供</em> ——
+        那是真的沒有這個數字，不是載入失敗。<br>
+        <strong>這個綠燈能保證的事比你想的少，講清楚：</strong>
+        <code>/health</code> 的 <code>accepting_requests</code> <strong>只看月度總上限</strong>，
+        不看當日池、不看營運者保留額；所以退回 <code>/health</code> 之後看到的「是」有可能過於樂觀。
+        <code>/pool/status</code> 多算了當日池與保留額，但<strong>兩個端點都不知道上游帳號的健康狀態</strong> ——
+        1M 那一層目前由<strong>單一一個</strong>上游帳號撐著，它被限流或用完額度時，這裡仍然會顯示「收單中」，
+        而你的 <code>POST /v1/messages</code> 會被擋下來（<code>upstream_quota_exhausted</code>）。
+        真正的答案只有那一次實際請求會給你。
       </p>
 
       <!-- Shown when the pool is exhausted or not accepting. -->
@@ -1121,7 +1178,13 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
           一個由該指紋前 32 個字元組成的標籤，以及你自己選擇傳入的 e-mail 或邀請碼。金鑰當然會送到
           <strong>你設定的那個端點</strong>（它就是拿來認證的），但不會送去別的地方。</li>
         <li>不會動你 <code>~/.ssh</code>、瀏覽器資料、鑰匙圈或憑證管理員裡的任何東西。</li>
-        <li>不會安裝遙測或分析。這個網站本身也沒有：沒有 cookie、沒有第三方請求。</li>
+        <li>不會安裝遙測或分析。這個<strong>頁面</strong>本身也沒有：沒有 cookie、沒有 CDN、沒有網頁字型、沒有分析，
+          HTML 裡不存在任何指向第三方的請求。<br>
+          <strong>但邊緣有：</strong>本站經 Cloudflare 供應，回應會被加上 <code>Report-To</code> 與 <code>Nel</code>
+          兩個標頭，指向 <code>a.nel.cloudflare.com</code>。那是網路錯誤回報（NEL），是<strong>邊緣加的、不是這個檔案裡的</strong>，
+          目前設定只在連線失敗時才回報。我們自己先說，是因為你打開 devtools 一秒就會看到它 ——
+          一個你能當場戳破的宣稱，比不宣稱還糟。要完全避開，就從
+          <a href="https://github.com/shark0120/yangble5">GitHub</a> 拿原始碼，別經過這個網域。</li>
       </ul>
     </div>
 
@@ -1130,20 +1193,67 @@ footer.site li{margin-bottom:var(--s-2); line-height:1.6}
       這是推薦做法。先把腳本抓下來、對完雜湊、自己讀一遍，再決定要不要執行。
     </p>
     <div class="mini-cmd">
-      <pre id="verifyCmd">curl -fsSL https://yangble5.com/install.sh -o install.sh
-shasum -a 256 install.sh        # macOS / Linux
-# certutil -hashfile install.sh SHA256   (Windows)
-less install.sh                 # 讀完再執行
-sh install.sh</pre>
+      <pre id="verifyCmd"># macOS / Linux —— 這是「核對」，不是「算一下」：不符就直接失敗，&amp;&amp; 之後的都不會跑。
+curl -fsSL https://yangble5.com/install.sh -o install.sh
+curl -fsSL https://yangble5.com/install.sh.sha256 -o install.sh.sha256
+shasum -a 256 -c install.sh.sha256 &amp;&amp; sh install.sh --dry-run</pre>
       <button type="button" class="copybtn" data-copy-target="verifyCmd"
               data-copy-status="copyStatusVerify" data-label="複製">複製</button>
     </div>
     <p class="copy-status" id="copyStatusVerify" role="status" aria-live="polite"></p>
+    <div class="mini-cmd" style="margin-top:var(--s-3)">
+      <pre id="verifyCmdWin"># Windows PowerShell —— 同一件事，雜湊不符就 throw。
+irm https://yangble5.com/install.ps1 -OutFile install.ps1
+irm https://yangble5.com/install.ps1.sha256 -OutFile install.ps1.sha256
+$expected = ((Get-Content .\install.ps1.sha256 -Raw) -split '\s+')[0]
+if ((Get-FileHash .\install.ps1 -Algorithm SHA256).Hash -ine $expected) { throw 'MISMATCH' }
+powershell -NoProfile -File .\install.ps1 -DryRun</pre>
+      <button type="button" class="copybtn" data-copy-target="verifyCmdWin"
+              data-copy-status="copyStatusVerify" data-label="複製">複製</button>
+    </div>
+    <p class="fine" style="margin-top:var(--s-3)">
+      最後一行是 <strong>空跑</strong>：它把腳本打算做的每一件事印出來，一個檔案都不寫。看過那份計畫、也自己把
+      <code>install.sh</code> 從頭讀過一遍之後，再單獨執行 <code>sh install.sh</code>
+      （Windows 是 <code>powershell -NoProfile -File .\install.ps1</code>）才會真的安裝。<br>
+      讀檔請用編輯器或 <code>cat</code>，<strong>不要用 <code>less</code>／<code>more</code></strong>：
+      agent 的 shell 沒有 tty，分頁器要嘛把整份腳本倒進對話紀錄，要嘛卡在那裡等一個永遠不會來的按鍵。
+    </p>
 
     <p class="sha-line">
       目前公告的 SHA256：<code id="shaValue">讀取中…</code>
       <span id="shaNote" class="fine"></span>
     </p>
+    <h3 id="args" style="margin-top:var(--s-7)">怎麼把 e-mail／邀請碼傳給安裝腳本</h3>
+    <p style="color:var(--fg-2)">
+      <code>curl … | sh</code> 不會給腳本任何參數，<code>irm … | iex</code> 也不會給 scriptblock 任何參數。
+      兩支腳本都收得下這些值，但你得換一種寫法。安裝腳本<strong>本身不會問你任何問題</strong> ——
+      它是全自動的，所以該問的（要不要裝、e-mail 給不給）要由人或 agent 事先問清楚，然後這樣傳進去：
+    </p>
+    <div class="mini-cmd">
+      <pre id="argsCmd"># macOS / Linux —— 管線要用 sh -s -- 才傳得到參數
+curl -fsSL https://yangble5.com/install.sh | sh -s -- --email you@example.com
+curl -fsSL https://yangble5.com/install.sh | sh -s -- --invite YOUR-INVITE-CODE
+sh install.sh --dry-run --email you@example.com        # 已經下載下來的話
+
+# Windows PowerShell —— irm | iex 一樣傳不到，要包成 scriptblock
+&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Email you@example.com
+&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Invite YOUR-INVITE-CODE
+powershell -NoProfile -File .\install.ps1 -DryRun -Email you@example.com
+
+# 或者走環境變數，兩支腳本都認這兩個名字
+YANGBLE5_EMAIL=you@example.com YANGBLE5_INVITE=YOUR-INVITE-CODE sh install.sh
+$env:YANGBLE5_EMAIL = 'you@example.com'; $env:YANGBLE5_INVITE = 'YOUR-INVITE-CODE'</pre>
+      <button type="button" class="copybtn" data-copy-target="argsCmd"
+              data-copy-status="copyStatusArgs" data-label="複製">複製</button>
+    </div>
+    <p class="copy-status" id="copyStatusArgs" role="status" aria-live="polite"></p>
+    <p class="fine">
+      其他你大概會想先知道的旗標：<code>--dry-run</code>／<code>-DryRun</code>（只印計畫，不寫檔）、
+      <code>--no-live-test</code>／<code>-NoLiveTest</code>（不做那一次真實補完）、
+      <code>--show-key</code>／<code>-ShowKey</code>（把金鑰印出來 —— 在 agent 的對話紀錄裡就是外洩，預設關閉）、
+      <code>--help</code>／<code>-Help</code>。完整清單在腳本開頭的註解裡，下載後不執行也讀得到。
+    </p>
+
     <p class="fine">
       對照用的完整說明在 <a href="verify.html">verify.html</a>；腳本原始碼與這個網站的原始碼都在
       <a href="https://github.com/shark0120/yangble5">github.com/shark0120/yangble5</a>。雜湊對不上，<strong>就不要執行</strong>，並請開 issue 告訴我們。
@@ -1243,7 +1353,7 @@ sh install.sh</pre>
     </div>
     <p class="disclaimer">
       yangble5 是一個<strong>社群開源專案</strong>，與 Anthropic、Google、OpenAI、xAI
-      或任何模型供應商<strong>沒有任何從屬、贊助或合作關係</strong>，也未經其背書。所有商標屬於各自的擁有者。yangble5 <strong>不是模型</strong>，是一個連到第三方模型的代理與工具組。本站沒有 cookie、沒有分析追蹤、沒有第三方請求。
+      或任何模型供應商<strong>沒有任何從屬、贊助或合作關係</strong>，也未經其背書。所有商標屬於各自的擁有者。yangble5 <strong>不是模型</strong>，是一個連到第三方模型的代理與工具組。本站沒有 cookie、沒有分析追蹤；頁面本身不發出任何第三方請求，但 Cloudflare 邊緣會加上網路錯誤回報標頭（<a href="#installer">說明在上面</a>）。
     </p>
   </div>
 </footer>
@@ -1254,20 +1364,23 @@ sh install.sh</pre>
 
   /* ===================================================================
    * 1. Command matrix. Two axes: paste target x operating system.
-   *    The installer track owns the scripts these URLs point at.
+   *
+   *    NO COMMAND STRING LIVES HERE. All four combinations are written in
+   *    the HTML above, because the reader we care about most - an agent
+   *    parsing the served markup with no JavaScript - would otherwise see
+   *    only whichever string happened to be hard-coded in the <pre>, and
+   *    would never learn that install.ps1 or a --dry-run path exists. This
+   *    function may only ever HIDE a row that is already on the page.
    * =================================================================== */
-  var CMD = {
-    unix: "curl -fsSL https://yangble5.com/install.sh | sh",
-    win:  "irm https://yangble5.com/install.ps1 | iex"
-  };
   var HINT = {
-    agent: "直接把這行貼給你的 agent，它會替你執行並完成設定。",
+    agent: "給 agent 的是「下載 → 對雜湊 → 空跑」這一段，它不會安裝任何東西；先把 --dry-run 印出來的計畫給人看過，再執行最後那一行。",
     term:  "貼進終端機執行。建議先看過下面「安裝腳本做了什麼」再按 Enter。"
   };
 
   var state = { target: "agent", os: "unix" };
 
-  var cmdText = document.getElementById("cmdText");
+  var cmdRows = Array.prototype.slice.call(
+    document.querySelectorAll("[data-cmd-target][data-cmd-os]"));
   var cmdHint = document.getElementById("cmdHint");
   var panel   = document.getElementById("cmdpanel");
 
@@ -1290,7 +1403,10 @@ sh install.sh</pre>
   }
 
   function render() {
-    cmdText.textContent = CMD[state.os];
+    cmdRows.forEach(function (row) {
+      row.hidden = row.getAttribute("data-cmd-target") !== state.target
+                || row.getAttribute("data-cmd-os") !== state.os;
+    });
     cmdHint.textContent = HINT[state.target];
     panel.setAttribute("aria-labelledby", state.target === "agent" ? "tab-agent" : "tab-term");
   }
@@ -1414,6 +1530,14 @@ sh install.sh</pre>
    *    returns: status, service, version, uptime_seconds,
    *    accepting_requests, registration.
    *
+   *    /health's accepting_requests is computed from the MONTHLY global cap
+   *    alone. It does not know about the daily pool, it does not know about
+   *    the operator reserve, and neither endpoint knows anything about
+   *    upstream health. /pool/status ANDs in the daily verdict and reports
+   *    reserve_engaged, so it is asked FIRST and /health is only a fallback.
+   *    A fallback answer is labelled as one in the sub-line: a widget that
+   *    cannot say which question it answered is a widget that overclaims.
+   *
    *    Therefore:
    *      - The percentage bar renders ONLY if the response genuinely
    *        carries a numeric capacity field. There is no default, no
@@ -1424,7 +1548,9 @@ sh install.sh</pre>
    *    If you ever find yourself writing a number literal into the meter,
    *    you have broken the one rule this page exists to keep.
    * =================================================================== */
-  var POOL_ENDPOINTS = ["/api/health", "/health", "/healthz"];
+  var POOL_ENDPOINTS = ["/pool/status", "/api/health", "/health", "/healthz"];
+  // Which of the above actually answer the capacity question completely.
+  var FULL_ANSWER = { "/pool/status": true };
 
   var el = {
     dot:    document.getElementById("poolDot"),
@@ -1457,24 +1583,40 @@ sh install.sh</pre>
 
   var REG_LABEL = { open: "開放自助註冊", invite: "需要邀請碼", closed: "已關閉註冊" };
 
-  /* Read a capacity percentage only if it is really there and really a
-     number in [0,100]. Several shapes are accepted so the gateway can add
-     the field without this page needing a redeploy. */
+  /* Read remaining capacity and return it as a PERCENTAGE (0-100).
+
+     The gateway emits a FRACTION: gateway/app.py:436 declares
+     `remaining_pct: float  # 0.0-1.0`, and every emission site agrees
+     (app.py:587, :1182, :1331, :2317). A full pool is therefore 1.0.
+
+     The previous reader accepted anything in [0,100] and returned it
+     unscaled, so a full pool rendered as "剩餘 1%" in red while the status
+     line above it said the service was running. Nothing was wrong with the
+     gateway; the two sides simply disagreed about the unit, and the value
+     1.0 is legal under both readings, so no input could reveal it.
+
+     Hence: accept ONLY the documented shape, in the documented unit, and
+     scale here. The old speculative field names (`capacity_remaining_pct`,
+     `remaining_percent`) are gone on purpose -- a `..._percent` field would
+     be 0-100 while `..._pct` is 0-1, so accepting both meant guessing the
+     unit from a value that cannot distinguish them. A field the gateway
+     does not emit is not forward-compatibility, it is a second unit waiting
+     to be misread. */
   function readPct(d) {
-    var candidates = [
-      d.remaining_pct, d.capacity_remaining_pct,
-      d.pool && d.pool.remaining_pct,
-      d.pool && d.pool.remaining_percent
-    ];
+    var candidates = [d.remaining_pct, d.pool && d.pool.remaining_pct];
     for (var i = 0; i < candidates.length; i++) {
       var v = candidates[i];
-      if (typeof v === "number" && isFinite(v) && v >= 0 && v <= 100) return v;
+      if (typeof v === "number" && isFinite(v) && v >= 0 && v <= 1) return v * 100;
     }
     return null;
   }
 
+  /* The gateway spells it reset_at; README documented resets_at; container
+     health templates use pool_resets_at. Reading only one spelling is how a
+     present timestamp renders as 未提供. Accept every spelling in use. */
   function readReset(d) {
-    var v = (d.pool && d.pool.resets_at) || d.resets_at || d.pool_resets_at;
+    var v = (d.pool && (d.pool.reset_at || d.pool.resets_at))
+          || d.reset_at || d.resets_at || d.pool_reset_at || d.pool_resets_at;
     return (typeof v === "string" && v) ? v : null;
   }
 
@@ -1489,15 +1631,25 @@ sh install.sh</pre>
     } catch (e) { return t.toISOString(); }
   }
 
-  function paint(d) {
-    var accepting = d.accepting_requests === true;
-    var degraded  = d.status === "degraded" || d.accepting_requests === false;
+  function paint(d, path) {
+    var full      = FULL_ANSWER[path] === true;
+    var reserved  = d.reserve_engaged === true;
+    // Reserve engaged means every NON-operator key is refused, so for the
+    // visitor reading this page it is not accepting, whatever the flag says.
+    var accepting = d.accepting_requests === true && !reserved;
+    var degraded  = d.status === "degraded" || d.accepting_requests === false || reserved;
 
-    el.fState.textContent  = typeof d.status === "string" ? d.status : "未知";
+    el.fState.textContent  = typeof d.status === "string"
+      ? d.status
+      : (typeof d.accepting_requests === "boolean" ? (accepting ? "收單中" : "不收單") : "未知");
     el.fAccept.textContent = (typeof d.accepting_requests === "boolean")
       ? (accepting ? "是" : "否") : "未知";
-    el.fReg.textContent    = REG_LABEL[d.registration] || (d.registration || "未知");
-    el.sub.textContent     = d.version ? ("gateway v" + d.version) : "";
+    el.fReg.textContent    = (typeof d.registration_open === "boolean")
+      ? (d.registration_open ? "開放自助註冊" : "目前不開放")
+      : (REG_LABEL[d.registration] || (d.registration || "未知"));
+    el.sub.textContent     = (d.version ? ("gateway v" + d.version + " · ") : "")
+      + "來源 " + path
+      + (full ? "" : "（只看月度上限，未計入當日池與保留額）");
 
     /* --- the bar: only with a real number --- */
     var pct = readPct(d);
@@ -1520,7 +1672,9 @@ sh install.sh</pre>
 
     if (degraded) {
       el.dot.setAttribute("data-s", "full");
-      el.state.textContent = "共用池已達上限，目前不收新的請求";
+      el.state.textContent = reserved
+        ? "共用池已進入營運者保留區，目前不收一般請求"
+        : "共用池已達上限，目前不收新的請求";
       el.byok.hidden = false;
     } else if (accepting) {
       el.dot.setAttribute("data-s", "ok");
@@ -1549,7 +1703,7 @@ sh install.sh</pre>
       return r.json();
     }).then(function (d) {
       if (!d || typeof d !== "object") throw new Error("bad payload");
-      paint(d);
+      paint(d, POOL_ENDPOINTS[i]);
     }).catch(function () {
       window.clearTimeout(timer);
       tryFetch(i + 1);

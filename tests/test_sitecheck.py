@@ -17,6 +17,7 @@ is NOT.  A guard that has only ever been observed to pass is not a guard.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -253,3 +254,259 @@ def test_ci_runs_the_checker():
     """A guard that is not wired in is documentation."""
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "tools/sitecheck.py" in ci, "sitecheck is not wired into CI"
+
+
+# ── the coverage invariant: what the guard is allowed NOT to look at ───────
+# `FILES` was a literal tuple, so coverage was opt-in by filename and no test
+# asserted it was exhaustive over site/. Two 75 KB installers that publish
+# `99.53%` and `748,918` sat outside the only automated guard over published
+# figures, and the run printed OK. These tests make the file set total: every
+# file under site/ is a page, a text file, or exempt with a written reason.
+
+
+@pytest.fixture
+def site_copy(tmp_path):
+    """A throwaway copy of site/, so a negative control never mutates the tree."""
+    dst = tmp_path / "site"
+    shutil.copytree(sitecheck.SITE, dst)
+    return dst
+
+
+def _run_site(site: Path):
+    return subprocess.run(  # noqa: S603 - fixed argv, interpreter is sys.executable
+        [sys.executable, str(SCRIPT), "--quiet", "--site", str(site)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=ROOT,
+    )
+
+
+def test_the_page_set_is_discovered_not_typed():
+    """The literal tuple is gone: the pages are whatever site/ contains."""
+    on_disk = sorted(
+        p.relative_to(sitecheck.SITE).as_posix()
+        for p in sitecheck.SITE.rglob("*")
+        if p.is_file() and p.suffix.lower() in sitecheck.PAGE_SUFFIXES
+    )
+    assert list(sitecheck.FILES) == on_disk, (
+        "the checked page set is not the set of pages in site/; a page is "
+        "either unguarded or the tuple names one that no longer exists"
+    )
+    assert on_disk, "no HTML pages discovered — the guard would certify nothing"
+
+
+def test_every_file_under_site_is_classified():
+    """The coverage invariant, on the real tree."""
+    pages, texts, problems = sitecheck.classify()
+    assert problems == [], "\n".join(problems)
+    on_disk = {
+        p.relative_to(sitecheck.SITE).as_posix()
+        for p in sitecheck.SITE.rglob("*")
+        if p.is_file()
+    }
+    assert set(pages) | set(texts) | set(sitecheck.EXEMPT) == on_disk, (
+        f"classified {sorted(set(pages) | set(texts) | set(sitecheck.EXEMPT))} "
+        f"but site/ holds {sorted(on_disk)}"
+    )
+    assert texts, "no text-bearing files classified — site/README.md alone should be one"
+
+
+def test_a_file_the_guard_does_not_understand_is_a_finding(site_copy):
+    """The whole defect in one test: a new file must not be able to appear in
+    site/ outside the guard with the run still green."""
+    (site_copy / "notes.rst").write_text("warm rounds hit 99.61%\n", encoding="utf-8")
+    _pages, _texts, problems = sitecheck.classify(site_copy)
+    assert any("notes.rst" in p and "neither checked nor exempt" in p for p in problems), (
+        f"an unclassified file was waved through: {problems!r}"
+    )
+    r = _run_site(site_copy)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "notes.rst" in r.stdout
+
+
+def test_a_new_text_file_is_guarded_the_moment_it_appears(site_copy):
+    """An llms.txt or AGENTS.md restating the headline figure is exactly the
+    file this guard was blind to. It is now checked without anyone opting in."""
+    (site_copy / "llms.txt").write_text(
+        "yangble5 caches: warm-round hit rate 99.61%, prefix 748,919 tokens.\n",
+        encoding="utf-8",
+    )
+    r = _run_site(site_copy)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "llms.txt" in r.stdout
+    assert "99.61" in r.stdout and "748919" in r.stdout, r.stdout
+
+
+def test_an_untouched_copy_of_the_site_is_clean(site_copy):
+    """The negative controls above only mean something if the control case is
+    green: every text file in site/ as it stands is already accounted for."""
+    r = _run_site(site_copy)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_a_file_that_cannot_be_decoded_is_a_finding_not_a_traceback(site_copy):
+    """A UnicodeDecodeError escaping to the top would abandon every remaining
+    page mid-run, and an unchecked site would be reported as a crash instead of
+    as the coverage hole it is."""
+    (site_copy / "blob.txt").write_bytes(b"\xff\xfe\x00 not utf-8")
+    r = _run_site(site_copy)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "blob.txt" in r.stdout and "cannot be read as UTF-8" in r.stdout, r.stdout
+
+
+def test_a_stale_exemption_is_reported(site_copy, monkeypatch):
+    monkeypatch.setitem(sitecheck.EXEMPT, "gone.bin", "a file that is not there")
+    _pages, _texts, problems = sitecheck.classify(site_copy)
+    assert any("gone.bin" in p for p in problems), problems
+
+
+def test_the_obvious_machine_readable_formats_are_covered():
+    """An AGENTS.md, an llms.txt or a JSON manifest restating the headline
+    figure is the concrete case this guard was blind to. None of them may
+    require anyone to remember to add a filename."""
+    assert not set(sitecheck.PAGE_SUFFIXES) & set(sitecheck.TEXT_SUFFIXES)
+    for suffix in (".html", ".md", ".txt", ".json"):
+        assert suffix in sitecheck.PAGE_SUFFIXES + sitecheck.TEXT_SUFFIXES, suffix
+
+
+def test_exempt_entries_carry_a_reason_and_are_not_pages():
+    for name, why in sitecheck.EXEMPT.items():
+        assert why and len(why) > 20, f"{name!r} is exempt with no stated reason"
+        assert Path(name).suffix.lower() not in sitecheck.PAGE_SUFFIXES, (
+            f"{name!r} is an HTML page exempted from the page audit"
+        )
+
+
+# ── the guard over files that are not HTML pages ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,fname,payload,needle",
+    sitecheck.TEXT_MUST_FAIL,
+    ids=[c[0] for c in sitecheck.TEXT_MUST_FAIL],
+)
+def test_bogus_figure_in_a_text_file_is_reported(name, fname, payload, needle):
+    problems = sitecheck.check_text(fname, payload, set())
+    assert any(needle in p for p in problems), (
+        f"{name}: {payload!r} in {fname} produced no problem naming {needle!r}. "
+        f"A published figure outside the authoritative record went unreported. "
+        f"Problems were: {problems!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,fname,payload",
+    sitecheck.TEXT_MUST_PASS,
+    ids=[c[0] for c in sitecheck.TEXT_MUST_PASS],
+)
+def test_authoritative_figure_in_a_text_file_is_accepted(name, fname, payload):
+    problems = sitecheck.check_text(fname, payload, set())
+    assert problems == [], f"{name}: {payload!r} in {fname} was wrongly flagged: {problems!r}"
+
+
+def test_a_per_file_allowance_does_not_leak():
+    """site/README.md may print `99.54%` because it documents the negative
+    control. site/install.sh may not, and neither may a page."""
+    assert sitecheck.check_text(sitecheck.GUARD_DOC, "CI plants `99.54%`", set()) == []
+    assert any("99.54" in p for p in sitecheck.check_text("install.sh", "99.54%", set()))
+    page = sitecheck.check_page("<t>", sitecheck._page("命中率 99.54%"), set())
+    assert any("99.54" in p for p in page), (
+        "the text allow-list leaked into the page audit; CI's negative control "
+        f"would stop being able to go red. Got {page!r}"
+    )
+
+
+def test_the_text_guard_actually_reads_the_installers():
+    """"0 problems" is also what a checker that examined nothing prints. The
+    installers are the files that publish 99.53% outside any HTML page."""
+    used: set[tuple[str, str]] = set()
+    _pages, texts, _problems = sitecheck.classify()
+    assert {"install.sh", "install.ps1", sitecheck.GUARD_DOC} <= set(texts)
+    for name in texts:
+        assert sitecheck.check_text(
+            name, (sitecheck.SITE / name).read_text(encoding="utf-8"), used
+        ) == [], name
+    assert sitecheck.unused_text_allow_problems(used) == []
+    for name in ("install.sh", "install.ps1"):
+        body = (sitecheck.SITE / name).read_text(encoding="utf-8")
+        seen = {m.group(1) for m in sitecheck.TEXT_PERCENT_RE.finditer(body)}
+        assert "99.53" in seen, f"{name} no longer publishes the hit rate, or the scanner is blind"
+
+
+def test_the_four_place_provenance_is_recomputed_not_transcribed():
+    """README quotes `= 99.5333%`, which the page tables deliberately do not
+    accept. It is allowed because the arithmetic says so, not by allow-list."""
+    assert "99.5333" not in sitecheck.PERCENT
+    assert "99.5333" in sitecheck.TEXT_PERCENT
+    c, p = sitecheck.CACHED[1], sitecheck.PROMPT[1]
+    assert f"{100.0 * c / p:.4f}" == "99.5333"
+    assert "99.5334" not in sitecheck.TEXT_PERCENT
+
+
+def test_text_allow_entries_carry_a_reason():
+    for name, entries in sitecheck.TEXT_ALLOW.items():
+        for token, why in entries.items():
+            assert why and len(why) > 15, f"{name}: {token!r} has no stated reason"
+
+
+def test_stale_text_allow_entries_are_reported():
+    stale = sitecheck.unused_text_allow_problems(set())
+    expected = sum(len(v) for v in sitecheck.TEXT_ALLOW_EXPLICIT.values())
+    assert len(stale) == expected
+
+
+def test_the_documentation_may_only_quote_figures_the_guard_rejects():
+    """README's licence to print `99.54%` is derived from MUST_FAIL, not typed.
+    Retype it and the coupling that makes it safe is gone."""
+    derived = sitecheck._fixture_figures()
+    assert "99.54" in derived and "750K" in derived
+    for figure in derived:
+        assert figure not in sitecheck.TEXT_PERCENT, (
+            f"{figure} is both a must-fail fixture and an accepted measurement"
+        )
+
+
+# ── the silent self-test cases must not be decorative ─────────────────────
+
+
+@pytest.mark.parametrize("break_it", ["must-fail", "must-pass", "no-pages"])
+def test_the_text_cases_can_turn_the_self_test_red(break_it, monkeypatch):
+    """The non-HTML cases print nothing when they pass, so this is the only
+    thing standing between them and being ornamental. Break one, require red."""
+    assert sitecheck.selftest(verbose=False) is True
+    if break_it == "must-fail":
+        # Accept a figure a must-fail case relies on being rejected.
+        monkeypatch.setitem(sitecheck.TEXT_PERCENT, "99.6", "planted by a test")
+    elif break_it == "must-pass":
+        # Reject a figure a must-pass case relies on being accepted.
+        monkeypatch.delitem(sitecheck.TEXT_PERCENT, "99.53")
+    else:
+        monkeypatch.setattr(sitecheck, "PAGE_SUFFIXES", (".nothing",))
+    assert sitecheck.selftest(verbose=False) is False, (
+        f"breaking {break_it!r} left the self-test green, so it was proving nothing"
+    )
+
+
+def test_coverage_mode_lists_every_file_and_exits_zero():
+    r = subprocess.run(  # noqa: S603 - fixed argv, interpreter is sys.executable
+        [sys.executable, str(SCRIPT), "--coverage", "--quiet"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=ROOT,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    for p in sitecheck.SITE.rglob("*"):
+        if p.is_file():
+            assert p.relative_to(sitecheck.SITE).as_posix() in r.stdout, r.stdout
+
+
+def test_ci_runs_the_coverage_check():
+    """The scope of the guard is only visible if something prints it."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "--coverage" in ci, "nothing in CI prints which files the guard covers"
+    assert "notes.rst" in ci or "unclassified" in ci, (
+        "CI has no negative control proving an unclassified file turns the job red"
+    )

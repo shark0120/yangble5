@@ -31,6 +31,7 @@ __all__ = [
     "FailureBackoff",
     "SlidingWindowLimiter",
     "TimedThrottle",
+    "UpstreamHealth",
 ]
 
 Clock = Callable[[], float]
@@ -124,6 +125,72 @@ class ConcurrencyLimiter:
     def active(self, ident: str) -> int:
         with self._lock:
             return self._active.get(ident, 0)
+
+
+class UpstreamHealth:
+    """Rolling-window view of whether the SHARED-POOL upstream is actually serving.
+
+    WHY this exists at all: every other capacity signal in this gateway is a
+    *budget* signal — spend counters divided by configured ceilings. When the one
+    account behind the shared pool starts refusing (402, 429, 403, 5xx), no usage
+    row is written, no spend is added, and every budget ratio therefore stays
+    exactly where it was. The public capacity widget would keep reporting "100%
+    remaining" through a total outage, because remaining-budget and
+    service-working are different questions and only one of them was being asked.
+
+    Deliberately NOT a circuit breaker. It never refuses a request, so the
+    upstream is always given the chance to recover on its own; it only reports.
+    A breaker that stopped sending traffic would also stop observing successes
+    and would need half-open logic to ever reset, which is a much larger thing to
+    get wrong on a single-account service.
+
+    `record_success` clears the window outright: one request that worked is
+    stronger evidence than several older ones that did not.
+    """
+
+    def __init__(
+        self,
+        window_seconds: float = 120.0,
+        failure_threshold: int = 3,
+        clock: Clock = time.monotonic,
+    ):
+        self.window = window_seconds
+        self.failure_threshold = max(1, failure_threshold)
+        self._clock = clock
+        self._failures: deque[float] = deque()
+        self._last_status: int | None = None
+        self._lock = threading.Lock()
+
+    def _prune_locked(self, now: float) -> None:
+        cutoff = now - self.window
+        while self._failures and self._failures[0] <= cutoff:
+            self._failures.popleft()
+
+    def record_failure(self, status: int) -> None:
+        now = self._clock()
+        with self._lock:
+            self._prune_locked(now)
+            self._failures.append(now)
+            self._last_status = status
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures.clear()
+            self._last_status = None
+
+    def healthy(self) -> bool:
+        now = self._clock()
+        with self._lock:
+            self._prune_locked(now)
+            return len(self._failures) < self.failure_threshold
+
+    def snapshot(self) -> tuple[bool, int | None, int]:
+        """(healthy, last_failure_status, failures_in_window)."""
+        now = self._clock()
+        with self._lock:
+            self._prune_locked(now)
+            count = len(self._failures)
+            return count < self.failure_threshold, self._last_status, count
 
 
 class FailureBackoff:

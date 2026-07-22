@@ -338,6 +338,46 @@
 
     # --- 2j. Response headers ------------------------------------------------
     #
+    # ⚠⚠ THIS IS THE PART THAT DID NOT GET PASTED ON yangble5.com ITSELF. ⚠⚠
+    #
+    # Observed 2026-07-22 from off-host: the live site served exactly ONE of
+    # the headers below — `strict-transport-security: max-age=31536000`,
+    # WITHOUT `includeSubDomains`, i.e. not the value written on this page.
+    # That one came from Cloudflare's own HSTS toggle. Everything else — CSP,
+    # nosniff, X-Frame-Options, Referrer-Policy, both Cross-Origin-* headers,
+    # Permissions-Policy — was absent, and /install.sh was served as
+    # `application/octet-stream` with nothing telling the browser not to sniff
+    # it. Nothing errored. `nginx -t` was fine. The post-deploy smoke test was
+    # green, because the only header it looked for was HSTS and Cloudflare had
+    # already supplied one.
+    #
+    # ⚠ CLOUDFLARE ADDS NONE OF THESE. A proxied (orange-cloud) zone passes
+    # origin response headers through; it does not invent security headers.
+    # Being behind Cloudflare is not a reason to skip this part — it is the
+    # reason the gap stays invisible, because CF's own HSTS makes a "is there
+    # any security header at all" check pass against an origin that sets none.
+    #
+    # ── PREFER THE INCLUDE, NOT THE PASTE ────────────────────────────────────
+    #
+    # The failure mode above is "a block you have to remember to paste".
+    # deploy/nginx/security-headers.conf holds exactly the directives below as
+    # one self-contained unit. Copy that file to the host and replace this
+    # whole sub-part with ONE line, at server level:
+    #
+    #     include /etc/nginx/yangble5/security-headers.conf;
+    #
+    # Either the include is there and ALL of it applies, or the path is wrong
+    # and `nginx -t` FAILS LOUDLY. There is no half-applied state, and
+    # half-applied is the only state that actually hurt here. That file's own
+    # header comment carries the install command and the aaPanel-safe path.
+    #
+    # The directives are kept inline below as well, so that pasting this file
+    # verbatim still ends up secure.
+    # tests/test_deploy_security_headers.py asserts the two copies are
+    # identical, so they cannot drift apart.
+    #
+    # ── AND THE GOTCHA THAT DELETES ALL OF IT ────────────────────────────────
+    #
     # ⚠ NGINX GOTCHA, AND IT IS THE ONE PEOPLE GET WRONG: add_header does NOT
     # merge across levels. A location containing a single add_header of its
     # own silently drops EVERY add_header declared here. That is how sites
@@ -345,10 +385,20 @@
     #
     # So: all of them are declared once, here, and the API locations in
     # PART 3 declare none. Where a value must differ per location, it is a
-    # variable set with `set` (which DOES override cleanly per location).
+    # variable set with `set` (which DOES override cleanly per location). If
+    # you genuinely must add one inside a location, re-`include` the headers
+    # file inside that location too.
     #
     # `always` makes them apply to error responses too — a 429 or a 502 needs
     # HSTS and nosniff exactly as much as a 200 does.
+    #
+    # THEN VERIFY FROM OFF-HOST. A check run on the VPS bypasses Cloudflare
+    # and tells you nothing about what the internet receives:
+    #
+    #     bash deploy/smoke_test.sh --base-url https://your.domain --no-spend
+    #
+    # Check 9 in that script FAILS — not warns — if any header below is
+    # missing. A config whose security headers are absent is not deployed.
 
     # Cache policy. Default is the static-site value; API locations override
     # it to no-store via `set $yb5_cc`.
@@ -372,7 +422,12 @@
     # is effectively irreversible for the domain AND every subdomain, and
     # this box serves other sites.
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Not decorative here: PART 3d serves .sh and .ps1 straight out of the
+    # webroot with a Content-Type nginx had to guess. Without nosniff a
+    # browser is free to sniff a shell script into something else.
     add_header X-Content-Type-Options "nosniff" always;
+
     add_header Referrer-Policy "no-referrer" always;
     add_header X-Frame-Options "DENY" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
@@ -386,11 +441,13 @@
     # site/README.md carries the recompute snippet. If you edit a page and
     # forget this line, the page still renders — copy buttons, OS detection
     # and the live pool status simply stop working, silently.
+    # tests/test_deploy_security_headers.py recomputes both hashes from the
+    # real pages, so a stale pin is a red test rather than a silent breakage.
     #
     # Do not "fix" a CSP violation by adding 'unsafe-inline' to script-src on
     # a page whose entire job is convincing a visitor it is safe to paste a
     # command into a shell.
-    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-YhSXRPWEEPURVaJsYXmkYxR+bfYx3vG0Qbm4th+2j8c=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI='; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-azlzgFYelw1E8Ku3E8GqYH1fE6nmHMTP3Cy/CCWrGT8=' 'sha256-4FFG4w4T/7cQdRclDwWnwwb3pZxhyUhWrDX0fSl2niI=' ; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" always;
 
 
     # =========================================================================
@@ -606,7 +663,16 @@
     #
     # Everything not matched above is served from the webroot. Copy the
     # contents of site/ there — index.html, verify.html, install.sh,
-    # install.ps1, uninstall.sh, uninstall.ps1 and the four .sha256 files.
+    # install.ps1, uninstall.sh, uninstall.ps1, robots.txt and the four
+    # .sha256 files.
+    #
+    # robots.txt in particular: until it was added to site/, the live
+    # /robots.txt was a CLOUDFLARE MANAGED DEFAULT that blocked every AI
+    # crawler and was in nobody's version control. Copying the file here is
+    # only half the fix — the managed-robots.txt feature must also be turned
+    # off in the Cloudflare dashboard, or the edge keeps shadowing yours. The
+    # file's own header comment has the check that tells you which one you are
+    # actually serving.
     #
     # Set `root` in your existing server block if it is not already set; the
     # line here is the aaPanel default for this domain and is commented out
@@ -651,6 +717,20 @@
 #   curl -si  https://yangble5.com/v0/management/api-keys | head -1   # 404
 #   curl -si  https://yangble5.com/admin/keys | head -1               # 404
 #   curl -fsS https://yangble5.com/install.sh | head -3 # the real script
+#
+# THE SECURITY HEADERS, which is the check this deployment actually failed.
+# Eight lines, not zero. If you get zero, PART 2j is not in the running
+# config — see the note at the top of PART 2j; do not conclude "Cloudflare
+# handles it", because Cloudflare does not:
+#
+#   curl -sSI https://yangble5.com/ | grep -icE \
+#     'content-security-policy|x-content-type-options|x-frame-options|referrer-policy|strict-transport-security|cross-origin-|permissions-policy'
+#
+# And the one that says PART 3d landed too — `text/plain`, not
+# `application/octet-stream`, so a visitor can READ the script the landing
+# page tells them to read before running:
+#
+#   curl -sSI https://yangble5.com/install.sh | grep -i '^content-type:'
 #
 # And the one that matters, because it is the one naive configs fail —
 # events must arrive PROGRESSIVELY, not in a single burst at the end:
