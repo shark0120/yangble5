@@ -46,10 +46,10 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -133,9 +133,9 @@ jobs:
     name: tools and byok import with no third-party packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           # Deliberately the floor, not the newest. An accidental use of a
           # newer-than-floor stdlib name (datetime.UTC, tomllib) is exactly the
@@ -221,9 +221,9 @@ jobs:
     name: offline self-checks (--help / --dry-run / --self-test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -384,7 +384,7 @@ jobs:
     name: site installer digests match their files
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Every payload has a digest and every digest matches
         working-directory: site
@@ -426,10 +426,10 @@ jobs:
     name: published numbers match the measurement record
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -527,7 +527,7 @@ jobs:
     name: no secrets, operator paths or unknown addresses
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan for key-shaped strings and operator paths
         # The pattern is kept on ONE line on purpose: CONTRIBUTING.md documents
@@ -652,9 +652,9 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           # The floor, deliberately: drift_check.py is stdlib-only and an
           # operator debugging a red run here will reach for whatever Python is
