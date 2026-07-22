@@ -344,3 +344,37 @@ def test_pages_remain_structurally_clean():
         problems += [f"{name}: {p}" for p in sitecheck.check_page(
             name, _raw(name), used)]
     assert problems == [], "\n".join(problems)
+
+
+# ── Cloudflare rewrites the pages; the commands must survive it ─────────────
+
+@pytest.mark.parametrize("page", PAGES)
+def test_every_email_in_a_command_block_is_guarded(page):
+    """Cloudflare Email Address Obfuscation corrupts the published commands.
+
+    Observed on the live site 2026-07-22, after a deploy whose bytes were
+    verified correct on the origin: `--email you@example.com` inside a <pre>
+    was served as
+
+        --email <a href="/cdn-cgi/l/email-protection" class="__cf_email__"
+                   data-cfemail="...">[email&#160;protected]</a>
+
+    so every visitor -- and every AI agent -- copying the install command got a
+    broken one. It also injects a /cdn-cgi/ resource the CSP does not pin, and
+    it makes byte-level verification of a deployed page impossible.
+
+    `<!--email_off-->` disables the rewrite for a region. Doing it in the page
+    rather than in the Cloudflare dashboard keeps the fix in version control,
+    where it cannot be switched off by someone who does not know what it
+    protects. The zone setting is not visible from here and a dashboard toggle
+    leaves no trace in the repo, so this test is what holds the property.
+    """
+    src = _raw(page)
+    for block in re.findall(r"<pre\b[^>]*>.*?</pre>", src, re.S):
+        for addr in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", block):
+            guarded = f"<!--email_off-->{addr}<!--/email_off-->"
+            assert guarded in block, (
+                f"{page}: {addr!r} sits in a copyable <pre> unguarded. "
+                "Cloudflare will rewrite it into an obfuscation link and the "
+                f"published command becomes wrong. Wrap it: {guarded}"
+            )

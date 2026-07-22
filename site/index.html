@@ -581,7 +581,7 @@ curl -fsSL https://yangble5.com/install.sh -o install.sh \
   &amp;&amp; shasum -a 256 -c install.sh.sha256 \
   &amp;&amp; sh install.sh --dry-run
 # 上面只是空跑。把它印出來的計畫拿給人看，得到同意之後才執行下面這行：
-#   sh install.sh                      # 需要 e-mail 就加 --email you@example.com</pre>
+#   sh install.sh                      # 需要 e-mail 就加 --email <!--email_off-->you@example.com<!--/email_off--></pre>
           <button type="button" class="copybtn"
                   data-copy-target="cmdAgentUnix" data-copy-status="copyStatus" data-label="複製指令">複製指令</button>
         </div>
@@ -595,7 +595,7 @@ $actual   = (Get-FileHash .\install.ps1 -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA256 MISMATCH —— 不要執行' }
 powershell -NoProfile -File .\install.ps1 -DryRun
 # 上面只是空跑。人看過同意之後才執行下面這行：
-#   powershell -NoProfile -File .\install.ps1     # 需要 e-mail 就加 -Email you@example.com</pre>
+#   powershell -NoProfile -File .\install.ps1     # 需要 e-mail 就加 -Email <!--email_off-->you@example.com<!--/email_off--></pre>
           <button type="button" class="copybtn"
                   data-copy-target="cmdAgentWin" data-copy-status="copyStatus" data-label="複製指令">複製指令</button>
         </div>
@@ -1231,18 +1231,18 @@ powershell -NoProfile -File .\install.ps1 -DryRun</pre>
     </p>
     <div class="mini-cmd">
       <pre id="argsCmd"># macOS / Linux —— 管線要用 sh -s -- 才傳得到參數
-curl -fsSL https://yangble5.com/install.sh | sh -s -- --email you@example.com
+curl -fsSL https://yangble5.com/install.sh | sh -s -- --email <!--email_off-->you@example.com<!--/email_off-->
 curl -fsSL https://yangble5.com/install.sh | sh -s -- --invite YOUR-INVITE-CODE
-sh install.sh --dry-run --email you@example.com        # 已經下載下來的話
+sh install.sh --dry-run --email <!--email_off-->you@example.com<!--/email_off-->        # 已經下載下來的話
 
 # Windows PowerShell —— irm | iex 一樣傳不到，要包成 scriptblock
-&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Email you@example.com
+&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Email <!--email_off-->you@example.com<!--/email_off-->
 &amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Invite YOUR-INVITE-CODE
-powershell -NoProfile -File .\install.ps1 -DryRun -Email you@example.com
+powershell -NoProfile -File .\install.ps1 -DryRun -Email <!--email_off-->you@example.com<!--/email_off-->
 
 # 或者走環境變數，兩支腳本都認這兩個名字
-YANGBLE5_EMAIL=you@example.com YANGBLE5_INVITE=YOUR-INVITE-CODE sh install.sh
-$env:YANGBLE5_EMAIL = 'you@example.com'; $env:YANGBLE5_INVITE = 'YOUR-INVITE-CODE'</pre>
+YANGBLE5_EMAIL=<!--email_off-->you@example.com<!--/email_off--> YANGBLE5_INVITE=YOUR-INVITE-CODE sh install.sh
+$env:YANGBLE5_EMAIL = '<!--email_off-->you@example.com<!--/email_off-->'; $env:YANGBLE5_INVITE = 'YOUR-INVITE-CODE'</pre>
       <button type="button" class="copybtn" data-copy-target="argsCmd"
               data-copy-status="copyStatusArgs" data-label="複製">複製</button>
     </div>

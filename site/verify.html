@@ -373,15 +373,15 @@ powershell -NoProfile -File .\install.ps1</pre>
     <code>irm … | iex</code> 給不了 scriptblock 參數。而且安裝腳本是<strong>全自動</strong>的，
     它不會停下來問你任何事，所以該問的必須事先問完再傳進去：
   </p>
-  <pre class="block">curl -fsSL https://yangble5.com/install.sh | sh -s -- --email you@example.com
+  <pre class="block">curl -fsSL https://yangble5.com/install.sh | sh -s -- --email <!--email_off-->you@example.com<!--/email_off-->
 sh install.sh --dry-run --invite YOUR-INVITE-CODE
 
-&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Email you@example.com
+&amp; ([scriptblock]::Create((irm https://yangble5.com/install.ps1))) -Email <!--email_off-->you@example.com<!--/email_off-->
 powershell -NoProfile -File .\install.ps1 -DryRun -Invite YOUR-INVITE-CODE
 
 <span class="c"># 或用環境變數,兩支腳本都認</span>
-YANGBLE5_EMAIL=you@example.com YANGBLE5_INVITE=YOUR-INVITE-CODE sh install.sh
-$env:YANGBLE5_EMAIL = 'you@example.com'</pre>
+YANGBLE5_EMAIL=<!--email_off-->you@example.com<!--/email_off--> YANGBLE5_INVITE=YOUR-INVITE-CODE sh install.sh
+$env:YANGBLE5_EMAIL = '<!--email_off-->you@example.com<!--/email_off-->'</pre>
 
   <!-- ── mismatch ─────────────────────────────────────────────────── -->
   <div class="warnbox">
