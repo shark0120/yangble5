@@ -37,6 +37,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+# Per-interpreter environments. CONTRIBUTING asks for a run on the floor version
+# before changing anything version-sensitive, and that means a second venv.
+.venv*/
+venv*/
 node_modules/
 .pytest_cache/
 .ruff_cache/

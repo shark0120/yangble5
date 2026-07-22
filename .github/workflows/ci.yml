@@ -447,10 +447,18 @@ jobs:
         # the address -- naming it here would BE the leak -- this asserts the
         # only addresses in the tree live at RFC 2606 reserved domains plus the
         # two fixture domains the gateway tests use.
+        #
+        # RFC 2606 reserves four whole TLDs -- .example, .test, .invalid and
+        # .localhost -- so ANY subdomain of them is unassignable and safe, which
+        # is why the first branch allows a subdomain prefix. It has to: the
+        # `user@host` shape also occurs inside URLs, and the launcher tests carry
+        # `https://u@evil.example` on purpose as a userinfo-injection fixture.
+        # The second branch is for the reserved second-level domains, which sit
+        # under a normal TLD and therefore cannot be matched by the first.
         run: |
           if git grep -hIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- . ':!.github/workflows/ci.yml' \
               | sort -u \
-              | grep -vE '@(example\.(com|org|net)|api\.example\.com|b\.com|test|invalid|localhost)$'; then
+              | grep -vE '@([A-Za-z0-9-]+\.)*(example|test|invalid|localhost)$|@(example\.(com|org|net)|api\.example\.com|b\.com)$'; then
             echo "::error::an email address outside the reserved/fixture domains is committed"
             echo "if it is legitimate, add its domain to the allowlist in this step and say why"
             exit 1

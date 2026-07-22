@@ -28,6 +28,27 @@ Two conventions specific to this repository, because they change how the entries
   as `UTC = timezone.utc`, the same singleton. The module now uses `timezone.utc` and keeps `UTC`
   as a local alias, verified on the affected host with `storage.UTC is timezone.utc` → `True`.
 
+- **`test_stream_is_not_buffered` was measuring the test transport, not the gateway**, and so could
+  not fail for the right reason. It timed `iter_raw()` through `TestClient`, but httpx's
+  `ASGITransport` collects the whole response body before returning, so both numbers in
+  `first_chunk < total * 0.75` were scheduling noise. It passed on Linux by accident; on Windows
+  below 3.13 — where `time.monotonic()` has ~15.6 ms granularity and the loop fits inside one tick
+  — it evaluated `0.0 < 0.0` and failed. Three of the ten matrix cells were red for a defect that
+  was never in the gateway.
+
+  It now drives the ASGI app directly and timestamps each `http.response.body` message with
+  `perf_counter`. The upstream fixture emits three chunks 0.1 s apart, so an accumulating gateway
+  physically cannot spread its body messages: verified by wrapping the app in a buffering
+  middleware, which collapses the spread to 1.3 µs and fails the assertion with a message naming
+  the real failure mode.
+
+- **The committed-address guard rejected an RFC 2606 fixture.** `.example`, `.test`, `.invalid` and
+  `.localhost` are reserved *TLDs*, so any subdomain of them is unassignable, but the allowlist only
+  named `example.com/org/net`. The launcher tests legitimately carry `https://u@evil.example` as a
+  userinfo-injection fixture — a URL, not an address — and it turned the job red. The allowlist now
+  accepts subdomains of the reserved TLDs, re-checked to confirm it still catches real addresses
+  including the operator's own.
+
 ### Changed
 
 - **`requires-python` lowered from `>=3.11` to `>=3.10`.** Nothing in the project needed 3.11: the

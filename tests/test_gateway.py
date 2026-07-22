@@ -10,6 +10,7 @@ limits, invites, and information leakage.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import pathlib
 import re
@@ -791,27 +792,94 @@ def test_sse_passes_through_and_usage_is_scanned(gw):
 
 
 def test_stream_is_not_buffered(gw):
-    """The first chunk must reach the client before the last one is produced."""
+    """Body chunks must leave the gateway as they arrive, not be accumulated.
+
+    Driven against the ASGI app directly instead of through TestClient. That is
+    not a stylistic choice: httpx's ASGITransport collects the entire response
+    body before it hands back a response object, so any duration measured
+    through the test client is a property of the transport, not of the gateway.
+
+    The previous version of this test measured exactly that, and so could not
+    fail for the right reason. It read `first_chunk < total * 0.75` off a
+    already-complete body, where both numbers are scheduling noise -- passing on
+    Linux by accident, and on Windows below 3.13 producing `0.0 < 0.0` because
+    time.monotonic() there has ~15.6ms granularity and the whole loop fits
+    inside one tick. Three of ten matrix cells were red for a defect that was
+    never in the gateway.
+
+    What is asserted here instead is observable and causal: the upstream emits
+    three chunks 0.1s apart, so an accumulating gateway physically cannot send
+    its first body message before the last chunk exists. Timing uses
+    perf_counter, which is high resolution on every supported platform.
+    """
     key = gw.new_key()
     gw.upstream.headers = {"content-type": "text/event-stream"}
     gw.upstream.chunks = [b"data: 1\n\n", b"data: 2\n\n", b"data: 3\n\n"]
     gw.upstream.delay = 0.1
 
-    with gw.client.stream(
-        "POST", "/v1/messages", headers={"Authorization": f"Bearer {key}"},
-        json={"model": "yangble5"},
-    ) as response:
-        started = time.monotonic()
-        first_chunk_at = None
-        for _ in response.iter_raw():
-            if first_chunk_at is None:
-                first_chunk_at = time.monotonic() - started
-        total = time.monotonic() - started
+    body = json.dumps({"model": "yangble5"}).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "root_path": "",
+        "client": ("127.0.0.1", 33333),
+        "server": ("testserver", 80),
+        "headers": [
+            (b"host", b"testserver"),
+            (b"authorization", f"Bearer {key}".encode()),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ],
+    }
 
-    # Three chunks at 0.1s each: a buffered proxy would deliver the first only
-    # after ~0.3s. Incremental delivery gets it at ~0.1s.
-    assert first_chunk_at is not None
-    assert first_chunk_at < total * 0.75
+    sent: list[tuple[float, dict]] = []
+    delivered = False
+
+    async def receive():
+        # The body once, then block. Neither shortcut works: repeating the body
+        # never lets the server see end-of-stream, and returning http.disconnect
+        # is worse than useless -- StreamingResponse races a disconnect listener
+        # against the body pump, so an immediate disconnect cancels the stream
+        # before a single chunk is written and the test sees zero body messages.
+        # Blocking is what a live connection does; starlette cancels the
+        # listener itself once the response is complete.
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.sleep(60)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append((time.perf_counter(), message))
+
+    async def drive():
+        # Bounded so a regression that deadlocks fails the test instead of
+        # hanging the run.
+        await asyncio.wait_for(gw.app(scope, receive, send), timeout=20)
+
+    asyncio.run(drive())
+
+    start = [m for _, m in sent if m["type"] == "http.response.start"]
+    assert start and start[0]["status"] == 200
+
+    bodies = [(t, m) for t, m in sent if m["type"] == "http.response.body" and m.get("body")]
+    assert len(bodies) >= 3, (
+        f"expected one body message per upstream chunk, got {len(bodies)}: "
+        "the gateway accumulated the stream instead of forwarding it"
+    )
+
+    spread = bodies[-1][0] - bodies[0][0]
+    assert spread > 0.1, (
+        f"all {len(bodies)} body messages arrived within {spread * 1000:.1f}ms of "
+        "each other, so they were produced after the upstream had finished"
+    )
 
 
 # ---------------------------------------------------------------------------
