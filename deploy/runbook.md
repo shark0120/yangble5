@@ -67,6 +67,44 @@ echo | openssl s_client -servername "$YANGBLE5_DOMAIN" \
 Weekly: skim the top spenders (§2) and confirm the monthly total is tracking
 where you expect against your cap.
 
+### Is the gateway that is RUNNING the gateway in this repository?
+
+`tools/drift_check.py` answers that question for the published *site*. Nothing
+answers it for the *gateway*, and the gap is real: on 2026-07-23 the running
+`gateway/app.py` was one edit behind `main`. Nothing was broken and nothing
+reported it — the difference was one string in a 400 payload, so every health
+check, every smoke check and every test stayed green while the service told
+users something the repository no longer said.
+
+It is not exposed on `/health` on purpose. That endpoint is unauthenticated and
+its docstring commits to leaking nothing an attacker can use; a build
+fingerprint would tell a stranger exactly which revision is running. So this is
+an operator check over SSH, not a public field:
+
+```sh
+# from a checkout, with $HOST reaching the box
+norm() { awk '{ sub(/^\*/, "", $2); sub(/.*\//, "", $2); print $1, $2 }' | sort -k2; }
+diff <(ssh "$HOST" 'cd /opt/yangble5 && sha256sum gateway/*.py' | norm) \
+     <(cd gateway && sha256sum *.py | norm)
+```
+
+Silence means the running code is this checkout. Any line means a deploy did
+not finish, or somebody edited a file on the box.
+
+`norm` is not decoration. **Git Bash's `sha256sum` prefixes the filename with
+`*`** — its "binary mode" marker — while GNU coreutils on the server writes two
+spaces. Without stripping it, every single line differs and the check reports a
+total mismatch on the one platform this project's operator actually runs it
+from: a check that cries wolf gets switched off exactly as fast as one that
+never fires. It also strips the `gateway/` path prefix so the two sides name the
+same thing, and `sort -k2` orders by filename rather than by whatever order the
+shell expanded the glob in.
+
+If it differs and the box is the one that is wrong, §11 is the upgrade path. If
+the box is the one that is *right* — somebody hot-fixed production — get the
+change into git before anything else, because the next deploy silently reverts
+it.
+
 ---
 
 ## 2. Check spend
