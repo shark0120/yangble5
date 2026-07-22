@@ -67,29 +67,41 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m pytest -q --tb=line > pytest-output.txt 2>&1
+          python -m pytest -q --tb=short > pytest-output.txt 2>&1
           status=$?
           cat pytest-output.txt
           if [ "$status" -ne 0 ]; then
-            # `--tb=line` renders each failure as `path:lineno: Error: message`,
-            # which is the assertion text itself. `-q`'s short summary truncates
-            # at the exception type, so on its own it names the test and tells
-            # you nothing about why it failed.
-            grep -E '\.py:[0-9]+: ' pytest-output.txt | head -25 | while IFS= read -r line; do
+            # GitHub surfaces only the FIRST TEN error annotations per job, so
+            # one line per failure spends the whole budget on names and leaves
+            # no room for the reason. Everything diagnostic therefore goes into
+            # ONE multi-line annotation (%0A is how a newline survives the
+            # workflow-command encoding), and the per-test names get what is
+            # left.
+            emit() {   # emit <title> <file>  -- one annotation, newlines intact
+              printf '::error::%s%%0A%s\n' "$1" \
+                "$(sed 's/%/%25/g; s/\r/ /g' "$2" | awk '{printf "%s%%0A", $0}')"
+            }
+
+            # The installer tests shell out. A failure that reproduces only on a
+            # hosted runner is usually a different binary on PATH rather than a
+            # different code path, and naming them costs almost nothing.
+            {
+              for tool in sh dash bash curl powershell pwsh; do
+                printf '%s -> %s\n' "$tool" "$(command -v "$tool" 2>/dev/null || echo '(absent)')"
+              done
+              printf 'TEMP=%s  RUNNER_OS=%s  PWD=%s\n' \
+                "${TMPDIR:-${TEMP:-unset}}" "${RUNNER_OS:-?}" "$PWD"
+            } > tool-report.txt
+            emit "runner toolchain" tool-report.txt
+
+            # The first failure in full. --tb=short prints the assertion and the
+            # captured values, which is the part that says WHY rather than WHERE.
+            sed -n '/=* FAILURES =*/,$p' pytest-output.txt | head -60 > first-failure.txt
+            emit "first failure (tb=short)" first-failure.txt
+
+            grep -E '^(FAILED|ERROR)' pytest-output.txt | head -8 | while IFS= read -r line; do
               echo "::error::$line"
             done
-            grep -E '^(FAILED|ERROR)' pytest-output.txt | head -15 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-            # The installer tests shell out, and a failure that appears only on
-            # a hosted runner is usually a different tool on PATH rather than a
-            # different code path. Naming them costs one line and has twice been
-            # the whole answer.
-            for tool in sh dash bash curl powershell pwsh; do
-              path=$(command -v "$tool" 2>/dev/null || echo "(absent)")
-              echo "::error::TOOL $tool -> $path"
-            done
-            echo "::error::TEMP=${TMPDIR:-${TEMP:-unset}}  OS=${RUNNER_OS:-?}"
           fi
           exit "$status"
 
