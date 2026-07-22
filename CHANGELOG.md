@@ -60,6 +60,30 @@ is discoverable and unambiguous through HTTP alone.
 
 ### Fixed
 
+- **BYOK stored other people's provider credentials in plaintext on any deployment that
+  followed the documentation.** `BYOK_ENABLED` defaults to `true`, and `BYOK_ENCRYPTION_KEY`
+  appeared in `gateway/` and `tests/` and nowhere else — not in `deploy/.env.example`, not in
+  either compose file, not in a document, and in no check. A self-hoster doing exactly what
+  `deploy/` told them therefore accepted their users' own Google / OpenAI / xAI keys — the ones
+  that bill *those users'* accounts — and wrote them unencrypted into the SQLite file. Anyone
+  who obtained a copy of that file held every attached credential in the clear, with nothing to
+  crack.
+
+  The gateway did append a startup warning. That is one line in a log, on a box the operator has
+  just finished configuring, against a default that is on.
+
+  Both variables are now in `.env.example` (with `__GENERATE__`, so leaving them alone is the
+  safe default rather than the dangerous one) and in both compose files.
+  **BREAKING for existing self-hosters:** the compose entry is `${...:?}`, not `${...:-}`, so a
+  stack whose `.env` lacks the key now refuses to start instead of quietly storing plaintext.
+  The refusal message names both ways out — set the key, or set `YANGBLE5_BYOK_ENABLED=false`
+  and tell users to self-host. `yangble5.com` itself was unaffected: it had the key set, though
+  only by whoever configured it, not because anything asked for it.
+
+  `tests/test_deploy_env_completeness.py` now checks both directions. The reverse direction —
+  variables wired into compose that `.env.example` never mentions — found a second one,
+  `UNPARSED_USAGE_TOKEN_FLOOR`, on its first run; it is now documented too.
+
 - **The gateway could not start on Python 3.10**, which is the system Python on Ubuntu 22.04 LTS.
   `gateway/storage.py` imported `datetime.UTC`, added in 3.11, and the module raised
   `ImportError: cannot import name 'UTC' from 'datetime'` before the service ever bound a port.

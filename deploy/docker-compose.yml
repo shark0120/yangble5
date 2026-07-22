@@ -198,6 +198,15 @@ services:
       # -- crypto --
       YANGBLE5_KEY_PEPPER: ${YANGBLE5_KEY_PEPPER:?set YANGBLE5_KEY_PEPPER in .env}
       YANGBLE5_KEY_HASH_SCHEME: ${YANGBLE5_KEY_HASH_SCHEME:-scrypt}
+      # -- BYOK: other people's provider credentials --
+      # A BYOK credential is the user's OWN Google/OpenAI/xAI key, the one that
+      # bills their account. Without an encryption key the gateway stores it
+      # AS-IS in the SQLite file, so a copy of that file is every user's
+      # provider credential in the clear. `:?` rather than a default: BYOK
+      # defaults to ON, and an operator who has not thought about this should
+      # be stopped by compose rather than warned by one line in a log.
+      YANGBLE5_BYOK_ENCRYPTION_KEY: ${YANGBLE5_BYOK_ENCRYPTION_KEY:?set YANGBLE5_BYOK_ENCRYPTION_KEY in .env, or set YANGBLE5_BYOK_ENABLED=false}
+      YANGBLE5_BYOK_ENABLED: ${YANGBLE5_BYOK_ENABLED:-true}
       # -- rate limits --
       YANGBLE5_RATE_LIMIT_RPM: ${YANGBLE5_RATE_LIMIT_RPM:-60}
       YANGBLE5_RATE_LIMIT_CONCURRENCY: ${YANGBLE5_RATE_LIMIT_CONCURRENCY:-4}
