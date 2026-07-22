@@ -1052,3 +1052,35 @@ class Storage:
                 (ip_hash, day),
             )
         return True, current + 1
+
+    # A machine hash, not an IP hash, sharing the register_attempts table under a
+    # namespace prefix. Deliberate, and named here rather than smuggled in at the
+    # call site: the column is an opaque string, the (key, day) semantics and the
+    # atomic check-and-consume are exactly what a reissue cap needs, and a second
+    # table for one counter would be a schema migration bought with nothing. The
+    # prefix keeps the two populations distinguishable to an operator reading the
+    # table by hand.
+    _REISSUE_NS = "machine:"
+
+    def claim_machine_reissue(
+        self, machine_hash: str, max_per_day: int, day: str | None = None
+    ) -> tuple[bool, int]:
+        """Consume one of today's reissues for a machine binding.
+
+        A machine id is a possession factor -- sha256 of hostname, os, arch and a
+        local 32-byte random salt -- and re-registering with one hands back a
+        working key with a FRESH secret, which invalidates whatever the previous
+        holder had. That is the right behaviour for someone who deleted their
+        credentials file, and a takeover primitive for anyone who obtains the id.
+
+        Reissue deliberately does not consume the per-IP registration allowance
+        (re-running the installer is not an attempt to obtain a new key), but the
+        consequence was that it consumed NOTHING: the per-IP counter is read on
+        the way in and never incremented on this path, so a replay of one captured
+        machine id could rotate a victim's key without limit and from any address.
+        Bounding it per machine closes that without charging honest reruns to a
+        shared office IP.
+        """
+        return self.claim_register_attempt(
+            self._REISSUE_NS + machine_hash, max_per_day, day
+        )

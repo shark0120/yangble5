@@ -682,3 +682,45 @@ def test_a_byok_success_does_not_clear_the_shared_pools_outage(build):
         "still returning 500 to everyone, but /pool/status now says it is "
         "accepting requests"
     )
+
+
+def test_a_captured_machine_id_cannot_rotate_a_key_forever(build):
+    """Re-registration is bounded per machine, not merely per IP.
+
+    A machine id is a possession factor, and re-registering with one returns a
+    working key with a FRESH secret -- which invalidates whatever the previous
+    holder had. Reissue deliberately does not consume the per-IP registration
+    allowance, but it consumed nothing at all: the per-IP counter is read on the
+    way in and never incremented on this path. So a replay of one captured
+    machine id could rotate the victim's key without limit, from any address,
+    while the counter that was supposed to bound it stayed at zero.
+    """
+    gw = build(REGISTER_MAX_PER_IP_PER_DAY=0, RATE_LIMIT_RPM=0)
+    mid = "b" * 64
+
+    first = gw.client.post("/auth/register", json={"machine_id": mid})
+    assert first.status_code == 201
+    key_id = first.json()["key_id"]
+
+    # The attacker replays the id. Each success rotates the victim's secret.
+    codes = [
+        gw.client.post("/auth/register", json={"machine_id": mid}).status_code
+        for _ in range(8)
+    ]
+
+    assert 429 in codes, (
+        "a captured machine id re-registered 8 times unchecked; each one "
+        "invalidates the previous holder's key"
+    )
+    refused = gw.client.post("/auth/register", json={"machine_id": mid})
+    assert refused.status_code == 429
+    body = refused.json()["error"]["message"]
+    assert "someone else has a copy" in body, (
+        "the refusal does not tell the victim what it actually means"
+    )
+
+    # It bounded the MACHINE, not the address: a different machine from the
+    # same client still registers.
+    other = gw.client.post("/auth/register", json={"machine_id": "c" * 64})
+    assert other.status_code == 201
+    assert other.json()["key_id"] != key_id

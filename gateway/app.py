@@ -147,6 +147,12 @@ _MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"\\]{1,200})"')
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s.]{1,63}(\.[^@\s.]{1,63})+$")
 
+# How often ONE machine may re-register in a day. Not an operator setting: the
+# honest use is "my credentials file is gone", which happens once, and a knob
+# here would only ever be turned up by someone debugging their own install.
+# Five leaves room for a bad afternoon and still ends a replay quickly.
+MAX_REISSUES_PER_MACHINE_PER_DAY = 5
+
 
 # ---------------------------------------------------------------------------
 # structured logging
@@ -1403,6 +1409,51 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 )
         machine_hash = state.storage.hash_machine_id(machine_id) if machine_id else None
 
+        # ---- idempotent re-registration -------------------------------------
+        # This is what makes "just re-run the installer" a safe instruction. The
+        # same machine gets its EXISTING key back — same key_id, same usage
+        # history, same daily allowance, same operator flag — instead of a
+        # second key with a second allowance, which is the cheapest quota-farming
+        # trick there is.
+        #
+        # DELIBERATELY BEFORE the per-IP reject below. That reject reads a counter
+        # this path never increments, which made the ordering wrong in both
+        # directions at once: an honest rerun from a shared office or CGNAT
+        # address was refused once the neighbours had used the day's
+        # registrations, while a replay of one captured machine id was refused
+        # never, because it moved no counter at all.
+        if machine_hash is not None:
+            binding = await run_in_threadpool(state.storage.get_machine_binding, machine_hash)
+            if binding is not None:
+                # A reissue mints a fresh secret and invalidates the previous
+                # one, so anyone holding this machine id can take the account
+                # over — and the holder can take it straight back. Unbounded,
+                # that is a key-rotation tug-of-war either side can run forever.
+                # Bounded per machine, honest recovery still works and replay
+                # stops after a handful of attempts.
+                claimed, used = await run_in_threadpool(
+                    state.storage.claim_machine_reissue,
+                    machine_hash,
+                    MAX_REISSUES_PER_MACHINE_PER_DAY,
+                )
+                if not claimed:
+                    _log(
+                        logging.WARNING,
+                        "register.reissue_capped",
+                        key_id=binding.key_id,
+                        ip_hash=ip_hash[:12],
+                        used=used,
+                    )
+                    return _error(
+                        429, "rate_limit_error",
+                        "This machine has re-registered too many times today. If "
+                        "you did not do that, someone else has a copy of this "
+                        "machine's id: ask the operator to revoke the key. The "
+                        "limit clears at 00:00 UTC.",
+                        retry_after_seconds=_seconds_until_utc_midnight(),
+                    )
+                return await _reissue_for_machine(state, binding, ip_hash)
+
         # CHEAP EARLY REJECT, not the decision. It saves a JSON parse and a
         # couple of hashes for an address that is already obviously over its
         # allowance. The binding decision is `claim_register_attempt` further
@@ -1417,17 +1468,6 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "This network has reached today's registration limit.",
                 retry_after_seconds=_seconds_until_utc_midnight(),
             )
-
-        # ---- idempotent re-registration -------------------------------------
-        # This is what makes "just re-run the installer" a safe instruction. The
-        # same machine gets its EXISTING key back — same key_id, same usage
-        # history, same daily allowance, same operator flag — instead of a
-        # second key with a second allowance, which is the cheapest quota-farming
-        # trick there is.
-        if machine_hash is not None:
-            binding = await run_in_threadpool(state.storage.get_machine_binding, machine_hash)
-            if binding is not None:
-                return await _reissue_for_machine(state, binding, ip_hash)
 
         email = (payload.email or "").strip() or None
         if email and not _EMAIL_RE.match(email):
