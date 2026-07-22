@@ -599,7 +599,9 @@ bash deploy/smoke_test.sh --base-url https://api.example.com
 - [ ] `/v0/management/*` returns **404** from the internet.
 - [ ] The engine's port 8318 does not answer from the internet.
 
-Two of these checks spend tokens (`max_tokens=16` each). `--no-spend` skips
+Two of these checks spend tokens: `max_tokens=16` for the round trip and
+`max_tokens=120` for the streaming probe, which needs enough output to tell a
+short reply from a buffered one. `--no-spend` skips
 them, but never announce on a run that skipped them.
 
 **ABORT IF** any check fails. Three failures are emergencies rather than bugs:

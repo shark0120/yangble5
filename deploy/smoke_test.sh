@@ -63,7 +63,10 @@
 #      that shipped a digest and its file from different commits.
 #
 # CHECKS 5 AND 6 SPEND TOKENS on whatever upstream account you configured.
-# Two requests, max_tokens=16. Pass --no-spend to skip them.
+# Two requests: check 5 asks for 16 tokens, check 6 asks for 120. Check 6 is
+# larger on purpose - progressive delivery cannot be measured in a reply that
+# fits in one TCP write, and a 16-token answer was being reported as BUFFERED.
+# Pass --no-spend to skip both.
 # CHECKS 11 AND 12 spend nothing. There is no flag to skip them.
 #
 # SECRETS: the API key is passed to curl through a config file on stdin
@@ -162,7 +165,9 @@ usage() {
   -h, --help           this text
 
 The key may also come from $YANGBLE5_API_KEY, or be typed at a prompt.
-Checks 5 and 6 spend tokens on your upstream account (max_tokens=16 each).
+Checks 5 and 6 spend tokens on your upstream account: 16 for check 5, 120
+for check 6. Check 6 is larger because progressive delivery cannot be measured
+in a reply that fits in a single TCP write.
 
 Run this from OUTSIDE the origin, on a machine that resolves the name the way
 the public does. Checks 11 and 12 compare what a VISITOR is served against this
@@ -208,6 +213,29 @@ contains_ci() {
     esac
 }
 
+# events, gap-in-seconds -> streaming | buffered | inconclusive
+#
+# `--self-test` proves this says all three things. It is a separate function
+# for that reason: the logic it replaces was inline, and it was wrong in a way
+# that only ever showed up against a live origin with a real key -- the most
+# expensive place to find anything.
+stream_verdict() {
+    awk -v e="${1:-0}" -v g="${2:-0}" 'BEGIN{
+        # Bytes arriving over more than 150 ms cannot have been released in one
+        # go. This is the only positive signal, and it is checked FIRST so a
+        # long, genuinely progressive stream can never fall through to a rule
+        # about short ones.
+        if (g >= 0.15)  { print "streaming"; exit }
+        # Eight or more chunks inside 150 ms is not a model generating text, it
+        # is a buffer being flushed.
+        if (e >= 8)     { print "buffered";  exit }
+        # Everything else: too little output, too fast, to tell the difference.
+        # This branch used to be unreachable whenever e >= 3 -- which is every
+        # real reply -- so a short answer was reported as buffering.
+        print "inconclusive"
+    }'
+}
+
 # ── --self-test: the pure helpers, no network, no key, no origin ───────────
 #
 # Reachable before anything is configured, so CI can run it with no secrets.
@@ -242,12 +270,50 @@ a needle with a glob star is a LITERAL star, not a wildcard|max-age=31536000|max
 a needle with a glob question mark is literal too|nosniff|nosnif?|0
 a needle in brackets is literal, not a character class|DENY|[DE]ENY|0
 EOF
+
+    # ---- stream_verdict: events | gap seconds | expected verdict -----------
+    #
+    # The first row is the one that matters. On 2026-07-23 a healthy origin
+    # answered a 16-token streaming request with six events in 32 ms and this
+    # check reported "the stream is being BUFFERED", failing the run with
+    # "Do NOT open registration or announce". The old rule was
+    #
+    #     if (e >= 3 && g < 0.15) buffered; else if (g < 0.05 && e >= 2) suspect;
+    #
+    # whose second branch cannot be reached whenever e >= 3 -- which is every
+    # real reply. The "too fast to tell" escape hatch existed and was dead code.
+    local want got
+    while IFS='|' read -r desc ndl hay want; do
+        [ -n "$desc" ] || continue
+        got="$(stream_verdict "$ndl" "$hay")"
+        if [ "$got" = "$want" ]; then
+            printf '  ok    %s
+' "$desc"
+        else
+            printf '  FAIL  %s (expected %s, got %s) events=%s gap=%s
+'                    "$desc" "$want" "$got" "$ndl" "$hay"
+            failures=$((failures+1))
+        fi
+    done <<'EOF'
+the exact false positive: 6 events in 32 ms from a healthy origin|6|0.032|inconclusive
+the exact live measurement: 10 events over 0.66 s|10|0.660|streaming
+a long stream is streaming however many events it had|3|2.400|streaming
+genuinely buffered: 40 events released together|40|0.010|buffered
+genuinely buffered: exactly at the event threshold|8|0.000|buffered
+one event tells you nothing|1|0.000|inconclusive
+two events tell you nothing either|2|0.040|inconclusive
+just under the delivery threshold, too few events to judge|7|0.149|inconclusive
+just over the delivery threshold is streaming, not buffered|40|0.150|streaming
+no events at all is not a buffering verdict|0|0.000|inconclusive
+EOF
+
     if [ "$failures" -gt 0 ]; then
-        printf '\nself-test: %s failure(s). contains_ci is broken; every header\n' "$failures"
-        printf 'verdict this script prints is unreliable until it is fixed.\n'
+        printf '\nself-test: %s failure(s) in the pure helpers. Every verdict this\n' "$failures"
+        printf 'script prints is unreliable until they are fixed.\n'
         return 1
     fi
-    printf '\nself-test: contains_ci says yes when it should and no when it should.\n'
+    printf '\nself-test: contains_ci says yes and no when it should;\n'
+    printf 'stream_verdict says streaming, buffered and inconclusive when it should.\n'
     return 0
 }
 
@@ -350,6 +416,28 @@ request_body() {
     printf '{"model":"%s","max_tokens":16,"stream":%s,"messages":[{"role":"user","content":"Reply with exactly one word: pong"}]}' \
         "$MODEL" "$1"
 }
+
+# The STREAMING probe needs a different body from the round-trip probe, and the
+# reason is the whole point of check 6.
+#
+# You cannot measure progressive delivery with a reply that fits in one TCP
+# write. `max_tokens: 16` produced a six-event answer that arrived in 32
+# milliseconds -- correctly, from a healthy origin -- and check 6 called that
+# BUFFERED and failed the run with "Do NOT open registration or announce".
+# There was nothing wrong with the service; there was nothing to measure.
+#
+# 120 tokens of counting is enough to span several flushes. Measured against
+# the live service on 2026-07-23: 10-11 `data:` events spread over 0.66-0.74 s,
+# both through Cloudflare and direct to the origin.
+#
+# It costs more than 16 tokens, and that is stated in the header rather than
+# hidden: a check that spends nothing and proves nothing is the more expensive
+# of the two.
+stream_request_body() {
+    printf '{"model":"%s","max_tokens":120,"stream":true,"messages":[{"role":"user","content":"Count slowly from 1 to 40, one number per line."}]}' \
+        "$MODEL"
+}
+
 
 inference_path() {
     if [ "$DIALECT" = "anthropic" ]; then printf '/v1/messages'
@@ -597,7 +685,7 @@ check_streaming() {
 
     local path body raw meta payload code ttfb total events ctype
     path="$(inference_path)"
-    body="$(request_body true)"
+    body="$(stream_request_body)"
 
     raw="$(auth_config | curl -sS -K - --no-buffer \
         -w '\n__M__ %{http_code} %{time_starttransfer} %{time_total} %{size_download} %{content_type}' \
@@ -610,7 +698,14 @@ check_streaming() {
     code="$(printf '%s' "$meta"  | awk '{print $1}')"
     ttfb="$(printf '%s' "$meta"  | awk '{print $2}')"
     total="$(printf '%s' "$meta" | awk '{print $3}')"
-    ctype="$(printf '%s' "$meta" | awk '{print $6}')"
+    # $5, not $6. The -w format is
+    #   %{http_code} %{time_starttransfer} %{time_total} %{size_download} %{content_type}
+    # and `__M__ ` is stripped before this runs, so content_type is the FIFTH
+    # field. Reading $6 returned the empty string on every run ever made, which
+    # the case below rendered as "unset - expected text/event-stream". The
+    # origin has been sending `text/event-stream` correctly the whole time; this
+    # assertion had simply never been able to pass.
+    ctype="$(printf '%s' "$meta" | awk '{print $5}')"
     events="$(printf '%s' "$payload" | grep -c '^data:')"
 
     if [ "$code" != "200" ]; then
@@ -634,23 +729,25 @@ check_streaming() {
         *) warn "api/streaming-content-type" "${ctype:-unset} — expected text/event-stream" ;;
     esac
 
-    # Buffering heuristic. awk because the shell has no floats.
+    # awk because the shell has no floats. The rules, and why they live in a
+    # function with a self-test, are at stream_verdict.
     local gap verdict
     gap="$(awk -v a="${total:-0}" -v b="${ttfb:-0}" 'BEGIN{printf "%.3f", a-b}')"
-    verdict="$(awk -v g="$gap" -v e="${events:-0}" 'BEGIN{
-        if (e >= 3 && g < 0.15) print "buffered";
-        else if (g < 0.05 && e >= 2) print "suspect";
-        else print "streaming"; }')"
+    verdict="$(stream_verdict "${events:-0}" "$gap")"
 
     case "$verdict" in
         streaming) pass "api/streaming" "$events events, first byte ${ttfb}s, last ${total}s (delivered over ${gap}s)" ;;
-        buffered)  fail "api/streaming" "$events events but all arrived within ${gap}s of each other — the stream is being BUFFERED"
+        buffered)  fail "api/streaming" "$events events all arrived within ${gap}s — the stream is being BUFFERED"
                    note "something is collecting the whole response before releasing it. In order of likelihood:"
                    note "  1. a Cloudflare setting that transforms the body (Rocket Loader / auto-minify / compression)"
                    note "  2. a reverse proxy in front of caddy that is not this repo's Caddyfile"
-                   note "  3. flush_interval not set to -1 on the gateway upstream"
+                   note "  3. proxy_buffering not turned off on the /v1/ location (nginx), or"
+                   note "     flush_interval not set to -1 (caddy) on the gateway upstream"
                    note "see deploy/cloudflare.md 'Response buffering'" ;;
-        *)         warn "api/streaming" "$events events, delivered over ${gap}s — too fast to tell buffering from a short reply; re-run with a longer prompt" ;;
+        *)         warn "api/streaming" "$events events over ${gap}s — too little output, too fast, to tell buffering from a short reply"
+                   note "the model returned less than this check needs in order to measure"
+                   note "delivery. That is a gap in the EVIDENCE, not a verdict about the"
+                   note "service: re-run when the upstream is answering at normal length." ;;
     esac
 }
 

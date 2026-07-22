@@ -201,3 +201,71 @@ def test_the_managed_robots_check_ignores_comment_lines() -> None:
         "false positive it was written for — re-point it at whatever tell the "
         "file now discusses, or delete it."
     )
+
+
+# ── stream_verdict ─────────────────────────────────────────────────────────
+
+
+def test_stream_verdict_self_test_covers_all_three_answers() -> None:
+    """A verdict function with no "I cannot tell" is a guess with a confident face.
+
+    The rule this replaced was::
+
+        if (e >= 3 && g < 0.15)      buffered
+        else if (g < 0.05 && e >= 2) suspect
+        else                         streaming
+
+    whose middle branch is unreachable whenever ``e >= 3`` — which is every real
+    reply. The "too fast to tell" escape hatch existed in the source and was
+    dead code, so on 2026-07-23 a healthy origin answering a 16-token request
+    with six events in 32 ms was reported as ``the stream is being BUFFERED``
+    and the run failed with *"Do NOT open registration or announce"*.
+
+    ``--self-test`` runs the table; this asserts the table still asks all three
+    questions, because a table of only-``buffered`` rows would pass a function
+    that has forgotten how to say anything else.
+    """
+    body = SMOKE.read_text(encoding="utf-8")
+    table = body[body.index("---- stream_verdict:") :].split("\nEOF")[0]
+    rows = [r for r in table.splitlines() if r.count("|") == 3]
+    answers = {r.rsplit("|", 1)[1].strip() for r in rows}
+    assert answers == {"streaming", "buffered", "inconclusive"}, (
+        f"the stream_verdict self-test table only exercises {sorted(answers)}. "
+        "All three verdicts must be represented or the table cannot notice a "
+        "function that has stopped producing one of them."
+    )
+    assert len(rows) >= 8, f"only {len(rows)} rows; the boundaries need both sides"
+
+
+def test_stream_verdict_pins_the_exact_false_positive() -> None:
+    """The measurement that caused the outage is in the table, by its numbers.
+
+    Six events in 32 ms, from an origin that was verified — separately, with a
+    120-token request through Cloudflare and again straight to the origin — to
+    be streaming progressively. If that row is ever deleted, the regression has
+    nothing holding it back.
+    """
+    body = SMOKE.read_text(encoding="utf-8")
+    assert "|6|0.032|inconclusive" in body, (
+        "the row pinning the false positive (6 events, 0.032 s -> inconclusive) "
+        "is gone from deploy/smoke_test.sh's self-test table"
+    )
+
+
+def test_the_streaming_probe_asks_for_enough_output_to_measure() -> None:
+    """You cannot measure progressive delivery in a reply that fits one write.
+
+    The streaming check used the same 16-token body as the round-trip check.
+    Separating them costs tokens, which is why the header states it — but a
+    check that spends nothing and proves nothing is the more expensive of the
+    two.
+    """
+    body = SMOKE.read_text(encoding="utf-8")
+    assert "stream_request_body() {" in body
+    block = body[body.index("stream_request_body() {") :]
+    block = block[: block.index("\n}\n")]
+    tokens = re.search(r'"max_tokens":(\d+)', block)
+    assert tokens and int(tokens.group(1)) >= 64, (
+        "the streaming probe asks for too few tokens to tell a short reply from "
+        "a buffered one; that is exactly the state that produced a false FAIL"
+    )

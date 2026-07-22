@@ -223,6 +223,30 @@ def _error(status: int, kind: str, message: str, **extra: Any) -> JSONResponse:
     return JSONResponse(body, status_code=status, headers=headers)
 
 
+def as_sentence(text: str) -> str:
+    """Terminate free operator text so the sentence after it does not run in.
+
+    `suspended_reason` is whatever the operator typed into the snippet in
+    `deploy/runbook.md`, and nothing obliges them to end it with a full stop.
+    Both suspension messages append another sentence straight after it, which
+    on a live 403 produced:
+
+        This key is suspended. Reason: acceptance test account created by the
+        operator 2026-07-23; not a real user Only the operator can lift this.
+
+    The reader of that sentence has just been locked out and is trying to work
+    out whether they did something wrong. Two sentences fused into one is a
+    poor moment to make them re-read.
+
+    Punctuation is only ADDED, never replaced: an operator who wrote a question
+    mark or a colon meant it.
+    """
+    text = text.strip()
+    if not text:
+        return text
+    return text if text[-1] in ".!?:;" else text + "."
+
+
 def support_note(settings: Settings) -> str:
     """One sentence telling the reader how to reach the operator.
 
@@ -1294,7 +1318,7 @@ async def authenticate(request: Request, state: GatewayState) -> AuthContext:
                     settings,
                     f"This key is {record.status}."
                     + (
-                        f" Reason: {record.suspended_reason}"
+                        f" Reason: {as_sentence(record.suspended_reason)}"
                         if record.suspended_reason
                         else ""
                     )
@@ -1727,7 +1751,11 @@ async def _reissue_for_machine(
             _needs_operator(
                 settings,
                 f"The key bound to this machine is {record.status}."
-                + (f" Reason: {record.suspended_reason}" if record.suspended_reason else "")
+                + (
+                    f" Reason: {as_sentence(record.suspended_reason)}"
+                    if record.suspended_reason
+                    else ""
+                )
                 + " Re-registering does not clear this, by design.",
             ),
             support_contact=settings.support_contact or None,

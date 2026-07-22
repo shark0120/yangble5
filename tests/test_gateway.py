@@ -703,6 +703,38 @@ def test_suspended_key_is_refused_immediately(gw):
     assert response.json()["error"]["type"] == "key_suspended"
 
 
+@pytest.mark.parametrize(
+    ("reason", "expected_tail"),
+    [
+        # The exact string that produced the bug, on the live service.
+        ("acceptance test account created by the operator; not a real user",
+         "not a real user. Only the operator can lift this."),
+        # An operator who already punctuated is left alone.
+        ("abuse: shared key, 40 distinct IPs.",
+         "40 distinct IPs. Only the operator can lift this."),
+        # So is one who ended on a question mark.
+        ("did you share this key?", "did you share this key? Only the operator can lift this."),
+    ],
+)
+def test_the_suspension_reason_does_not_fuse_into_the_next_sentence(gw, reason, expected_tail):
+    """A 403 is read by someone who has just been locked out.
+
+    `suspended_reason` is free text typed by the operator into the snippet in
+    `deploy/runbook.md`, and nothing obliges them to end it with a full stop.
+    The message appends another sentence immediately after it, so an
+    unterminated reason shipped this, live:
+
+        Reason: ... not a real user Only the operator can lift this.
+
+    Two sentences fused into one, at the moment the reader is trying to work
+    out whether they did something wrong.
+    """
+    key = gw.new_key()
+    gw.storage.set_key_status(parse_key(key)[0], "suspended", reason)
+    message = gw.call(key).json()["error"]["message"]
+    assert expected_tail in message, message
+
+
 def test_usage_endpoint_shows_only_the_callers_own_data(build):
     gw = build(ALLOW_MULTIPLE_KEYS_PER_EMAIL=True)
     mine = gw.new_key("mine@b.com")

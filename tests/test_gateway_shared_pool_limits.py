@@ -82,11 +82,30 @@ class FakeUpstream:
         class _Ctx:
             async def __aenter__(self):
                 upstream.calls.append({"method": method, "path": path, "headers": dict(headers)})
+                # SNAPSHOT the gate, and do it before announcing arrival.
+                #
+                # This used to read `upstream.gate` twice -- once for the None
+                # check and once for `.wait()`. A test that rebinds the
+                # attribute while this request is in flight (which
+                # test_byok_traffic_is_not_queued_behind_the_shared_pool does,
+                # to let a second caller through) could land between the two
+                # reads, and `.wait()` was then called on None. The
+                # AttributeError happens on a TestClient worker thread, so
+                # pytest surfaces it as PytestUnhandledThreadExceptionWarning
+                # against whatever test happens to be running when it lands --
+                # which is how this appeared in CI as a failure in a test with
+                # no threads in it, on one Python version, once.
+                #
+                # Snapshotting also fixes the quieter half: a rebind to None
+                # made an already-blocked holder stop blocking, so a test that
+                # believed it was holding the single upstream slot silently was
+                # not.
+                gate = upstream.gate
                 upstream.entered.release()
-                if upstream.gate is not None:
+                if gate is not None:
                     # Block the worker thread TestClient runs this on. Portal
                     # threads are real threads, so this genuinely holds a slot.
-                    upstream.gate.wait(timeout=30)
+                    gate.wait(timeout=30)
                 return FakeResponse(upstream.status, dict(upstream.headers), list(upstream.chunks))
 
             async def __aexit__(self, *exc):
@@ -254,19 +273,29 @@ def test_byok_traffic_is_not_queued_behind_the_shared_pool(build):
     own_key = gw.new_key("own@b.com")
     assert gw.attach_byok(own_key).status_code == 201
 
-    gw.upstream.gate = threading.Event()
+    held = threading.Event()
+    gw.upstream.gate = held
     holder = threading.Thread(target=lambda: gw.call(pool_key))
     holder.start()
     assert gw.upstream.entered.acquire(timeout=10)
 
     # The shared slot is taken. A BYOK caller pays their own upstream and is
-    # served anyway.
+    # served anyway. Clearing `gate` only affects requests that arrive from
+    # here on; the holder snapshotted `held` on the way in and is still on it.
     gw.upstream.gate = None
     assert gw.call(own_key).status_code == 200
 
-    gw.upstream.gate = threading.Event()
-    gw.upstream.gate.set()
+    # Release the holder on the object it is ACTUALLY waiting on. This used to
+    # construct a fresh Event and set that instead, which the holder never saw:
+    # the thread only ever ended by hitting its own 30-second wait timeout, and
+    # `holder.join(timeout=30)` returning proved nothing because nobody checked
+    # whether it had returned or merely timed out.
+    held.set()
     holder.join(timeout=30)
+    assert not holder.is_alive(), (
+        "the holder thread did not finish after its gate was released; it is "
+        "still occupying an upstream slot and will leak into the next test"
+    )
 
 
 def test_the_connection_pool_cannot_silently_queue_past_the_limiter():
@@ -730,3 +759,55 @@ def test_a_captured_machine_id_cannot_rotate_a_key_forever(build):
     other = gw.client.post("/auth/register", json={"machine_id": "c" * 64})
     assert other.status_code == 201
     assert other.json()["key_id"] != key_id
+
+
+def test_the_gate_is_read_once_so_a_rebind_cannot_crash_the_worker():
+    """The interleaving that turned one CI cell red, made deterministic.
+
+    ``FakeUpstream.stream`` used to read ``upstream.gate`` twice — once for the
+    ``is not None`` test and once to call ``.wait()``. A test rebinding the
+    attribute between those two reads made the second one return ``None``, and
+    ``None.wait()`` raised on a TestClient worker thread. pytest reports a
+    worker-thread exception as ``PytestUnhandledThreadExceptionWarning``
+    against whichever test is running when it surfaces, so it appeared in CI as
+    a failure in a test that starts no threads at all, on one Python version,
+    once.
+
+    Racing it on purpose would give a flaky test, which is no better than the
+    flake it replaces. Instead the interleaving is forced: ``gate`` is a
+    property that yields the event the first time it is read and ``None`` every
+    time after. Code that reads it once works. Code that reads it twice raises
+    exactly the AttributeError that was seen in CI.
+    """
+    import asyncio
+
+    class RebindingUpstream(FakeUpstream):
+        def __init__(self):
+            super().__init__()
+            self._event = threading.Event()
+            self._event.set()          # never actually blocks; we only care about the reads
+            self._reads = 0
+
+        @property
+        def gate(self):
+            self._reads += 1
+            return self._event if self._reads == 1 else None
+
+        @gate.setter
+        def gate(self, value):         # __init__ assigns to it
+            self._event = value
+
+    upstream = RebindingUpstream()
+
+    async def drive():
+        async with upstream.stream("POST", "/v1/messages", headers={}) as response:
+            return response
+
+    response = asyncio.run(drive())
+
+    assert response.status_code == 200
+    assert upstream._reads == 1, (
+        f"FakeUpstream.stream read `gate` {upstream._reads} times. Every read "
+        "after the first is a chance for a concurrent rebind to hand it None, "
+        "which is the AttributeError this test exists for. Snapshot it once."
+    )

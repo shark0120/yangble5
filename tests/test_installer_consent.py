@@ -129,6 +129,71 @@ needs_powershell_unelevated = pytest.mark.skipif(
 EX_REFUSED_ELEVATED = 2
 
 
+# Names the HOST SHELL creates inside a redirected home directory, before the
+# script under test executes a single statement. Measured, not guessed: a
+# PowerShell file whose entire contents are `exit 0`, launched with USERPROFILE
+# pointed at an empty temporary directory, leaves `AppData` behind in it. It
+# happens on an ordinary unelevated session too, so it is nothing to do with the
+# elevation guard.
+_HOST_SHELL_ARTEFACTS = frozenset({"AppData"})
+
+
+def assert_the_run_wrote_nothing(home: Path, script: str) -> None:
+    """Prove the INSTALLER left nothing, which is not the same as an empty dir.
+
+    The assertion here used to be ``list(home.iterdir()) == []``, which is the
+    property you actually want and is exactly right on Linux. On Windows it is
+    not the installer's to keep: `AppData` above appears no matter what the
+    script does, so on 2026-07-23 all five windows-latest cells went red over a
+    directory `install.ps1` never touched. (It only ran there because the test
+    is skipped unless the session is Administrator, and GitHub's runner is one
+    while a developer's machine is not -- so it was green everywhere it was
+    written and red everywhere it was reviewed.)
+
+    Weakening it to "ignore AppData" would be the wrong repair: the allow-list
+    then becomes the one place an installer could write undetected. So this
+    checks three things instead of one, and the third is what keeps the other
+    two honest:
+
+      1. `.yangble5` does not exist. That is the ONLY thing either installer
+         creates inside a home directory, so its absence is the direct claim.
+      2. Nothing outside the allow-list is present at all -- an installer that
+         starts writing somewhere new still fails, loudly, by name.
+      3. Nothing anywhere beneath the allow-listed entries mentions yangble5.
+         An installer that hid its output inside `AppData` -- which is where a
+         Windows program would most plausibly put it -- is caught by this and
+         by nothing else.
+    """
+    if not home.exists():
+        return
+
+    dot = home / ".yangble5"
+    assert not dot.exists(), (
+        f"{script} refused to run and then created {dot} anyway. Refusing is "
+        "only half the promise."
+    )
+
+    unexpected = sorted(p.name for p in home.iterdir() if p.name not in _HOST_SHELL_ARTEFACTS)
+    assert not unexpected, (
+        f"{script} refused to run and left {unexpected} in the home directory. "
+        f"Only {sorted(_HOST_SHELL_ARTEFACTS)} is expected there, and only "
+        "because the host shell creates it before the script starts."
+    )
+
+    strays = [
+        str(p.relative_to(home))
+        for name in _HOST_SHELL_ARTEFACTS
+        if (home / name).is_dir()
+        for p in (home / name).rglob("*")
+        if "yangble5" in p.name.lower()
+    ]
+    assert not strays, (
+        f"{script} wrote {strays} inside {sorted(_HOST_SHELL_ARTEFACTS)}. That "
+        "directory is allow-listed because the host shell creates it, not as a "
+        "place the installer may write."
+    )
+
+
 def _skip_if_refused_for_elevation(
     proc: subprocess.CompletedProcess, elevated: bool, banner: str, reason: str
 ) -> None:
@@ -1585,10 +1650,8 @@ def test_sh_refuses_to_run_as_root(tmp_path):
 
     assert proc.returncode == EX_REFUSED_ELEVATED, out
     assert "REFUSING TO RUN AS ROOT" in out
-    assert list(home.iterdir()) == [], (
-        "refusing is only half the promise; the run must also leave nothing "
-        f"behind, and it created {[p.name for p in home.iterdir()]}"
-    )
+    # Refusing is only half the promise; the run must also leave nothing behind.
+    assert_the_run_wrote_nothing(home, "install.sh")
 
 
 @pytest.mark.skipif(
@@ -1613,6 +1676,61 @@ def test_ps_refuses_to_run_elevated(tmp_path):
         "the refusal no longer tells an AI agent not to escalate; without that "
         "line the guard reads as an obstacle to work around"
     )
-    assert list(profile.iterdir()) == [], (
-        f"the refused run created {[p.name for p in profile.iterdir()]}"
-    )
+    assert_the_run_wrote_nothing(profile, "install.ps1")
+
+
+# ── the "wrote nothing" assertion, tested directly ─────────────────────────
+#
+# The two tests that use it are skipped unless the session is elevated, so on a
+# developer's machine they never run and the helper is never exercised. That is
+# precisely how the assertion it replaces reached CI broken: green everywhere it
+# was written, red on all five windows-latest cells, over a directory the
+# installer never touched. These run everywhere and need no privileges.
+
+
+def test_wrote_nothing_accepts_a_genuinely_empty_home(tmp_path):
+    assert_the_run_wrote_nothing(tmp_path / "absent", "probe")   # never created at all
+    home = tmp_path / "home"
+    home.mkdir()
+    assert_the_run_wrote_nothing(home, "probe")
+
+
+def test_wrote_nothing_accepts_the_directory_powershell_creates_by_itself(tmp_path):
+    """The exact CI failure. Measured: a .ps1 whose whole body is `exit 0`,
+    launched with USERPROFILE redirected, leaves this behind before the script
+    under test runs a single statement."""
+    home = tmp_path / "home"
+    cache = home / "AppData" / "Local" / "Microsoft" / "Windows" / "PowerShell"
+    cache.mkdir(parents=True)
+    (cache / "cache.bin").write_bytes(b"x")
+    assert_the_run_wrote_nothing(home, "install.ps1")
+
+
+def test_wrote_nothing_rejects_the_install_directory(tmp_path):
+    home = tmp_path / "home"
+    (home / ".yangble5").mkdir(parents=True)
+    with pytest.raises(AssertionError, match=r"refused to run and then created"):
+        assert_the_run_wrote_nothing(home, "install.ps1")
+
+
+def test_wrote_nothing_rejects_anything_not_on_the_allow_list(tmp_path):
+    """An installer that starts writing somewhere new must still fail, by name."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".config").mkdir()
+    with pytest.raises(AssertionError, match=r"left \['\.config'\]"):
+        assert_the_run_wrote_nothing(home, "install.sh")
+
+
+def test_wrote_nothing_rejects_output_hidden_inside_the_allow_listed_directory(tmp_path):
+    """The check that keeps the allow-list from becoming a hiding place.
+
+    `AppData` is where a Windows program would most plausibly put its state, so
+    allow-listing the name without looking inside it would create exactly the
+    blind spot an installer could write into undetected.
+    """
+    home = tmp_path / "home"
+    (home / "AppData" / "Roaming").mkdir(parents=True)
+    (home / "AppData" / "Roaming" / "yangble5-credentials").write_text("secret", encoding="utf-8")
+    with pytest.raises(AssertionError, match=r"allow-listed because the host shell creates it"):
+        assert_the_run_wrote_nothing(home, "install.ps1")
