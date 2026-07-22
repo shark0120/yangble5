@@ -32,7 +32,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 __all__ = [
@@ -97,6 +97,13 @@ _SCRYPT_P = 1
 _SCRYPT_DKLEN = 32
 _SCRYPT_MAXMEM = 64 * 1024 * 1024
 _PBKDF2_ROUNDS = 600_000
+
+
+# `datetime.UTC` is 3.11+. It is not a new concept, just a spelling: the stdlib
+# defines it as `UTC = timezone.utc`, the same singleton object. Aliasing it here
+# keeps this module importable on the 3.10 that ships as the system Python on
+# Ubuntu 22.04 LTS, which is what a self-hoster is most likely to run it on.
+UTC = timezone.utc
 
 
 def utcnow() -> datetime:

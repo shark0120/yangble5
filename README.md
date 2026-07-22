@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/shark0120/yangble5/actions/workflows/ci.yml/badge.svg)](https://github.com/shark0120/yangble5/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 **A model-pool config that looks correct silently splits your prompt cache across upstreams.
 With the 1:1 alias that fixes it, one long session read 99.53% of its 748,918-token prompt
@@ -265,7 +265,7 @@ Side-by-side sequence diagrams of the rotating pool versus the direct alias:
 
 ## Quickstart (local, bring your own upstream)
 
-You need: Python 3.11+, and a CLIProxyAPI binary with at least one upstream account
+You need: Python 3.10+ (the system Python on Ubuntu 22.04 LTS), and a CLIProxyAPI binary with at least one upstream account
 authenticated. yangble5 does not ship credentials and does not provide any.
 
 ```bash

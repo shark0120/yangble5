@@ -16,7 +16,6 @@ install caches or not:
 from __future__ import annotations
 
 import json
-import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -25,7 +24,12 @@ import yaml
 
 from byok import setup as byok
 
-TEMPLATE = (Path(byok.__file__).resolve().parent / "config.template.yaml").read_text(
+try:  # tomllib is stdlib from 3.11; on the 3.10 floor it arrives as tomli.
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - taken only on Python 3.10
+    import tomli as tomllib
+
+TEMPLATE =(Path(byok.__file__).resolve().parent / "config.template.yaml").read_text(
     encoding="utf-8"
 )
 NOW = datetime(2026, 7, 21, 16, 30, 0)

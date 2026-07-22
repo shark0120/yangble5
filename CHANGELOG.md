@@ -17,7 +17,35 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The gateway could not start on Python 3.10**, which is the system Python on Ubuntu 22.04 LTS.
+  `gateway/storage.py` imported `datetime.UTC`, added in 3.11, and the module raised
+  `ImportError: cannot import name 'UTC' from 'datetime'` before the service ever bound a port.
+  Found on a real deployment (Ubuntu 22.04.5, Python 3.10.12), not in review.
+
+  `datetime.UTC` is not a new capability, only a newer spelling — the standard library defines it
+  as `UTC = timezone.utc`, the same singleton. The module now uses `timezone.utc` and keeps `UTC`
+  as a local alias, verified on the affected host with `storage.UTC is timezone.utc` → `True`.
+
+### Changed
+
+- **`requires-python` lowered from `>=3.11` to `>=3.10`.** Nothing in the project needed 3.11: the
+  only two uses were the `datetime.UTC` spelling above and `tomllib` in one test, which now falls
+  back to `tomli` below 3.11. Supporting the stock interpreter on Ubuntu 22.04 LTS means a
+  self-hoster does not have to add a PPA to run this.
+
+  The CI matrix, `requires-python` and the `Programming Language :: Python` classifiers are checked
+  against each other by the `offline-self-checks` job, so all three moved together and 3.10 is now
+  a version the suite has actually run on (1240 tests) rather than one it merely claims.
+
+- **`tool.ruff.target-version` lowered to `py310` to match the floor.** With `UP` (pyupgrade)
+  selected this is load-bearing rather than cosmetic: at `py311` ruff rewrites `timezone.utc` back
+  into `datetime.UTC`, so the next `ruff --fix` would have reintroduced the exact failure above.
+
+- **The bare-interpreter CI job now runs on the floor (3.10) instead of 3.11.** An accidental
+  newer-than-floor stdlib name is precisely what that job should catch, and it is only visible on
+  the oldest interpreter the project claims to support.
 
 ## [0.1.0] - 2026-07-21
 

@@ -42,7 +42,7 @@ WHAT IT DELIBERATELY DOES NOT DO
 * It does not claim your setup works until a benchmark says so.
 
 Standard library only, so this file can be copied onto a machine and run with
-the system Python. Python 3.11+.
+the system Python. Python 3.10+, which is what Ubuntu 22.04 LTS ships.
 
 EXIT CODES
 ----------

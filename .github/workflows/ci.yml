@@ -29,7 +29,7 @@ jobs:
         # The `offline-self-checks` job asserts that they do, so a version
         # added here and forgotten there fails the build rather than shipping
         # a support claim nobody tested.
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +78,11 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Deliberately the floor, not the newest. An accidental use of a
+          # newer-than-floor stdlib name (datetime.UTC, tomllib) is exactly the
+          # breakage this job should catch, and it only shows on the oldest
+          # interpreter the project claims to support.
+          python-version: "3.10"
 
       - name: Confirm the environment really is bare
         # An allowlist, not a denylist. The old form grepped for a handful of

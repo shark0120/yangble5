@@ -33,10 +33,16 @@ document to say, and it costs the project nothing compared to being caught round
 
 ## Setup
 
-Python 3.11 or newer (`requires-python = ">=3.11"`; CI runs 3.11, 3.12, 3.13 and 3.14 on Ubuntu
-and Windows). Those three places — the matrix, `requires-python`, and the `Programming Language ::
-Python` classifiers — are checked against each other by the `offline-self-checks` job, so adding a
+Python 3.10 or newer (`requires-python = ">=3.10"`; CI runs 3.10, 3.11, 3.12, 3.13 and 3.14 on
+Ubuntu and Windows). The floor is 3.10 rather than something newer because that is the system
+Python on Ubuntu 22.04 LTS, and a self-hoster should not have to add a PPA to run this. Those
+three places — the matrix, `requires-python`, and the `Programming Language :: Python`
+classifiers — are checked against each other by the `offline-self-checks` job, so adding a
 version means adding it in all of them or the build fails.
+
+Nothing may use a stdlib name newer than the floor. The two that bite are `datetime.UTC` (3.11+;
+use `timezone.utc`) and `tomllib` (3.11+; import it under `try/except ModuleNotFoundError` with
+`tomli`). The bare-interpreter CI job runs on the floor precisely to catch these.
 
 ```bash
 git clone https://github.com/shark0120/yangble5

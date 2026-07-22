@@ -11,13 +11,14 @@ readme = "README.md"
 # the CI matrix runs (.github/workflows/ci.yml, job `test`), on Linux and on
 # Windows. The `offline-self-checks` job fails the build if the three ever
 # disagree, so this is a claim backed by a run rather than an intention.
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 keywords = ["prompt-cache", "llm-proxy", "cliproxyapi", "claude-code", "codex", "benchmark"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -63,6 +64,10 @@ dev = [
   # a plain `pip install -e ".[dev]"` cannot even collect the suite.
   "fastapi>=0.110",
   "httpx>=0.27",
+  # TEST-ONLY, and only below the floor+1: one test parses pyproject.toml, and
+  # tomllib is stdlib only from 3.11. Without this the suite cannot be collected
+  # on the 3.10 that the matrix now runs.
+  "tomli>=2; python_version < '3.11'",
 ]
 
 [project.scripts]
@@ -103,7 +108,11 @@ filterwarnings = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+# Must track `requires-python`. With `UP` (pyupgrade) selected, a target newer
+# than the floor is not cosmetic: ruff would rewrite `timezone.utc` back into
+# `datetime.UTC` and reintroduce the exact 3.10 import failure on the next
+# `--fix` run.
+target-version = "py310"
 extend-exclude = [".venv", "venv", "build", "dist"]
 
 [tool.ruff.lint]
