@@ -58,7 +58,30 @@ jobs:
         run: python -m ruff format --check tools byok
 
       - name: Test
-        run: python -m pytest
+        # Failures are re-emitted as ::error:: annotations, not just written to
+        # the log. Downloading a job log needs admin rights on the repository,
+        # so for anyone without them -- including an agent working on this repo
+        # -- a red matrix cell otherwise says only "exit code 1". A Windows-only
+        # failure took three pushes to diagnose for exactly that reason.
+        # Annotations are readable through the public check-runs API.
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q > pytest-output.txt 2>&1
+          status=$?
+          cat pytest-output.txt
+          if [ "$status" -ne 0 ]; then
+            grep -E '^(FAILED|ERROR)' pytest-output.txt | head -25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            # The short summary carries the assertion text, which is usually the
+            # part that identifies the environment difference.
+            sed -n '/=* short test summary info =*/,$p' pytest-output.txt \
+              | head -30 | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+          fi
+          exit "$status"
 
   tools-are-stdlib-only:
     # Deliberately a separate job with NOTHING installed. Running this in the
