@@ -67,19 +67,29 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m pytest -q > pytest-output.txt 2>&1
+          python -m pytest -q --tb=line > pytest-output.txt 2>&1
           status=$?
           cat pytest-output.txt
           if [ "$status" -ne 0 ]; then
-            grep -E '^(FAILED|ERROR)' pytest-output.txt | head -25 | while IFS= read -r line; do
+            # `--tb=line` renders each failure as `path:lineno: Error: message`,
+            # which is the assertion text itself. `-q`'s short summary truncates
+            # at the exception type, so on its own it names the test and tells
+            # you nothing about why it failed.
+            grep -E '\.py:[0-9]+: ' pytest-output.txt | head -25 | while IFS= read -r line; do
               echo "::error::$line"
             done
-            # The short summary carries the assertion text, which is usually the
-            # part that identifies the environment difference.
-            sed -n '/=* short test summary info =*/,$p' pytest-output.txt \
-              | head -30 | while IFS= read -r line; do
-              [ -n "$line" ] && echo "::error::$line"
+            grep -E '^(FAILED|ERROR)' pytest-output.txt | head -15 | while IFS= read -r line; do
+              echo "::error::$line"
             done
+            # The installer tests shell out, and a failure that appears only on
+            # a hosted runner is usually a different tool on PATH rather than a
+            # different code path. Naming them costs one line and has twice been
+            # the whole answer.
+            for tool in sh dash bash curl powershell pwsh; do
+              path=$(command -v "$tool" 2>/dev/null || echo "(absent)")
+              echo "::error::TOOL $tool -> $path"
+            done
+            echo "::error::TEMP=${TMPDIR:-${TEMP:-unset}}  OS=${RUNNER_OS:-?}"
           fi
           exit "$status"
 
