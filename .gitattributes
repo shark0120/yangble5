@@ -23,3 +23,25 @@ site/install.sh     text eol=lf
 site/install.ps1    text eol=lf
 site/uninstall.sh   text eol=lf
 site/uninstall.ps1  text eol=lf
+
+# THE PAGES ARE HASHED TOO, and this was missed until CI said so.
+#
+# The CSP pins each page's inline <script> by sha256 (deploy/Caddyfile,
+# deploy/nginx/security-headers.conf, deploy/nginx/yangble5.com.conf.example
+# and site/README.md all carry the value). The hash is taken over the script
+# body as it appears in the file, so a CRLF checkout produces a different
+# digest for the same source. On a GitHub windows-latest runner, where
+# core.autocrlf defaults to true, that failed every Windows job on all five
+# Python versions while every Linux job passed -- the signature of a checkout
+# problem rather than a code one.
+#
+# tools/drift_check.py compares these bytes against what the live site serves,
+# which is a second reason they cannot be allowed to vary by platform.
+site/*.html         text eol=lf
+
+# The configs that CARRY those pins. Their bytes are not hashed, but a file
+# that must be diffed against a deployed copy should not change shape by
+# checkout either.
+deploy/Caddyfile                            text eol=lf
+deploy/nginx/*.conf                         text eol=lf
+deploy/nginx/*.conf.example                 text eol=lf

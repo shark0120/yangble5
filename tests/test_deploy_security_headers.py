@@ -340,3 +340,61 @@ def test_env_example_defaults_the_licence_assertion_to_no():
         "YANGBLE5_POOL_LICENSED_FOR_THIRD_PARTIES=no. Defaulting it to yes, or "
         "omitting it, turns install.sh's gate into a no-op for every fresh "
         "install — which is every install that matters.")
+
+
+# ── the pin is only stable if the checkout is ───────────────────────────────
+
+# Every file whose exact bytes decide whether a deployment works. The CSP pins
+# each page's inline <script> by sha256 of the body AS IT APPEARS IN THE FILE,
+# so a checkout that rewrites line endings changes the digest of unchanged
+# source. tools/drift_check.py compares the same bytes against the live site.
+BYTE_SENSITIVE = (
+    "site/index.html",
+    "site/verify.html",
+    "site/install.sh",
+    "site/install.ps1",
+    "site/uninstall.sh",
+    "site/uninstall.ps1",
+    "site/install.sh.sha256",
+    "site/install.ps1.sha256",
+    "deploy/Caddyfile",
+    "deploy/nginx/security-headers.conf",
+    "deploy/nginx/yangble5.com.conf.example",
+)
+
+
+@pytest.mark.parametrize("relpath", BYTE_SENSITIVE)
+def test_byte_sensitive_files_are_pinned_to_lf(relpath):
+    """`.gitattributes` must force eol=lf for anything that gets hashed.
+
+    Found by CI, not by review. `.gitattributes` covered *.sh, *.ps1 and
+    *.sha256 -- the installer payloads -- but not site/*.html, and the CSP pins
+    the pages' inline <script>. GitHub's windows-latest runner defaults to
+    core.autocrlf=true, so it checked the pages out with CRLF, every hash came
+    out different, and all five Windows jobs failed while all five Linux jobs
+    passed. Measured: the same index.html hashes to
+    sha256-azlzgFYelw1E8Ku3E8GqYH1fE6nmHMTP3Cy/CCWrGT8= with LF and to
+    sha256-chA+RhMsPbU+3KEWtJ9RDlelIrMtD9OJUa01UXZLGYU= with CRLF.
+
+    This is the third time line endings have broken something in this project,
+    so the rule is now checked rather than remembered.
+    """
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is not available to resolve attributes")
+
+    result = subprocess.run(  # noqa: S603 - fixed argv, interpreter from which()
+        [git, "check-attr", "eol", "--", relpath],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    value = result.stdout.strip().rsplit(": ", 1)[-1]
+    assert value == "lf", (
+        f"{relpath} resolves to eol={value!r}. Its bytes are hashed or "
+        f"compared byte-for-byte, so a CRLF checkout silently changes them and "
+        f"the failure appears as a wrong digest on Windows only. Pin it in "
+        f".gitattributes."
+    )

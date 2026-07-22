@@ -552,8 +552,14 @@ def test_registration_reports_an_upstream_outage(build):
 # ---------------------------------------------------------------------------
 # FINDING 7 — upstream failure bodies must not reach the public
 # ---------------------------------------------------------------------------
+# The address is at a reserved domain on purpose. CI fails the build on any
+# committed address outside RFC 2606, because the leak this repository most
+# needs to prevent is the operator's own -- and a fixture that models a real
+# gmail address to test a leak guard would be caught by the leak guard. What
+# this fixture actually exercises is a substring never appearing in a response,
+# so the domain is irrelevant to the mechanism and relevant to the check.
 LEAKY_BODY = (
-    b'{"error":{"message":"account operator-private-42@gmail.com requires '
+    b'{"error":{"message":"account operator-private-42@example.com requires '
     b'verification","upstream":"http://127.0.0.1:8318/internal"}}'
 )
 
@@ -572,7 +578,7 @@ def test_no_upstream_failure_body_reaches_a_shared_pool_caller(build, status):
     gw.upstream.chunks = [LEAKY_BODY]
 
     response = gw.call(key)
-    assert "operator-private-42@gmail.com" not in response.text
+    assert "operator-private-42@example.com" not in response.text
     assert "127.0.0.1" not in response.text
     assert "8318" not in response.text
 
