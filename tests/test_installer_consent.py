@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -51,7 +52,128 @@ needs_powershell = pytest.mark.skipif(
     POWERSHELL is None, reason="Windows PowerShell not available"
 )
 
+
+# ── elevation ──────────────────────────────────────────────────────────────
+#
+# Both installers REFUSE to run elevated, on purpose: an install that writes
+# root- or Administrator-owned files into a normal user's home breaks every
+# later run, and an installer has no use for the privileges. GitHub's
+# windows-latest runner executes as an Administrator, so on CI that guard fires
+# first and every test below that expects a normal install gets exit 2 and an
+# explanation instead of the behaviour it asserts.
+#
+# That is the installers being correct, not a bug to route around. There is
+# deliberately no environment variable to bypass the guard for tests: a bypass
+# that exists is a bypass that eventually runs in production, and the reason
+# the guard exists does not stop applying because the caller is a test.
+#
+# So the predicate is the INSTALLER'S OWN, evaluated the same way each script
+# evaluates it. Anything else would drift: a test that skips on a condition
+# subtly different from the one the code checks is a test that skips when it
+# should run, or runs when it cannot pass.
+def _sh_thinks_it_is_root() -> bool:
+    """Exactly what install.sh's refuse_root() decides: `id -u` == 0.
+
+    On MSYS/Git-bash an Administrator account maps to uid 0, which is why this
+    is not a POSIX-only concern.
+    """
+    if SH is None:
+        return False
+    if os.environ.get("SUDO_USER"):
+        return True
+    try:
+        out = subprocess.run(  # noqa: S603 - fixed argv, interpreter from which()
+            [SH, "-c", "id -u"], capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover
+        return False
+    return out.stdout.strip() == "0"
+
+
+def _windows_thinks_it_is_admin() -> bool:
+    """Exactly what install.ps1 checks: WindowsPrincipal.IsInRole(Administrator)."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - non-Windows or restricted host
+        return False
+
+
+SH_ELEVATED = _sh_thinks_it_is_root()
+PS_ELEVATED = _windows_thinks_it_is_admin()
+
+# The reason string names what is NOT being covered, so a green run on an
+# elevated machine cannot be mistaken for coverage of the install path. On a
+# hosted Windows runner these skips are the honest report that only the
+# refusal below was exercised.
+_SH_SKIP = (
+    "this shell reports uid 0, so install.sh refuses by design; the install "
+    "path is NOT covered here (it is covered on Linux CI and on any "
+    "unelevated developer machine)"
+)
+_PS_SKIP = (
+    "this session is Administrator, so install.ps1 refuses by design; the "
+    "install path is NOT covered here (it is covered on Linux CI and on any "
+    "unelevated developer machine)"
+)
+
+needs_sh_unelevated = pytest.mark.skipif(SH is None or SH_ELEVATED, reason=_SH_SKIP)
+needs_powershell_unelevated = pytest.mark.skipif(
+    POWERSHELL is None or PS_ELEVATED, reason=_PS_SKIP
+)
+
+# Both installers document 2 as "refused: running as root / elevated".
+EX_REFUSED_ELEVATED = 2
+
+
+def _skip_if_refused_for_elevation(
+    proc: subprocess.CompletedProcess, elevated: bool, banner: str, reason: str
+) -> None:
+    """Skip the calling test when, and only when, BOTH conditions hold.
+
+    Requiring both is the whole design. Skipping on the banner alone would hide
+    a real defect -- an installer that refuses a perfectly normal session would
+    silently stop being tested. Skipping on `elevated` alone would skip tests
+    that never reach the guard at all, which is coverage thrown away for
+    nothing. Together: on an elevated runner the refusal is recognised and
+    reported honestly, and on any normal machine a refusal still fails the
+    assertion that noticed it.
+
+    This lives in the runners rather than in a list of test names because a
+    hand-maintained list drifts the moment someone adds a test, and the drift
+    shows up as a Windows-only red that takes a day to trace.
+    """
+    if not elevated:
+        return
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode == EX_REFUSED_ELEVATED and banner in out:
+        pytest.skip(reason)
+
 GOOD_KEY = "yb5_0123456789abcdef_AAAAAAAAAAAAAAAAAAAA"
+
+# Every raw body POSTed to /auth/register, oldest first.
+#
+# Kept as the exact bytes-turned-text rather than a parsed dict: the property
+# under test is what leaves the machine, and a field carrying part of a secret
+# is invisible in every other observable the suite has. The installers print a
+# TRUNCATED machine id by design, so no assertion over stdout can see the whole
+# value, and nothing is written to disk that records the request. The wire is
+# the only place to look.
+REGISTER_BODIES: list[str] = []
+_REGISTER_LOCK = threading.Lock()
+
+
+def register_bodies() -> list[str]:
+    with _REGISTER_LOCK:
+        return list(REGISTER_BODIES)
+
+
+def clear_register_bodies() -> None:
+    with _REGISTER_LOCK:
+        REGISTER_BODIES.clear()
 
 
 # ==========================================================================
@@ -77,8 +199,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _drain(self) -> None:
-        """Consume the request body before replying.
+    def _drain(self) -> bytes:
+        """Consume the request body before replying, and hand it back.
 
         Not optional on a keep-alive connection: answering a POST without
         reading its body leaves those bytes in the socket, and the next request
@@ -91,10 +213,11 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = 0
         if length > 0:
-            self.rfile.read(length)
+            return self.rfile.read(length)
+        return b""
 
     def _route(self) -> None:
-        self._drain()
+        raw = self._drain()
         parts = self.path.split("?")[0].strip("/").split("/")
         mode = parts[0] if parts else ""
         tail = "/" + "/".join(parts[1:])
@@ -108,6 +231,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(200, {"content": [{"type": "text", "text": "pong"}]})
             return
         if tail == "/auth/register":
+            with _REGISTER_LOCK:
+                REGISTER_BODIES.append(raw.decode("utf-8", "replace"))
             if mode == "ok":
                 self._reply(201, {"api_key": GOOD_KEY, "key_id": "0123456789abcdef"})
             elif mode == "reused":
@@ -118,6 +243,26 @@ class _Handler(BaseHTTPRequestHandler):
                         "key_id": "0123456789abcdef",
                         "reused": True,
                         "warning": "This machine already had a key, so no new one was created.",
+                    },
+                )
+            elif mode == "dry":
+                # A perfectly valid key issued into an empty pool. This is the
+                # shape gateway/app.py::_issuance_status produces, and the only
+                # signal the user gets when --no-live-test / -NoLiveTest means
+                # no completion is ever attempted.
+                self._reply(
+                    201,
+                    {
+                        "api_key": GOOD_KEY,
+                        "key_id": "0123456789abcdef",
+                        "usable_now": False,
+                        "pool_remaining_pct": 0.0,
+                        "not_usable_reason": "pool_exhausted",
+                        "not_usable_detail": (
+                            "The shared pool is spent for today and will reset at "
+                            "00:00 UTC."
+                        ),
+                        "retry_after_seconds": 3600,
                     },
                 )
             elif mode == "junk":
@@ -138,7 +283,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def fake_api():
-    """Base URL of a loopback endpoint. Append /ok, /reused, /junk or /busy."""
+    """Base URL of a loopback endpoint. Append /ok, /reused, /dry, /junk or /busy."""
     # Threading, not the single-threaded HTTPServer: a run makes several
     # sequential calls and each installer opens a fresh connection, so a
     # serialised server turns an ordinary backlog into an intermittent
@@ -216,7 +361,11 @@ def sh_shim(tmp_path_factory) -> str:
 
 
 def sh_run(
-    home: Path, args: list[str], shim: str = "", extra_env: dict | None = None
+    home: Path,
+    args: list[str],
+    shim: str = "",
+    extra_env: dict | None = None,
+    expect_refusal: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run the real install.sh with stdin closed -- the `curl | sh` shape.
 
@@ -241,7 +390,7 @@ def sh_run(
         env["PATH"] = shim + os.pathsep + env["PATH"]
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(  # noqa: S603 - fixed argv, interpreter from shutil.which
+    proc = subprocess.run(  # noqa: S603 - fixed argv, interpreter from shutil.which
         [SH, str(INSTALL_SH), *args],
         capture_output=True,
         text=True,
@@ -251,15 +400,36 @@ def sh_run(
         stdin=subprocess.DEVNULL,
         timeout=180,
     )
+    if not expect_refusal:
+        _skip_if_refused_for_elevation(proc, SH_ELEVATED, "REFUSING TO RUN AS ROOT", _SH_SKIP)
+    return proc
 
 
-def ps_run(profile: Path, args: list[str]) -> subprocess.CompletedProcess:
+def ps_run(
+    profile: Path, args: list[str], expect_refusal: bool = False
+) -> subprocess.CompletedProcess:
     assert POWERSHELL is not None
     env = dict(os.environ)
     env["USERPROFILE"] = str(profile)
+    # PowerShell writes its module-analysis cache under LOCALAPPDATA and its
+    # profile under APPDATA. Redirecting only USERPROFILE left both pointing at
+    # the real ones -- or, when unset, at a path relative to the working
+    # directory, which is how `Microsoft/Windows/PowerShell/ModuleAnalysisCache`
+    # appeared inside the repository and was one `git add -A` away from being
+    # committed. A test that isolates a home directory has to isolate all of it.
+    #
+    # Sibling of the profile, not inside it: several tests assert the profile
+    # is untouched (`list(profile.iterdir()) == []` after a refused run), and
+    # PowerShell's own cache landing there would make those assertions fail for
+    # a reason that has nothing to do with the installer.
+    appdata = profile.parent / "_winappdata"
+    (appdata / "Local").mkdir(parents=True, exist_ok=True)
+    (appdata / "Roaming").mkdir(parents=True, exist_ok=True)
+    env["LOCALAPPDATA"] = str(appdata / "Local")
+    env["APPDATA"] = str(appdata / "Roaming")
     for name in ("YANGBLE5_API", "YANGBLE5_API_KEY", "YANGBLE5_EMAIL", "YANGBLE5_INVITE"):
         env.pop(name, None)
-    return subprocess.run(  # noqa: S603 - fixed argv, interpreter from shutil.which
+    proc = subprocess.run(  # noqa: S603 - fixed argv, interpreter from shutil.which
         [
             POWERSHELL,
             "-NoProfile",
@@ -278,6 +448,9 @@ def ps_run(profile: Path, args: list[str]) -> subprocess.CompletedProcess:
         stdin=subprocess.DEVNULL,
         timeout=300,
     )
+    if not expect_refusal:
+        _skip_if_refused_for_elevation(proc, PS_ELEVATED, "REFUSING TO RUN ELEVATED", _PS_SKIP)
+    return proc
 
 
 def installed_paths(home: Path) -> list[str]:
@@ -967,3 +1140,297 @@ def test_neither_installer_prints_the_full_machine_id():
         problems.append("install.ps1: no 12-character truncation of the machine id")
 
     assert problems == [], "\n".join(problems)
+
+
+def test_neither_installer_derives_a_register_field_from_the_machine_id():
+    """Truncating the PRINTED machine id is pointless while half of it is sent.
+
+    Both installers used to attach
+        "label": "installer-<first 32 characters of the fingerprint>"
+    to the registration body -- added in the same edit that cut the printed
+    value down to 12 characters, and for the opposite effect. Where it ended up:
+
+      * gateway/app.py hands payload.label to storage.issue_key, which writes it
+        into users.label. Nothing in this project ever selects that column
+        again, so it bought exactly nothing;
+      * the machine id is peppered by storage.hash_machine_id() before it is
+        stored, whose own docstring gives the reason -- "a raw fingerprint table
+        would let anyone holding a stolen copy test candidate fingerprints".
+        Half the raw value, in the clear, in the neighbouring table, handed part
+        of that back to every backup;
+      * the consent screen enumerates what leaves the machine and never
+        mentioned a label, so the list a human says yes to was incomplete.
+
+    Source-level rather than on-the-wire so it holds on every platform,
+    including the ones where neither interpreter is available. The two
+    behavioural tests below check the actual request.
+    """
+    sh = INSTALL_SH.read_text(encoding="utf-8")
+    ps1 = INSTALL_PS1.read_text(encoding="utf-8")
+
+    problems = []
+    if "cut -c1-32" in sh:
+        problems.append(
+            "install.sh: still takes a 32-character slice of the fingerprint "
+            "(cut -c1-32) -- the printed value is truncated to 12"
+        )
+    if '"label":"installer-' in sh:
+        problems.append("install.sh: still sends a fingerprint-derived label")
+    if "Substring(0, 32)" in ps1:
+        problems.append(
+            "install.ps1: still takes a 32-character slice of the fingerprint "
+            "(Substring(0, 32)) -- the printed value is truncated to 12"
+        )
+    if "'installer-' +" in ps1:
+        problems.append("install.ps1: still sends a fingerprint-derived label")
+
+    assert problems == [], "\n".join(problems)
+
+
+@needs_sh
+def test_sh_register_body_carries_the_machine_id_and_nothing_else(
+    tmp_path, sh_shim, fake_api
+):
+    """What actually goes on the wire, which is the only place this is visible.
+
+    Guards the same defect as the source-level test above, from the other end:
+    the body must contain the fingerprint once, as `machine_id`, and no second
+    field may carry any part of it.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    clear_register_bodies()
+    proc = sh_run(
+        home,
+        [
+            "--api",
+            fake_api + "/ok",
+            "--allow-nondefault-endpoint",
+            "--yes-register",
+            "--no-bin-link",
+        ],
+        sh_shim,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    _assert_register_body_is_machine_id_only(register_bodies())
+
+
+@needs_powershell
+def test_ps_register_body_carries_the_machine_id_and_nothing_else(tmp_path, fake_api):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    clear_register_bodies()
+    proc = ps_run(
+        profile,
+        [
+            "-Api",
+            fake_api + "/ok",
+            "-AllowNonDefaultEndpoint",
+            "-YesRegister",
+            "-NoLiveTest",
+        ],
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    _assert_register_body_is_machine_id_only(register_bodies())
+
+
+def _assert_register_body_is_machine_id_only(bodies: list[str]) -> None:
+    assert len(bodies) == 1, f"expected exactly one registration call, got {bodies!r}"
+    raw = bodies[0]
+    parsed = json.loads(raw)
+
+    assert set(parsed) == {"machine_id"}, (
+        "the registration body carries fields the consent screen does not "
+        f"declare: {sorted(set(parsed) - {'machine_id'})!r} in {raw!r}"
+    )
+
+    fingerprint = parsed["machine_id"]
+    assert re.fullmatch(r"[0-9a-f]{64}", fingerprint), (
+        f"machine_id is not a 64-character lowercase sha256 digest: {fingerprint!r}"
+    )
+
+    # The generalised form: no future field may smuggle the digest back in under
+    # another name, whether whole or sliced.
+    assert raw.count(fingerprint[:32]) == 1, (
+        "the first 32 characters of the machine id appear more than once in the "
+        "registration body, so something other than machine_id is carrying part "
+        f"of the fingerprint: {raw!r}"
+    )
+
+
+# ── a valid key into an empty pool is not a successful install ───────────────
+
+_DRY_POOL_ARGS_SH = ["--allow-nondefault-endpoint", "--yes-register", "--no-bin-link",
+                     "--no-live-test"]
+_DRY_POOL_ARGS_PS = ["-AllowNonDefaultEndpoint", "-YesRegister", "-NoLiveTest"]
+
+
+@needs_sh
+def test_sh_relays_usable_now_false(tmp_path, sh_shim, fake_api):
+    """The endpoint says the key it just issued cannot be served. Say so.
+
+    gateway/app.py::_issuance_status attaches usable_now, not_usable_reason and
+    not_usable_detail to every issuance, and its docstring gives the reason: the
+    pool can be spent, the operator reserve can be engaged, or the upstream can
+    be refusing, and "in every one of those cases the key is perfectly valid and
+    every request it makes is refused. An installer that stores such a key and
+    reports success is lying to its user on this gateway's behalf."
+
+    Both installers dropped all three fields. `--no-live-test` is passed here on
+    purpose: it is the configuration in which nothing else in the run can
+    discover the problem, so the whole install ended on "the key is accepted".
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = sh_run(home, ["--api", fake_api + "/dry", *_DRY_POOL_ARGS_SH], sh_shim)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "cannot be served right now" in out, (
+        "install.sh stored a key the endpoint had already said was unusable and "
+        "reported nothing"
+    )
+    assert "pool is spent for today" in out, "the endpoint's own explanation was dropped"
+
+
+@needs_powershell
+def test_ps_relays_usable_now_false(tmp_path, fake_api):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    proc = ps_run(profile, ["-Api", fake_api + "/dry", *_DRY_POOL_ARGS_PS])
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "cannot be served right now" in out, (
+        "install.ps1 stored a key the endpoint had already said was unusable and "
+        "reported nothing"
+    )
+    assert "pool is spent for today" in out, "the endpoint's own explanation was dropped"
+
+
+@needs_sh
+def test_sh_stays_quiet_when_the_pool_is_fine(tmp_path, sh_shim, fake_api):
+    """The /ok fixture sends no usable_now at all, and neither did older gateways.
+
+    A missing field must not be read as "unusable", or every install against an
+    older or third-party endpoint gains a permanent false alarm.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = sh_run(home, ["--api", fake_api + "/ok", *_DRY_POOL_ARGS_SH], sh_shim)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "cannot be served right now" not in out, out
+
+
+@needs_powershell
+def test_ps_stays_quiet_when_the_pool_is_fine(tmp_path, fake_api):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    proc = ps_run(profile, ["-Api", fake_api + "/ok", *_DRY_POOL_ARGS_PS])
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "cannot be served right now" not in out, out
+
+
+# ── the live probe must show the same thing on both platforms ────────────────
+
+@needs_sh
+def test_sh_prints_the_model_reply_from_the_live_probe(tmp_path, sh_shim, fake_api):
+    """The completion probe exists to prove the stack answers, so show what it said."""
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = sh_run(
+        home,
+        [
+            "--api",
+            fake_api + "/ok",
+            "--allow-nondefault-endpoint",
+            "--yes-register",
+            "--no-bin-link",
+        ],
+        sh_shim,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "POST /v1/messages -> 200" in out, out
+    assert "pong" in out, "install.sh stopped printing the model's own reply"
+
+
+@needs_powershell
+def test_ps_prints_the_model_reply_from_the_live_probe(tmp_path, fake_api):
+    """install.ps1 printed the status line and swallowed the reply.
+
+    install.sh pulls the completion out with `json_string text`, which matches
+    "text":"..." anywhere in the body. Get-JsonField walks only the top level
+    and one step into "error", while the Anthropic shape puts the reply at
+    content[0].text -- so on Windows the one end-to-end proof this verification
+    step exists to produce was never shown, and a 200 carrying an empty
+    completion was indistinguishable from a working one.
+
+    Runs the live probe deliberately: -NoLiveTest would skip the call under
+    test. The completion goes to the loopback fixture, which answers "pong".
+    """
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    proc = ps_run(
+        profile,
+        ["-Api", fake_api + "/ok", "-AllowNonDefaultEndpoint", "-YesRegister"],
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "POST /v1/messages -> 200" in out, out
+    assert "pong" in out, (
+        "install.ps1 reported the completion succeeded without showing what came "
+        "back; install.sh prints it, so the two disagree about what a user is told"
+    )
+
+
+# ── the elevation guard itself ──────────────────────────────────────────────
+#
+# These are the tests that DO run on an elevated machine, and they are the
+# reason the skips above are honest rather than a way of turning a red matrix
+# cell green. On GitHub's windows-latest runner -- which executes as an
+# Administrator -- this is what the Windows jobs actually verify.
+
+@pytest.mark.skipif(SH is None or not SH_ELEVATED, reason="shell does not report uid 0")
+def test_sh_refuses_to_run_as_root(tmp_path):
+    """install.sh must refuse, name the reason, and write nothing."""
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = sh_run(home, ["--dry-run"], expect_refusal=True)
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode == EX_REFUSED_ELEVATED, out
+    assert "REFUSING TO RUN AS ROOT" in out
+    assert list(home.iterdir()) == [], (
+        "refusing is only half the promise; the run must also leave nothing "
+        f"behind, and it created {[p.name for p in home.iterdir()]}"
+    )
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or not PS_ELEVATED, reason="session is not Administrator"
+)
+def test_ps_refuses_to_run_elevated(tmp_path):
+    """install.ps1 must refuse, name the reason, and write nothing.
+
+    The message is also checked for the sentence aimed at an AI agent, because
+    an agent that retries elevated after being refused turns a guard into an
+    inconvenience. That sentence is the only thing standing between "refused"
+    and "refused, then run again with more privileges".
+    """
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    proc = ps_run(profile, ["-DryRun"], expect_refusal=True)
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode == EX_REFUSED_ELEVATED, out
+    assert "REFUSING TO RUN ELEVATED" in out
+    assert "do not retry this elevated" in out, (
+        "the refusal no longer tells an AI agent not to escalate; without that "
+        "line the guard reads as an obstacle to work around"
+    )
+    assert list(profile.iterdir()) == [], (
+        f"the refused run created {[p.name for p in profile.iterdir()]}"
+    )

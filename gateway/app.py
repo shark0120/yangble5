@@ -51,12 +51,14 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .byok import ByokCipher, SealedCredential, storage_notice
 from .config import Settings
@@ -94,6 +96,8 @@ from .usage import TokenUsage, UsageScanner, compute_cost
 __all__ = ["GatewayState", "create_app"]
 
 logger = logging.getLogger("yangble5.gateway")
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 # The engine paths this gateway is willing to expose. An allowlist, not a
 # catch-all `/{path:path}` route: the engine also serves a management API, and a
@@ -153,6 +157,16 @@ _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s.]{1,63}(\.[^@\s.]{1,63})+$")
 # Five leaves room for a bad afternoon and still ends a replay quickly.
 MAX_REISSUES_PER_MACHINE_PER_DAY = 5
 
+# What each registration mode means, in the words GET /auth/register hands to a
+# client. Kept beside REGISTRATION_MODES rather than inline so a mode that is
+# added without a description fails loudly (KeyError at request time in the
+# test suite) instead of shipping an undocumented one.
+_REGISTRATION_MODE_MEANINGS: dict[str, str] = {
+    "open": "Anyone may register. No invite and no verified e-mail is needed.",
+    "invite": "An invite code issued by the operator is required.",
+    "closed": "Self-service registration is disabled. POST /auth/register answers 403.",
+}
+
 
 # ---------------------------------------------------------------------------
 # structured logging
@@ -190,7 +204,16 @@ def configure_logging(level: str = "INFO") -> None:
 # helpers
 # ---------------------------------------------------------------------------
 def _error(status: int, kind: str, message: str, **extra: Any) -> JSONResponse:
-    """Error envelope shaped like the upstream APIs so SDKs surface `message`."""
+    """Error envelope shaped like the upstream APIs so SDKs surface `message`.
+
+    EVERY non-2xx this service emits goes through here or through the exception
+    handlers installed by `_register_error_handlers`, which build the same
+    shape. That is a contract, not a convention: a client — increasingly an AI
+    agent rather than a person — branches on `error.type`, and a service that
+    answers `{"error": {...}}` for the errors it raises itself and Starlette's
+    `{"detail": "Not Found"}` for the ones its framework raises has two error
+    formats and has told nobody which one to expect.
+    """
     body: dict[str, Any] = {"error": {"type": kind, "message": message}}
     body["error"].update(extra)
     headers = {}
@@ -198,6 +221,32 @@ def _error(status: int, kind: str, message: str, **extra: Any) -> JSONResponse:
     if isinstance(retry_after, (int, float)) and retry_after > 0:
         headers["Retry-After"] = str(int(retry_after))
     return JSONResponse(body, status_code=status, headers=headers)
+
+
+def support_note(settings: Settings) -> str:
+    """One sentence telling the reader how to reach the operator.
+
+    Several errors here end in "only the operator can fix this". Naming the
+    action without naming a channel is what turns a recoverable state into a
+    dead end, so the channel is interpolated from SUPPORT_CONTACT.
+
+    When it is unset the sentence says THAT, rather than falling silent or
+    inventing an address. A user who is told "ask the operator" and given no way
+    to keeps looking for one; a user who is told this instance publishes none
+    stops looking and self-hosts, which is a real remedy and is in the sentence.
+    """
+    if settings.support_contact:
+        return f"Reach the operator at: {settings.support_contact}"
+    return (
+        "This instance publishes no support contact (its operator has not set "
+        "SUPPORT_CONTACT), so there is no way to reach them from here. If that "
+        "leaves you stuck, run your own instance: "
+        "https://github.com/shark0120/yangble5"
+    )
+
+
+def _needs_operator(settings: Settings, message: str) -> str:
+    return f"{message} {support_note(settings)}"
 
 
 def _next_utc_midnight():
@@ -325,6 +374,231 @@ def extract_model(body: bytes, max_parse_bytes: int) -> str | None:
         except UnicodeDecodeError:
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# request-body parsing
+# ---------------------------------------------------------------------------
+# The small JSON endpoints (register, byok, admin) accept a handful of short
+# fields. The 32 MiB proxy ceiling exists for prompts and has no business
+# applying to a body whose largest legal field is a 4 KiB credential —
+# `/auth/register` is unauthenticated, so an unbounded read there is a free
+# memory sink for anyone with a socket.
+_JSON_BODY_MAX_BYTES = 64 * 1024
+
+# How many field-level complaints ride along in one error. A body that breaks
+# five constraints is a client bug, not a typo, and enumerating fifty of them
+# just makes the response the attacker's amplification vector.
+_MAX_REPORTED_FIELD_ERRORS = 5
+
+
+def _param_name(loc: tuple[Any, ...]) -> str | None:
+    """Pydantic's `loc` tuple as a dotted field path, or None for the whole body."""
+    if not loc:
+        return None
+    return ".".join(str(part) for part in loc)
+
+
+def _field_errors(exc: ValidationError | RequestValidationError) -> list[dict[str, Any]]:
+    """Pydantic's complaints, reduced to what is safe and useful to return.
+
+    `input` and the raw `ctx` are DROPPED. Pydantic puts the offending value in
+    `input`, and the offending value on `POST /byok` is somebody's upstream
+    credential — echoing it back would write it into the caller's terminal
+    scrollback, their shell history if they piped it, and this service's own
+    error path. The constraint that was broken is what the caller needs, and
+    that lives in `msg` and in the scalar members of `ctx`.
+    """
+    reported: list[dict[str, Any]] = []
+    for raw in exc.errors()[:_MAX_REPORTED_FIELD_ERRORS]:
+        entry: dict[str, Any] = {
+            "param": _param_name(tuple(raw.get("loc", ()))),
+            "message": str(raw.get("msg", "is not valid")),
+            "code": str(raw.get("type", "value_error")),
+        }
+        ctx = raw.get("ctx")
+        if isinstance(ctx, Mapping):
+            # An ALLOWLIST of scalar types, not a denylist: `ctx` can carry the
+            # underlying exception object for a custom validator, and anything
+            # not named here is dropped rather than serialised into a public
+            # error body.
+            limits = {
+                name: value
+                for name, value in ctx.items()
+                if isinstance(value, (bool, int, float, str))
+            }
+            if limits:
+                entry["constraint"] = limits
+        reported.append(entry)
+    return reported
+
+
+def _validation_error_response(
+    exc: ValidationError | RequestValidationError,
+) -> JSONResponse:
+    """400 that names the field and the constraint it broke.
+
+    This exists because the alternative shipped for a while: every failure —
+    a non-JSON body, a well-formed body with one integer where a string
+    belongs, a label three characters too long — collapsed into the single
+    sentence "Body must be a JSON object." For most of them that sentence was
+    FALSE. `{"machine_id": 123}` is a JSON object; being told it is not sends
+    the reader to re-check their serialiser instead of their field type, and an
+    agent following the instruction literally rewrites a request that was
+    already shaped correctly and gets the identical error forever.
+    """
+    errors = _field_errors(exc)
+    first = errors[0] if errors else {"param": None, "message": "is not valid"}
+    param = first["param"]
+    headline = (
+        f"'{param}': {first['message']}."
+        if param
+        else f"The request body is not valid: {first['message']}."
+    )
+    if len(errors) > 1:
+        headline += f" ({len(errors) - 1} more field problem(s) in 'errors'.)"
+    return _error(
+        400,
+        "invalid_request_error",
+        headline,
+        param=param,
+        code=first.get("code"),
+        errors=errors,
+    )
+
+
+async def parse_json_body(
+    request: Request, model: type[_ModelT], *, expected: str
+) -> _ModelT | JSONResponse:
+    """Read, decode and validate a small JSON body.
+
+    Returns the parsed model, or the JSONResponse to send instead. A union
+    rather than a `(value, error)` pair so the caller cannot forget to check:
+    `isinstance(result, JSONResponse)` is the whole contract, and there is no
+    shape in which both halves are populated.
+
+    The three failures are kept APART because they have three different
+    remedies:
+
+      * the body is too large      -> send less
+      * the body is not JSON       -> fix the serialiser
+      * the body is JSON but wrong -> fix the named field
+
+    `expected` describes the shape in one clause and is used only in the
+    not-JSON message, where there is no field to name.
+    """
+    body = await read_body_capped(request, _JSON_BODY_MAX_BYTES)
+    if body is None:
+        return _error(
+            413,
+            "request_too_large",
+            f"The request body exceeds the {_JSON_BODY_MAX_BYTES // 1024} KiB limit for "
+            "this endpoint. Only the /v1/* proxy routes accept large bodies.",
+        )
+    if not body.strip():
+        return _error(
+            400,
+            "invalid_json",
+            f"The request body is empty. Send {expected}.",
+        )
+    try:
+        data = json.loads(body)
+    except UnicodeDecodeError:
+        return _error(
+            400, "invalid_json", "The request body is not valid UTF-8, so it is not JSON."
+        )
+    except json.JSONDecodeError as exc:
+        # `exc.msg`/`pos` are the parser's own words about where it stopped and
+        # contain none of the body, which matters on /byok.
+        return _error(
+            400,
+            "invalid_json",
+            f"The request body is not valid JSON: {exc.msg} at character {exc.pos}. "
+            f"Send {expected}.",
+        )
+    if not isinstance(data, dict):
+        # Reported before Pydantic sees it, so the message can name the type the
+        # caller actually sent instead of Pydantic's "valid dictionary or
+        # instance of RegisterRequest", which leaks a class name and helps
+        # nobody.
+        return _error(
+            400,
+            "invalid_request_error",
+            f"The request body must be a JSON object; received a JSON "
+            f"{_JSON_TYPE_NAMES.get(type(data), type(data).__name__)}. Send {expected}.",
+            param=None,
+        )
+    try:
+        return model.model_validate(data)
+    except ValidationError as exc:
+        return _validation_error_response(exc)
+
+
+def _clean_label(raw: str | None) -> str | None | JSONResponse:
+    """Normalise a user-chosen nickname, or the 400 that refuses it.
+
+    A label is the one field on this service whose whole purpose is to be
+    DISPLAYED again — on GET /usage, to the user, and on /admin/keys, to the
+    operator. Both of those are read in a terminal more often than in a browser,
+    so a control character here is an escape sequence there. Refused rather than
+    stripped, for the same reason SUPPORT_CONTACT is: a value that comes back
+    different from the one that was sent is a value the sender cannot verify,
+    and the person who typed it deserves to be told it was not accepted.
+    """
+    if raw is None:
+        return None
+    label = raw.strip()
+    if not label:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in label):
+        return _error(
+            400,
+            "invalid_request_error",
+            "'label' must not contain control characters — it is displayed back to "
+            "you on /usage and to the operator.",
+            param="label",
+        )
+    return label
+
+
+# A run of hex this long, lifted out of the caller's own fingerprint, is not a
+# coincidence in a nickname somebody typed. 64 bits.
+_FINGERPRINT_LEAK_WINDOW = 16
+
+
+def _label_leaks_fingerprint(label: str | None, machine_id: str | None) -> bool:
+    """Is this "nickname" actually a slice of the machine fingerprint?
+
+    The fingerprint is salted-hashed before it touches the database
+    (`hash_machine_id`) "because a raw fingerprint table would let anyone
+    holding a stolen copy test candidate fingerprints". `label` is stored in the
+    clear in the neighbouring table, so a label derived from the fingerprint
+    hands part of that property back, permanently, to every backup and every
+    dump. An earlier version of this project's own installer sent exactly that:
+    `installer-<first 32 characters of the fingerprint>`.
+
+    Making `label` readable — which is the only thing that justifies asking a
+    human for one — is what makes this worth enforcing rather than merely
+    documenting. The rule is in the GET /auth/register contract; this is the
+    rule being true.
+    """
+    if not label or not machine_id:
+        return False
+    lowered = label.lower()
+    return any(
+        machine_id[start:start + _FINGERPRINT_LEAK_WINDOW] in lowered
+        for start in range(len(machine_id) - _FINGERPRINT_LEAK_WINDOW + 1)
+    )
+
+
+_JSON_TYPE_NAMES: dict[type, str] = {
+    list: "array",
+    str: "string",
+    int: "number",
+    float: "number",
+    bool: "boolean",
+    type(None): "null",
+}
 
 
 async def read_body_capped(request: Request, limit: int) -> bytes | None:
@@ -868,6 +1142,79 @@ class _AuthFailure(Exception):
 # ---------------------------------------------------------------------------
 # authentication
 # ---------------------------------------------------------------------------
+async def _presented_superseded_secret(
+    state: GatewayState, record: Any, secret: str
+) -> bool:
+    """Did the caller present the secret this key had BEFORE its last re-issue?
+
+    THE DISCLOSURE TRADE, because there is one and it is the point of this
+    function. The obvious way to distinguish "your key was rotated out" from
+    "you typed nonsense" is to branch on whether the key_id exists and has ever
+    been re-issued. That answer can be obtained by anyone: send a guessed key_id
+    with a junk secret and the different error type confirms the key_id is real
+    and re-registered. key_id is 64 bits and appears in this service's own logs,
+    so it is not secret — but it is also not published, and turning an
+    unauthenticated endpoint into an oracle that CONFIRMS one is a capability
+    nobody currently has.
+
+    So the branch is not on the key_id. It is on the SECRET: the previous
+    credential is verified with the same KDF as the live one, and the distinct
+    error is emitted only to a caller who is holding a string that really was a
+    working key for this account. A prober with a guessed key_id and a random
+    secret fails both checks and gets the byte-identical "Invalid yangble5 key."
+    they got before. The extra type discloses, to the person who had the old
+    key, one fact about a key that was already theirs.
+
+    COSTS, stated plainly:
+      * One extra KDF on a failed verification, and only when a re-issue has
+        actually happened. It runs off the event loop like the first one, and
+        the per-IP failure backoff bounds how many an attacker can provoke.
+      * The superseded digest sits in the database until the next re-issue.
+        It verifies a secret that grants nothing, and a stolen database still
+        yields no usable key — which is the property that mattered.
+      * Only ONE generation back is distinguishable. Someone holding a key from
+        two re-issues ago gets the generic message. That is a smaller answer
+        than "keep every digest forever", and the smaller answer is the right
+        one for a column whose only job is to improve an error message.
+    """
+    previous = record.superseded_credential
+    if previous is None:
+        return False
+    digest, salt, scheme = previous
+    return await run_in_threadpool(
+        verify_secret, secret, digest, salt, scheme, state.settings.key_pepper
+    )
+
+
+def _superseded_key_error(settings: Settings, record: Any) -> JSONResponse:
+    """401 that says "this key was replaced", not "this key is wrong".
+
+    Same status, because it IS an authentication failure and an SDK must keep
+    treating it as one. Different `type`, because the remedy is different and
+    the user cannot guess which situation they are in: the two events produced
+    the identical sentence, so someone whose machine had been re-registered by a
+    third party spent their time re-typing a key that was never coming back.
+    """
+    when = f" on {record.superseded_at}" if record.superseded_at else ""
+    return _error(
+        401,
+        "key_superseded",
+        _needs_operator(
+            settings,
+            f"This key string was replaced when this machine re-registered{when}. "
+            "The account itself is fine — same key_id, same usage history, same "
+            "allowance — but the secret half changed, and the replacement was "
+            "returned in the response to that registration. Re-run the installer "
+            "(or POST /auth/register with the same machine_id) to receive the "
+            "current key. If you did not re-register, someone else is registering "
+            "with a copy of your machine id and the key needs revoking.",
+        ),
+        key_id=record.key_id,
+        superseded_at=record.superseded_at,
+        support_contact=settings.support_contact or None,
+    )
+
+
 async def authenticate(request: Request, state: GatewayState) -> AuthContext:
     settings = state.settings
     ip = client_ip(request, settings)
@@ -921,16 +1268,19 @@ async def authenticate(request: Request, state: GatewayState) -> AuthContext:
         )
         if not ok:
             state.auth_backoff.record_failure(ip_hash)
+            superseded = await _presented_superseded_secret(state, record, secret)
             _log(
                 logging.WARNING,
                 "auth.failed",
                 key_id=key_id,
                 ip_hash=ip_hash[:12],
-                reason="bad_secret",
+                reason="superseded_secret" if superseded else "bad_secret",
                 # If the operator rotated KEY_PEPPER, every key fails at once and
                 # looks like a mass credential leak. Say which it is.
                 pepper_mismatch=record.pepper_fp != pepper_fingerprint(settings.key_pepper),
             )
+            if superseded:
+                raise _AuthFailure(_superseded_key_error(settings, record))
             raise _AuthFailure(_error(401, "authentication_error", "Invalid yangble5 key."))
         state.auth_cache.store(key_id, secret)
 
@@ -940,8 +1290,17 @@ async def authenticate(request: Request, state: GatewayState) -> AuthContext:
             _error(
                 403,
                 "key_suspended",
-                f"This key is {record.status}."
-                + (f" Reason: {record.suspended_reason}" if record.suspended_reason else ""),
+                _needs_operator(
+                    settings,
+                    f"This key is {record.status}."
+                    + (
+                        f" Reason: {record.suspended_reason}"
+                        if record.suspended_reason
+                        else ""
+                    )
+                    + " Only the operator can lift this.",
+                ),
+                support_contact=settings.support_contact or None,
             )
         )
 
@@ -1130,10 +1489,137 @@ def create_app(
     )
     app.state.gateway = state
 
+    _register_error_handlers(app)
     _register_public_routes(app, state)
     _register_proxy_routes(app, state)
     _register_admin_routes(app, state)
     return app
+
+
+# ---------------------------------------------------------------------------
+# error handlers — the framework's errors, in this service's envelope
+# ---------------------------------------------------------------------------
+# Status codes this service gives a name to. Anything outside the table falls
+# back to a generic 4xx/5xx type rather than inventing one, because a client
+# switching on `error.type` needs the set to be small and stable.
+_STATUS_ERROR_TYPES: dict[int, str] = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found",
+    405: "method_not_allowed",
+    413: "request_too_large",
+    422: "invalid_request_error",
+    429: "rate_limit_error",
+    500: "internal_error",
+    503: "service_unavailable",
+}
+
+
+def _status_error_type(status: int) -> str:
+    if status in _STATUS_ERROR_TYPES:
+        return _STATUS_ERROR_TYPES[status]
+    return "invalid_request_error" if status < 500 else "internal_error"
+
+
+def public_route_index(app: FastAPI) -> list[dict[str, Any]]:
+    """Every non-admin path this app serves, read off the router.
+
+    Read off the ROUTER, not from a hand-written list, because a hand-written
+    list is wrong the first time somebody adds a route and does not think to
+    update it — and this is the list a 404 hands to a client that is trying to
+    find its way. `/admin/*` is excluded: that surface answers 404 to anyone
+    without the admin key precisely so a scanner cannot learn it exists, and an
+    index that names it would undo that in one line.
+    """
+    index: dict[str, set[str]] = {}
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if not path or not methods or path.startswith("/admin"):
+            continue
+        index.setdefault(path, set()).update(m for m in methods if m not in ("HEAD", "OPTIONS"))
+    return [
+        {"path": path, "methods": sorted(index[path])}
+        for path in sorted(index)
+        if index[path]
+    ]
+
+
+def _register_error_handlers(app: FastAPI) -> None:
+    """Make every status this service emits carry the `{"error": {...}}` shape.
+
+    WITHOUT THIS the envelope is a property of the handlers, not of the
+    service. Starlette raises its own HTTPException for a path that matches no
+    route and for a method no route allows, and those became
+    `{"detail": "Not Found"}` and `{"detail": "Method Not Allowed"}` — a second
+    error format, undocumented, on exactly the two responses a client hits while
+    it is still working out how to talk to this service. A caller that reads
+    `error.type` got `None` and could not distinguish "wrong URL" from a
+    refusal it was supposed to handle.
+    """
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        status = exc.status_code
+        kind = _status_error_type(status)
+        detail = exc.detail if isinstance(exc.detail, str) and exc.detail else None
+        extra: dict[str, Any] = {}
+        if status == 404:
+            message = (
+                f"No route on the yangble5 gateway serves {request.method} "
+                f"{request.url.path}. 'public_routes' lists what is served."
+            )
+            extra["public_routes"] = public_route_index(app)
+        elif status == 405:
+            allowed = (exc.headers or {}).get("Allow", "")
+            message = (
+                f"{request.method} is not allowed on {request.url.path}."
+                + (f" Allowed: {allowed}." if allowed else "")
+            )
+            if allowed:
+                extra["allowed_methods"] = [m.strip() for m in allowed.split(",") if m.strip()]
+        else:
+            message = detail or f"The request failed with status {status}."
+        response = _error(status, kind, message, **extra)
+        # Starlette attaches `Allow` to its own 405 and `WWW-Authenticate` to
+        # 401s raised by security dependencies. Dropping those would turn a
+        # correct response into a subtly broken one for any client that reads
+        # them, so they are copied through rather than re-derived.
+        for name, value in (exc.headers or {}).items():
+            response.headers[name] = value
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+        """FastAPI's own parameter validation, in this service's shape and at
+        400 rather than 422 — every other bad-input answer here is a 400, and
+        one endpoint answering 422 for the same class of mistake is a branch a
+        client has to discover by hitting it."""
+        return _validation_error_response(exc)
+
+    @app.exception_handler(Exception)
+    async def unhandled(request: Request, exc: Exception) -> JSONResponse:
+        """Last resort. Says nothing about `exc`.
+
+        A traceback, an exception class or a database path in this body is a
+        gift to whoever provoked it, and this handler cannot know which of those
+        the message contains. Starlette re-raises after this returns, so the
+        operator still gets the full traceback in their log — where it belongs.
+        """
+        _log(
+            logging.ERROR,
+            "request.unhandled_exception",
+            path=request.url.path,
+            method=request.method,
+            exception=type(exc).__name__,
+        )
+        return _error(
+            500,
+            "internal_error",
+            "The gateway hit an unexpected error. Nothing of yours was spent on "
+            "this request. If it repeats, it is a bug in the gateway.",
+        )
 
 
 def _daily_allowance(settings: Settings) -> dict[str, Any]:
@@ -1203,7 +1689,9 @@ def _package_version() -> str:
     return __version__
 
 
-async def _reissue_for_machine(state: GatewayState, binding: Any, ip_hash: str) -> JSONResponse:
+async def _reissue_for_machine(
+    state: GatewayState, binding: Any, ip_hash: str, label: str | None = None
+) -> JSONResponse:
     """Answer a repeat registration from a known machine.
 
     Returns 200 (not 201): nothing was created. The caller gets the same
@@ -1223,21 +1711,36 @@ async def _reissue_for_machine(state: GatewayState, binding: Any, ip_hash: str) 
         _log(logging.WARNING, "register.orphan_binding", key_id=binding.key_id)
         return _error(
             409, "binding_orphaned",
-            "This machine was registered before, but its key no longer exists. "
-            "Ask the operator to clear the binding.",
+            _needs_operator(
+                settings,
+                "This machine was registered before, but its key no longer exists, "
+                "so nothing can be re-issued against it. Only the operator can clear "
+                "the binding.",
+            ),
+            support_contact=settings.support_contact or None,
         )
     if record.status != "active":
         # Re-registering must never launder a suspended or revoked key back into
         # service — that would make suspension a one-installer-rerun problem.
         return _error(
             403, "key_suspended",
-            f"The key bound to this machine is {record.status}."
-            + (f" Reason: {record.suspended_reason}" if record.suspended_reason else ""),
+            _needs_operator(
+                settings,
+                f"The key bound to this machine is {record.status}."
+                + (f" Reason: {record.suspended_reason}" if record.suspended_reason else "")
+                + " Re-registering does not clear this, by design.",
+            ),
+            support_contact=settings.support_contact or None,
         )
 
     issued = await run_in_threadpool(
         lambda: state.storage.reissue_key_secret(
-            binding.key_id, scheme=settings.key_hash_scheme, pepper=settings.key_pepper
+            binding.key_id,
+            scheme=settings.key_hash_scheme,
+            pepper=settings.key_pepper,
+            # None leaves the existing nickname alone. A re-run that carries no
+            # label must not silently erase one the user typed the first time.
+            label=label,
         )
     )
     if issued is None:  # pragma: no cover - the row was read one statement ago
@@ -1259,6 +1762,10 @@ async def _reissue_for_machine(state: GatewayState, binding: Any, ip_hash: str) 
             "created_at": issued.created_at,
             "reused": True,
             "machine_bound": True,
+            # Echoed for the same reason it is stored: a value a human was asked
+            # for has to be one they can see again. `label or record.label`
+            # because a re-run that sent none keeps the previous one.
+            "label": label or record.label,
             "warning": (
                 "This machine already had a key, so no new one was created — you "
                 "have the same key_id, the same usage history and the same daily "
@@ -1315,12 +1822,38 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "uptime_seconds": int(time.monotonic() - state.started_at),
                 "accepting_requests": cap.allowed,
                 "registration": settings.registration_mode,
+                # Here so a client can surface "how do I reach a human" WITHOUT
+                # having to provoke an error and parse the sentence out of it.
+                # `null`, not an empty string and not a placeholder: the honest
+                # rendering of "this operator has published no contact" is the
+                # absence of one, and a client can then say so instead of
+                # printing a blank line that reads like a bug.
+                "support_contact": settings.support_contact or None,
             }
         )
 
     @app.get("/pool/status")
     async def pool_status() -> JSONResponse:
         """What the landing page's capacity widget reads. Unauthenticated.
+
+        GATE ON `accepting_requests`. That is the single field that answers
+        "will a shared-pool request be served right now?" — it already ANDs
+        together the monthly cap, today's pool and upstream health. Everything
+        else here is context for a human reading a status page.
+
+        `remaining_pct` is NOT that field. It is a budget ratio, and a budget
+        ratio is not a permission: the operator reserve can refuse a non-operator
+        caller while it still reads 0.20.
+
+        THE FIELD THAT USED TO BE HERE. `capped` meant "the operator configured
+        a ceiling", and it therefore read `true` on a pool that was one hundred
+        percent free. In English "capped" is what you say about something that
+        has HIT its cap, so the endpoint's own words contradicted the number next
+        to them, and a client branching on it read a full pool as an exhausted
+        one. Renamed to `pool_ceiling_configured`, which cannot be misread —
+        and which is still worth publishing, because it is what tells you whether
+        `remaining_pct: 1.0` is a measurement or a placeholder for "nothing is
+        being rationed here".
 
         Everything here is a fraction, a boolean or a timestamp. There is
         deliberately no dollar figure, no token count, no key count, no upstream
@@ -1343,10 +1876,228 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 # key to attach it to.
                 "registration_open": settings.registration_open and svc.registration_allowed,
                 "accepting_requests": svc.accepting,
-                "capped": pool.capped,
+                "pool_ceiling_configured": pool.capped,
                 "reserve_engaged": svc.reserve_engaged,
                 "operator_reserve_fraction": settings.operator_reserve_fraction,
                 "byok_available": settings.byok_enabled,
+            }
+        )
+
+    @app.get("/auth/register")
+    async def register_contract() -> JSONResponse:
+        """The registration contract, machine-readable. Unauthenticated.
+
+        WHY THIS EXISTS. The intended way to obtain a key is for an AI agent to
+        install this and then interview its user through the questions the
+        gateway actually needs answered. Until this endpoint existed, GET here
+        answered 405, and the agent's only options were to guess the field names
+        or to read a copy of the documentation that may not describe THIS
+        instance: registration mode, per-IP ceilings and BYOK availability are
+        all per-deployment. An agent that guesses fills a form the user cannot
+        correct.
+
+        WHY IT IS SMALL. Everything in this payload is derived from `Settings`
+        and from the constants the request path itself uses. Nothing is
+        restated, so nothing can drift away from the endpoint it describes — the
+        failure mode of a hand-written schema is that it stays confidently wrong
+        for a year. What is NOT here: live capacity. That moves, and it has an
+        endpoint (`/pool/status`); a contract document that changes between two
+        reads is not a contract.
+
+        This does no database work on purpose. It is unauthenticated and it is
+        the first thing a strange client calls, so it must cost the operator
+        nothing to have it scraped.
+        """
+        machine_id_field = {
+            "type": "string",
+            "required": False,
+            "format": (
+                f"lowercase hexadecimal, {MACHINE_ID_MIN_CHARS}-{MACHINE_ID_MAX_CHARS} "
+                "characters, even length"
+            ),
+            "derivation": (
+                "sha256 of stable machine attributes concatenated with a 32-byte "
+                "random salt generated ON THE CLIENT and stored there. The salt "
+                "must dominate the input so the value cannot be guessed from "
+                "public facts about the machine."
+            ),
+            "persist_the_salt": (
+                "Write the salt to a private file (mode 0600) and keep it. It is "
+                "the ONLY thing that lets a re-run of the installer recover the "
+                "existing key: lose it and the next registration is a different "
+                "machine, which mints a SECOND key and leaves the first one's "
+                "usage history and allowance stranded. The salt is never sent."
+            ),
+            "purpose": (
+                "Re-registering with the same machine_id returns the SAME key_id "
+                "with 200 instead of minting a new key with 201."
+            ),
+            "sent_where": "hashed again by the server; the raw value is never stored",
+        }
+        fields: dict[str, Any] = {
+            "machine_id": machine_id_field,
+            "email": {
+                "type": "string",
+                "required": False,
+                "format": "an e-mail address, at most 254 characters",
+                "verification": "none — no mail is sent and nothing is confirmed",
+                "effect": (
+                    "One active key per address by default, so a second "
+                    "registration from the same address answers 409."
+                    if not settings.allow_multiple_keys_per_email
+                    else "Multiple keys per address are allowed on this instance."
+                ),
+            },
+            "invite_code": {
+                "type": "string",
+                "required": settings.registration_mode == "invite",
+                "format": "the code string, at most 200 characters",
+                "note": (
+                    "Required on this instance: registration mode is 'invite'."
+                    if settings.registration_mode == "invite"
+                    else "Ignored on this instance: registration mode is "
+                    f"'{settings.registration_mode}'."
+                ),
+            },
+            "label": {
+                "type": "string",
+                "required": False,
+                "format": "human-readable, at most 100 characters, no control characters",
+                "purpose": (
+                    "A nickname for this key. Returned by GET /usage and visible to "
+                    "the operator, so it is safe to ask a human for one — they can "
+                    "read it back. Do NOT derive it from machine_id: that would put "
+                    "part of a value this service otherwise only stores hashed into "
+                    "the clear."
+                ),
+            },
+        }
+        # The ONE conditional rule, stated as a rule rather than left for the
+        # caller to discover through a 400.
+        if settings.registration_mode == "open":
+            requirement = (
+                "Send at least one of 'machine_id' or 'email'. Neither is verified; "
+                "the endpoint needs one stable identity to bind the key to. Prefer "
+                "'machine_id' — it needs nothing from the user."
+            )
+        elif settings.registration_mode == "invite":
+            requirement = "Send 'invite_code'. 'machine_id' is strongly recommended as well."
+        else:
+            requirement = "This instance is not issuing keys; every POST here answers 403."
+
+        return JSONResponse(
+            {
+                "service": "yangble5-gateway",
+                "version": _package_version(),
+                "endpoint": {"method": "POST", "path": "/auth/register"},
+                "content_type": "application/json",
+                "max_body_bytes": _JSON_BODY_MAX_BYTES,
+                "registration_mode": settings.registration_mode,
+                "registration_mode_meaning": _REGISTRATION_MODE_MEANINGS[
+                    settings.registration_mode
+                ],
+                "requirement": requirement,
+                "fields": fields,
+                "responses": {
+                    "201": (
+                        "A new key. 'api_key' is shown ONCE and is not recoverable "
+                        "from any endpoint — store it before doing anything else."
+                    ),
+                    "200": (
+                        "This machine_id was already registered. Same 'key_id', same "
+                        "usage history, same allowance, and 'reused' is true. The key "
+                        "STRING is new because the previous one exists only as a hash "
+                        "on this server; any stored copy of it has stopped working."
+                    ),
+                },
+                "limits": {
+                    "register_attempts_per_ip_per_day": (
+                        settings.register_max_per_ip_per_day or "unlimited"
+                    ),
+                    "keys_issued_per_ip_per_day": settings.max_keys_per_ip or "unlimited",
+                    "reissues_per_machine_per_day": MAX_REISSUES_PER_MACHINE_PER_DAY,
+                    "requests_per_minute_per_ip": settings.auth_rpm_per_ip or "unlimited",
+                    "note": (
+                        "A re-registration of a KNOWN machine_id does not consume the "
+                        "per-IP attempt allowance — re-running an installer is not an "
+                        "attempt to obtain a new key. It does consume the per-machine "
+                        "re-issue allowance, which clears at 00:00 UTC."
+                    ),
+                },
+                # Every `error.type` this endpoint can emit. An agent branches on
+                # these, so each one says what to DO, not merely what happened.
+                "error_types": {
+                    "invalid_json": "The body did not parse. Fix the serialiser, not the fields.",
+                    "invalid_request_error": (
+                        "The body parsed but a field is wrong. 'param' names it and "
+                        "'errors' lists every field that failed. Fix that field."
+                    ),
+                    "invalid_machine_id": (
+                        "'machine_id' is not hex of the stated length. Send a correct "
+                        "one or omit the field — do not send a placeholder."
+                    ),
+                    "request_too_large": "The body exceeded 'max_body_bytes'.",
+                    "registration_closed": (
+                        "This instance is not issuing keys at all. Nothing you send "
+                        "will change that; self-host instead."
+                    ),
+                    "registration_unavailable": (
+                        "Temporarily not issuing keys: the operator's monthly budget "
+                        "cap is reached. Retry after the 'reset_at' on /pool/status."
+                    ),
+                    "invite_required": "Registration mode is 'invite' and you sent no code.",
+                    "invite_invalid": "The code is unknown, expired, or already used up.",
+                    "rate_limit_error": (
+                        "A per-IP or per-machine ceiling. Honour 'Retry-After'; "
+                        "retrying sooner only extends the lockout."
+                    ),
+                    "registration_throttled": (
+                        # NOT "this address". The ceiling is max_keys_per_ip and it
+                        # counts the whole NETWORK, so on an office NAT, a campus or
+                        # a mobile carrier's CGNAT it fires on a person who has never
+                        # registered before. Written as "address" it reads as the
+                        # e-mail address -- the neighbouring entry uses "This e-mail"
+                        # -- and an interviewing agent would tell the user to try a
+                        # different one, which cannot possibly help because nothing
+                        # about the e-mail is counted.
+                        "Everyone sharing this public IP address has together used "
+                        "today's key allowance. It is NOT about the e-mail or the "
+                        "machine: a colleague on the same office, campus or mobile "
+                        "network can exhaust it before this user ever registers. "
+                        "Sending a different e-mail will not help. Send the same "
+                        "'machine_id' to get an existing key back; otherwise wait for "
+                        "'Retry-After', or use a different network."
+                    ),
+                    "already_registered": (
+                        "This e-mail already holds an active key. Registering again "
+                        "will not produce a second one."
+                    ),
+                    "key_suspended": (
+                        "The key bound to this machine is suspended or revoked. "
+                        "Re-registering does not clear that, by design."
+                    ),
+                    "binding_orphaned": (
+                        "This machine was registered before, but its key has since "
+                        "been deleted. Only the operator can clear the binding."
+                    ),
+                    "too_many_auth_failures": (
+                        "Too many failed attempts from this address. Wait out "
+                        "'Retry-After'."
+                    ),
+                    "internal_error": (
+                        "The service failed, not your request. Nothing was created. "
+                        "Retry once; if it repeats, the operator has to look. Do not "
+                        "vary the request trying to make it work -- it is not the "
+                        "request."
+                    ),
+                },
+                "capacity": (
+                    "This document does not report live capacity. GET /pool/status "
+                    "for 'registration_open' and 'accepting_requests'; the key's own "
+                    "response also carries 'usable_now'."
+                ),
+                "support_contact": settings.support_contact or None,
+                "support": support_note(settings),
             }
         )
 
@@ -1388,10 +2139,17 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "keys right now.",
             )
 
-        try:
-            payload = RegisterRequest.model_validate(await request.json())
-        except Exception:
-            return _error(400, "invalid_request_error", "Body must be a JSON object.")
+        payload = await parse_json_body(
+            request,
+            RegisterRequest,
+            expected='a JSON object such as {"machine_id": "<64 hex characters>"}',
+        )
+        if isinstance(payload, JSONResponse):
+            return payload
+
+        label = _clean_label(payload.label)
+        if isinstance(label, JSONResponse):
+            return label
 
         # The fingerprint is validated before anything else touches it. An
         # invalid one is REJECTED, never quietly downgraded to "no fingerprint":
@@ -1408,6 +2166,19 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     "something else.",
                 )
         machine_hash = state.storage.hash_machine_id(machine_id) if machine_id else None
+
+        # Checked here rather than in _clean_label because it needs both fields.
+        if _label_leaks_fingerprint(label, machine_id):
+            return _error(
+                400,
+                "invalid_request_error",
+                "'label' contains a run of this request's 'machine_id'. The "
+                "fingerprint is stored only as a salted hash; a label is stored in "
+                "the clear, so a label derived from it would put the fingerprint "
+                "back into the database in plain text. Send a name a human would "
+                "recognise, or omit the field.",
+                param="label",
+            )
 
         # ---- idempotent re-registration -------------------------------------
         # This is what makes "just re-run the installer" a safe instruction. The
@@ -1446,13 +2217,17 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     )
                     return _error(
                         429, "rate_limit_error",
-                        "This machine has re-registered too many times today. If "
-                        "you did not do that, someone else has a copy of this "
-                        "machine's id: ask the operator to revoke the key. The "
-                        "limit clears at 00:00 UTC.",
+                        _needs_operator(
+                            settings,
+                            "This machine has re-registered too many times today. If "
+                            "you did not do that, someone else has a copy of this "
+                            "machine's id and only the operator can revoke the key. "
+                            "The limit clears at 00:00 UTC.",
+                        ),
                         retry_after_seconds=_seconds_until_utc_midnight(),
+                        support_contact=settings.support_contact or None,
                     )
-                return await _reissue_for_machine(state, binding, ip_hash)
+                return await _reissue_for_machine(state, binding, ip_hash, label)
 
         # CHEAP EARLY REJECT, not the decision. It saves a JSON parse and a
         # couple of hashes for an address that is already obviously over its
@@ -1471,7 +2246,17 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
 
         email = (payload.email or "").strip() or None
         if email and not _EMAIL_RE.match(email):
-            return _error(400, "invalid_request_error", "'email' is not a valid address.")
+            # `param` and `errors` are not decoration here: the contract document
+            # promises that every invalid_request_error carries them, and these
+            # two hand-written 400s are the ones an interview hits most -- a
+            # mistyped e-mail, and sending no identity at all. An agent doing
+            # err["param"] would have raised KeyError on exactly those.
+            return _error(
+                400, "invalid_request_error", "'email' is not a valid address.",
+                param="email",
+                errors=[{"param": "email", "code": "invalid_format",
+                         "constraint": "an address of the form name@host.tld"}],
+            )
         if settings.registration_mode == "open" and not email and machine_id is None:
             # Open mode needs ONE stable identity, not a verified one. A machine
             # fingerprint is enough, and asking a fan to prove an email address
@@ -1481,6 +2266,9 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 400, "invalid_request_error",
                 "Send either a 'machine_id' (the installer does this automatically) "
                 "or a valid 'email'. No verification step follows either way.",
+                param=None,
+                errors=[{"param": None, "code": "identity_required",
+                         "constraint": "one of 'machine_id' or 'email' must be present"}],
             )
 
         # Count the attempt BEFORE the invite check, so guessing invite codes
@@ -1536,7 +2324,7 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
             issued = await run_in_threadpool(
                 lambda: state.storage.issue_key(
                     email=email,
-                    label=payload.label,
+                    label=label,
                     scheme=settings.key_hash_scheme,
                     pepper=settings.key_pepper,
                     machine_hash=machine_hash,
@@ -1559,8 +2347,13 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         except EmailInUseError:
             return _error(
                 409, "already_registered",
-                "This address already has an active key. Ask the operator to "
-                "revoke it if you need a replacement.",
+                _needs_operator(
+                    settings,
+                    "This address already has an active key. Registering again will "
+                    "not produce a second one; only the operator can revoke the "
+                    "first if you need a replacement.",
+                ),
+                support_contact=settings.support_contact or None,
             )
         _log(
             logging.INFO,
@@ -1586,6 +2379,11 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "daily_allowance": _daily_allowance(settings),
                 "machine_bound": machine_hash is not None,
                 "reused": False,
+                # Echoed so the caller can see what was stored. Before this the
+                # field was accepted, written, and readable by nothing —
+                # including the operator — which made asking a human for one a
+                # question with no answer anywhere.
+                "label": label,
                 # Re-read rather than reusing the `svc` from the top of the
                 # handler: issuing a key involves a KDF and several awaits, and
                 # the pool can be exhausted by another caller in that window.
@@ -1629,6 +2427,9 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
             {
                 "key_id": ctx.key_id,
                 "status": record.status,
+                # The nickname chosen at registration. Read back HERE because a
+                # value a human is asked to supply has to be one they can check.
+                "label": record.label,
                 "today": {
                     "requests": day.requests,
                     "total_tokens": day.total_tokens,
@@ -1678,13 +2479,16 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 429, "rate_limit_error", "Rate limit exceeded.",
                 retry_after_seconds=int(retry) + 1,
             )
-        try:
-            payload = ByokRequest.model_validate(await request.json())
-        except Exception:
-            return _error(
-                400, "invalid_request_error",
-                "Body must be {\"credential\": \"<your upstream key>\"}.",
-            )
+        payload = await parse_json_body(
+            request,
+            ByokRequest,
+            expected='a JSON object such as {"credential": "<your upstream key>"}',
+        )
+        if isinstance(payload, JSONResponse):
+            return payload
+        byok_label = _clean_label(payload.label)
+        if isinstance(byok_label, JSONResponse):
+            return byok_label
 
         sealed = state.byok_cipher.seal(payload.credential.strip())
         await run_in_threadpool(
@@ -1693,7 +2497,7 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 scheme=sealed.scheme,
                 nonce=sealed.nonce,
                 ciphertext=sealed.ciphertext,
-                label=payload.label,
+                label=byok_label,
             )
         )
         # Metadata only: the credential itself is not logged, not echoed back,
@@ -2234,10 +3038,13 @@ def _register_admin_routes(app: FastAPI, state: GatewayState) -> None:
         denied = guard(request)
         if denied:
             return denied
-        try:
-            payload = InviteRequest.model_validate(await request.json())
-        except Exception:
-            return _error(400, "invalid_request_error", "Body must be a JSON object.")
+        payload = await parse_json_body(
+            request,
+            InviteRequest,
+            expected='a JSON object such as {"max_uses": 1, "expires_in_days": 30}',
+        )
+        if isinstance(payload, JSONResponse):
+            return payload
 
         import secrets as _secrets
 
@@ -2282,6 +3089,14 @@ def _register_admin_routes(app: FastAPI, state: GatewayState) -> None:
                         "created_at": row["created_at"],
                         "last_used_at": row["last_used_at"],
                         "is_operator": bool(row["is_operator"]),
+                        # The nickname the registrant chose. This column existed
+                        # and was returned by nothing, including here — which is
+                        # what made asking a human to fill it in dishonest.
+                        "label": row["label"],
+                        # When the key string was last replaced by a
+                        # re-registration, or null. Lets the operator answer
+                        # "someone re-registered my machine" without a shell.
+                        "superseded_at": row["superseded_at"],
                         # Whether one is attached, never what it is.
                         "byok_attached": bool(row["has_byok"]),
                     }

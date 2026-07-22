@@ -117,6 +117,10 @@ services:
       YANGBLE5_ADMIN_API_KEY: ${YANGBLE5_ADMIN_API_KEY:?set YANGBLE5_ADMIN_API_KEY in .env}
       YANGBLE5_ALLOW_MULTIPLE_KEYS_PER_EMAIL: ${YANGBLE5_ALLOW_MULTIPLE_KEYS_PER_EMAIL:-false}
       YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY: ${YANGBLE5_REGISTER_MAX_PER_IP_PER_DAY:-5}
+      # Published on /health and quoted into every "ask the operator" error.
+      # Empty is honest: those messages then say this instance publishes no
+      # channel, instead of implying one exists.
+      YANGBLE5_SUPPORT_CONTACT: ${YANGBLE5_SUPPORT_CONTACT:-}
       # -- budgets --
       YANGBLE5_DAILY_TOKEN_BUDGET: ${YANGBLE5_DAILY_TOKEN_BUDGET:-2000000}
       YANGBLE5_DAILY_COST_USD_BUDGET: ${YANGBLE5_DAILY_COST_USD_BUDGET:-2.0}

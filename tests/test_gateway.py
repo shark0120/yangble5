@@ -898,7 +898,12 @@ def test_health_needs_no_auth_and_exposes_no_secrets(gw):
         assert forbidden not in text.lower()
     assert set(body) == {
         "status", "service", "version", "uptime_seconds", "accepting_requests", "registration",
+        # How to reach the operator. Published HERE so a client never has to
+        # provoke an error and parse a sentence out of it; null when the
+        # operator has configured none, which is not a secret either.
+        "support_contact",
     }
+    assert body["support_contact"] is None
 
 
 def test_no_openapi_or_docs_are_exposed(gw):
@@ -1430,8 +1435,12 @@ def test_byok_instructions_are_honest_when_byok_is_switched_off(build):
 # ---------------------------------------------------------------------------
 POOL_STATUS_KEYS = {
     "remaining_pct", "reset_at", "reset_window", "registration_open",
-    "accepting_requests", "capped", "reserve_engaged", "operator_reserve_fraction",
+    "accepting_requests", "reserve_engaged", "operator_reserve_fraction",
     "byok_available",
+    # Was "capped", which meant "a ceiling is configured" and therefore read
+    # `true` on a completely free pool — the opposite of what the word means in
+    # every other limit API. See tests/test_gateway_agent_contract.py.
+    "pool_ceiling_configured",
 }
 
 
@@ -1492,7 +1501,7 @@ def test_pool_status_says_uncapped_honestly(build):
     """No ceiling configured must not be reported as '0% left'."""
     gw = build(REGISTRATION_MODE="closed", GLOBAL_MONTHLY_USD_BUDGET=0)
     body = gw.client.get("/pool/status").json()
-    assert body["capped"] is False
+    assert body["pool_ceiling_configured"] is False
     assert body["remaining_pct"] == 1.0
     assert body["reserve_engaged"] is False
 
@@ -1504,7 +1513,10 @@ def test_health_still_exposes_nothing_new(build):
     body = gw.client.get("/health").json()
     assert set(body) == {
         "status", "service", "version", "uptime_seconds", "accepting_requests", "registration",
+        "support_contact",
     }
+    # Still nothing about capacity: a contact string is not a spend figure.
+    assert "remaining" not in json.dumps(body)
 
 
 # ---------------------------------------------------------------------------

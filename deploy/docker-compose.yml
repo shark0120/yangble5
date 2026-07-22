@@ -181,6 +181,8 @@ services:
       YANGBLE5_DB_PATH: ${YANGBLE5_DB_PATH:-/data/yangble5.db}
       # -- registration --
       YANGBLE5_REGISTRATION_MODE: ${YANGBLE5_REGISTRATION_MODE:-invite}
+      # Published on /health and quoted into every "ask the operator" error.
+      YANGBLE5_SUPPORT_CONTACT: ${YANGBLE5_SUPPORT_CONTACT:-}
       # Required in invite mode: without it /admin/invites is disabled, so no
       # invite can be minted and nobody can register.
       YANGBLE5_ADMIN_API_KEY: ${YANGBLE5_ADMIN_API_KEY:?set YANGBLE5_ADMIN_API_KEY in .env}

@@ -26,6 +26,10 @@ _ENV_PREFIX = "YANGBLE5_"
 
 REGISTRATION_MODES = ("invite", "open", "closed")
 
+# SUPPORT_CONTACT is echoed into error bodies. Bounded so one very long value
+# cannot bloat every error this service emits.
+_SUPPORT_CONTACT_MAX_CHARS = 200
+
 
 class ConfigError(RuntimeError):
     """Raised at startup when the configuration is unsafe or incomplete."""
@@ -269,6 +273,16 @@ class Settings:
     # `startup_warnings()` and gateway/app.py::_record.
     unparsed_usage_token_floor: int
 
+    # --- support -------------------------------------------------------------
+    # How a user reaches the operator. Several error paths on this service end
+    # in "ask the operator to do X" — revoke a key, clear a stale machine
+    # binding — and until this existed there was no way to. Free text, because
+    # it might be an e-mail address, a URL, a room name or "I do not offer
+    # support"; the gateway never parses it, only quotes it. Empty means the
+    # operator has published nothing, and every message that would have quoted
+    # it says so instead of inventing a channel.
+    support_contact: str
+
     # --- misc ----------------------------------------------------------------
     log_level: str
     prices: dict[str, ModelPrice] = field(default_factory=lambda: dict(DEFAULT_PRICES))
@@ -471,6 +485,27 @@ class Settings:
         if key_hash_scheme not in ("scrypt", "pbkdf2"):
             raise ConfigError("KEY_HASH_SCHEME must be 'scrypt' or 'pbkdf2'")
 
+        # SUPPORT_CONTACT is quoted verbatim into error messages and into
+        # /health, both of which are read by installers and agents that print
+        # what they are given. Control characters are refused rather than
+        # stripped: a value that renders differently from the one the operator
+        # typed is a value the operator cannot audit, and silently rewriting
+        # configuration is how a terminal-escape payload ends up somewhere
+        # nobody looks. The length bound is for the same reason — this is a
+        # contact string, not a support policy.
+        support_contact = _str(env, "SUPPORT_CONTACT", "")
+        if support_contact:
+            if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in support_contact):
+                raise ConfigError(
+                    "SUPPORT_CONTACT must not contain control characters — it is "
+                    "quoted verbatim into error messages and into /health."
+                )
+            if len(support_contact) > _SUPPORT_CONTACT_MAX_CHARS:
+                raise ConfigError(
+                    f"SUPPORT_CONTACT must be at most {_SUPPORT_CONTACT_MAX_CHARS} "
+                    f"characters, got {len(support_contact)}."
+                )
+
         trusted_proxy_hops = _int(env, "TRUSTED_PROXY_HOPS", 1)
         if trusted_proxy_hops < 1:
             raise ConfigError("TRUSTED_PROXY_HOPS must be >= 1")
@@ -575,6 +610,7 @@ class Settings:
             trust_proxy_headers=_bool(env, "TRUST_PROXY_HEADERS", False),
             trusted_proxy_hops=trusted_proxy_hops,
             unparsed_usage_token_floor=unparsed_usage_token_floor,
+            support_contact=support_contact,
             log_level=_str(env, "LOG_LEVEL", "INFO").upper(),
             prices=prices,
             prices_are_placeholder=placeholder,
@@ -637,6 +673,21 @@ class Settings:
             warnings.append(
                 "OPERATOR_RESERVE_FRACTION is 0 with open registration: public traffic "
                 "can consume the entire pool and starve your own daily-driver key."
+            )
+        if not self.support_contact and self.registration_mode != "closed":
+            # Four responses on this service tell a user to ask the operator to
+            # do something only the operator can do: revoke a key held by
+            # someone else, clear a machine binding whose key was deleted, free
+            # an address that already has a key, replace a key that a
+            # re-registration superseded. With nothing here those messages
+            # describe an action with no channel to request it through, which
+            # the user reads as "you are stuck".
+            warnings.append(
+                "SUPPORT_CONTACT is unset while registration is "
+                f"{self.registration_mode}. Users who hit a revoke-my-key or "
+                "orphaned-binding error will be told to ask the operator, and told "
+                "in the same sentence that this instance publishes no way to. Set it "
+                "to an address, a URL, or an explicit 'no support offered'."
             )
         if self.trust_proxy_headers:
             warnings.append(

@@ -625,9 +625,9 @@ must come from the `chmod` calls the run actually executed, which `sh -x` prints
 | Refuses to run as root or under `sudo`, exit 2 | `refuse_root` 404–425 (`id -u` = 0 or `$SUDO_USER` set) | ran with `SUDO_USER=someone` → `exit=2`, ending `If you are an AI agent: do not retry this with sudo. Drop privileges instead.` The `id -u` half is source-read: this harness cannot be root |
 | No background service, autostart or daemon | **absence.** `grep -nE 'systemd\|launchd\|launchctl\|crontab' site/install.sh` → no matches | grep output pasted under Validation |
 | Downloads and executes no extra code; no `eval` | **absence.** `grep -nE '\beval\b' site/install.sh` → 2 hits, both comments (70, 707). The only network calls are `http_call`, whose URL is always `$YB5_API` + a fixed path | grep output pasted under Validation |
-| Registration sends only the fingerprint, a label made of its first 32 chars, and any e-mail / invite you passed | `reg_body` 882–893 — a four-field JSON body, two of them optional | source read; the body is built with `printf`, field by field |
+| Registration sends only the fingerprint, plus any e-mail / invite you passed | `reg_body` — a three-field JSON body, two of them optional | source read; the body is built with `printf`, field by field. The `label` field was **removed**: nothing ever read it back, and half the raw fingerprint sat in the clear in a column the neighbouring one is peppered to protect |
 | Does not touch `~/.ssh`, browser data, keychains | **absence** for the tool names (`grep -nE 'security find-generic\|secret-tool\|Keychain\|\.ssh' site/install.sh` → no matches), plus the write enumeration in §1 | planted canary files at `~/.claude/settings.json`, `~/.codex/config.toml` and `~/.ssh/id_ed25519`, ran a full install, re-hashed: all three `sha256` values identical before and after. Real output below |
-| Sends no prompt, code or file contents; registration carries only the two fields | `reg_body` 882–893 | captured the actual request body off the wire during a real run: `{"machine_id":"<64 hex>","label":"installer-<first 32 of it>"}` — no third field, because neither `--email` nor `--invite` was passed |
+| Sends no prompt, code or file contents; registration carries one field unless you pass more | `reg_body` | captured off the wire during a real run: `{"machine_id":"<64 hex>"}` — one field, because neither `--email` nor `--invite` was passed. `tests/test_installer_consent.py` now asserts the wire body's key set is exactly `{"machine_id"}`, so this row cannot drift back |
 
 ---
 
@@ -1134,12 +1134,18 @@ And the registration body, captured off the wire rather than read out of `reg_bo
 block — the point of the row is what leaves the machine, so that is what was sampled:
 
 ```
-{"machine_id":"e5c9dc62cbaad51154dd33fd29933c09ffcb2d09756e77cf6e78be3fe20c790c",
- "label":"installer-e5c9dc62cbaad51154dd33fd29933c09"}
+{"machine_id":"e5c9dc62cbaad51154dd33fd29933c09ffcb2d09756e77cf6e78be3fe20c790c"}
 ```
 
-Two fields, because no `--email` and no `--invite` were passed. The label is the first 32
-characters of the same fingerprint, so it carries nothing the first field does not.
+One field, because no `--email` and no `--invite` were passed.
+
+Earlier versions also sent `"label":"installer-<first 32 chars of the same fingerprint>"`. It is
+gone. Not because it was a credential — it is half the value, and the server hashes the exact
+string it receives, so a 32-character prefix looks up nothing — but because **nothing ever read
+it back**, `storage.hash_machine_id()` peppers the fingerprint precisely so a stolen copy cannot
+be tested against candidates, and half the raw value sat in the clear in the next column along.
+The consent screen that lists what leaves your machine never mentioned it either, and that list
+is the entire basis on which anyone says yes.
 
 ### The temp directory: what a real run puts there, and what survives
 

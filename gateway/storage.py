@@ -58,7 +58,12 @@ __all__ = [
 ]
 
 KEY_PREFIX = "yb5"
-SCHEMA_VERSION = 2
+# 3 adds api_keys.label and the four prev_*/superseded_at columns. Recorded with
+# set_meta_default, so an existing database keeps whatever number it was created
+# with — the columns themselves are added by _migrate(), which checks the table
+# rather than this constant, because that is the only check that cannot be
+# wrong about a database somebody restored from a backup.
+SCHEMA_VERSION = 3
 
 # A machine fingerprint is an OPAQUE sha256 hex digest produced by the installer.
 # The gateway never learns what was hashed into it and does not want to: the
@@ -228,10 +233,31 @@ class ApiKeyRecord:
     daily_cost_budget_usd: float | None
     suspended_reason: str | None
     is_operator: bool = False
+    label: str | None = None
+    # The credential this key had before its most recent re-issue, and when it
+    # stopped working. All four are None until a re-issue happens. See
+    # `superseded_credential` for the only thing they are ever used for.
+    prev_digest: bytes | None = None
+    prev_salt: bytes | None = None
+    prev_scheme: str | None = None
+    superseded_at: str | None = None
 
     @property
     def active(self) -> bool:
         return self.status == "active"
+
+    @property
+    def superseded_credential(self) -> tuple[bytes, bytes, str] | None:
+        """(digest, salt, scheme) of the previous secret, or None.
+
+        Returned as a unit because a partially-populated set is not verifiable
+        and must not be treated as one: an older database that has the columns
+        but no values reads back None here rather than three Nones a caller
+        might feed to `verify_secret`.
+        """
+        if self.prev_digest and self.prev_salt and self.prev_scheme:
+            return self.prev_digest, self.prev_salt, self.prev_scheme
+        return None
 
 
 @dataclass(frozen=True)
@@ -318,6 +344,13 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     email      TEXT UNIQUE COLLATE NOCASE,
+    -- LEGACY. The registration label used to be written here and was then
+    -- unreadable: one row is shared by every key belonging to one e-mail
+    -- address, and the INSERT that carried the label only ran when the address
+    -- was new, so re-registering an existing address dropped it on the floor.
+    -- The label is a property of the KEY (one machine, one nickname), so it
+    -- lives on api_keys.label now. The column stays because this database holds
+    -- the operator's billing history and this project does not drop columns.
     label      TEXT,
     status     TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL
@@ -336,7 +369,22 @@ CREATE TABLE IF NOT EXISTS api_keys (
     daily_token_budget    INTEGER,
     daily_cost_budget_usd REAL,
     suspended_reason      TEXT,
-    is_operator           INTEGER NOT NULL DEFAULT 0
+    is_operator           INTEGER NOT NULL DEFAULT 0,
+    -- A human-readable nickname the registrant chose. Readable back on /usage
+    -- and /admin/keys, which is the whole reason it is allowed to exist: a
+    -- field that is accepted and stored but that nothing can ever display is a
+    -- field an interviewer would ask a human to fill in for nothing.
+    label                 TEXT,
+    -- The PREVIOUS credential, kept only so the gateway can tell a user whose
+    -- key was replaced by a re-registration ("someone re-registered my
+    -- machine") apart from a user who mistyped ("I typed it wrong"). These
+    -- verify a secret that is already dead: matching them grants nothing, it
+    -- only selects a different 401 message. Overwritten on each re-issue, so
+    -- exactly one generation back is distinguishable.
+    prev_digest           BLOB,
+    prev_salt             BLOB,
+    prev_scheme           TEXT,
+    superseded_at         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status);
@@ -438,6 +486,14 @@ CREATE TABLE IF NOT EXISTS byok_credentials (
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("api_keys", "is_operator", "INTEGER NOT NULL DEFAULT 0"),
     ("usage_records", "billable", "INTEGER NOT NULL DEFAULT 1"),
+    # All five are nullable with no default, which is what makes them safe to
+    # add to a live database: every existing row reads back NULL, and NULL is
+    # already the "no label" / "never re-issued" answer both readers expect.
+    ("api_keys", "label", "TEXT"),
+    ("api_keys", "prev_digest", "BLOB"),
+    ("api_keys", "prev_salt", "BLOB"),
+    ("api_keys", "prev_scheme", "TEXT"),
+    ("api_keys", "superseded_at", "TEXT"),
 )
 
 
@@ -617,17 +673,22 @@ class Storage:
                 if row:
                     user_id = int(row["id"])
             if user_id is None:
+                # `label` is deliberately NOT written here any more. This INSERT
+                # only runs for a NEW address, so a second key on an existing
+                # address silently discarded its label; and one users row backs
+                # every key of one address, so the last registration would have
+                # renamed the earlier ones. It belongs to the key.
                 cur = conn.execute(
-                    "INSERT INTO users(email, label, status, created_at) VALUES(?, ?, 'active', ?)",
-                    (email, label, created),
+                    "INSERT INTO users(email, status, created_at) VALUES(?, 'active', ?)",
+                    (email, created),
                 )
                 user_id = int(cur.lastrowid)
             conn.execute(
                 "INSERT INTO api_keys(key_id, user_id, digest, salt, scheme, pepper_fp, status,"
-                " created_at, daily_token_budget, daily_cost_budget_usd, is_operator)"
-                " VALUES(?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
+                " created_at, daily_token_budget, daily_cost_budget_usd, is_operator, label)"
+                " VALUES(?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
                 (key_id, user_id, digest, salt, scheme_string, pepper_fingerprint(pepper),
-                 created, daily_token_budget, daily_cost_budget_usd, int(is_operator)),
+                 created, daily_token_budget, daily_cost_budget_usd, int(is_operator), label),
             )
             if registration_ip_hash is not None:
                 conn.execute(
@@ -644,7 +705,13 @@ class Storage:
         return IssuedKey(plaintext=plaintext, key_id=key_id, user_id=user_id, created_at=created)
 
     def reissue_key_secret(
-        self, key_id: str, *, scheme: str = "scrypt", pepper: str = ""
+        self,
+        key_id: str,
+        *,
+        scheme: str = "scrypt",
+        pepper: str = "",
+        label: str | None = None,
+        moment: datetime | None = None,
     ) -> IssuedKey | None:
         """Mint a fresh secret for an EXISTING key row. Returns None if unknown.
 
@@ -659,22 +726,42 @@ class Storage:
         same usage history, the same daily allowance and the same operator flag.
         Nothing new is minted. The previous key STRING stops working, which is
         also the correct answer for a cloned fingerprint used from two machines.
+
+        THE OUTGOING CREDENTIAL IS RETAINED, in `prev_*` and `superseded_at`.
+        Not to accept it — the UPDATE below is what decides who gets in — but so
+        that the holder of the string that just stopped working can be told
+        *that* rather than "invalid key". Those are different events with
+        different remedies, and a user who cannot tell them apart concludes they
+        mistyped and retries forever. One generation is kept: the columns are
+        overwritten, not appended to, so this never becomes a history of a key.
+
+        `label` is only written when a value is supplied. Passing None on a
+        re-registration leaves the existing nickname alone, because a re-run of
+        an installer that has no label to send must not erase the one the user
+        typed the first time.
         """
         # Keep the original key_id so usage rows, budgets and bindings still
         # point at this key; only the secret half of the credential changes.
         secret = secrets.token_urlsafe(32)
         plaintext = f"{KEY_PREFIX}_{key_id}_{secret}"
         digest, salt, scheme_string = hash_secret(secret, scheme=scheme, pepper=pepper)
+        superseded_at = _iso(moment or utcnow())
         with self._tx() as conn:
             row = conn.execute(
-                "SELECT user_id, created_at FROM api_keys WHERE key_id = ?", (key_id,)
+                "SELECT user_id, created_at, digest, salt, scheme FROM api_keys"
+                " WHERE key_id = ?",
+                (key_id,),
             ).fetchone()
             if row is None:
                 return None
             conn.execute(
-                "UPDATE api_keys SET digest = ?, salt = ?, scheme = ?, pepper_fp = ?"
+                "UPDATE api_keys SET digest = ?, salt = ?, scheme = ?, pepper_fp = ?,"
+                " prev_digest = ?, prev_salt = ?, prev_scheme = ?, superseded_at = ?,"
+                " label = COALESCE(?, label)"
                 " WHERE key_id = ?",
-                (digest, salt, scheme_string, pepper_fingerprint(pepper), key_id),
+                (digest, salt, scheme_string, pepper_fingerprint(pepper),
+                 bytes(row["digest"]), bytes(row["salt"]), row["scheme"], superseded_at,
+                 label, key_id),
             )
             user_id = int(row["user_id"])
             created_at = row["created_at"]
@@ -731,6 +818,11 @@ class Storage:
             daily_cost_budget_usd=row["daily_cost_budget_usd"],
             suspended_reason=row["suspended_reason"],
             is_operator=bool(row["is_operator"]),
+            label=row["label"],
+            prev_digest=bytes(row["prev_digest"]) if row["prev_digest"] else None,
+            prev_salt=bytes(row["prev_salt"]) if row["prev_salt"] else None,
+            prev_scheme=row["prev_scheme"],
+            superseded_at=row["superseded_at"],
         )
 
     def set_key_operator(self, key_id: str, is_operator: bool) -> bool:
@@ -761,7 +853,8 @@ class Storage:
 
     def list_keys(self, limit: int = 200) -> list[sqlite3.Row]:
         return self._query(
-            "SELECT k.key_id, k.status, k.created_at, k.last_used_at, k.is_operator, u.email,"
+            "SELECT k.key_id, k.status, k.created_at, k.last_used_at, k.is_operator, k.label,"
+            " k.superseded_at, u.email,"
             " EXISTS(SELECT 1 FROM byok_credentials b WHERE b.key_id = k.key_id) AS has_byok"
             " FROM api_keys k JOIN users u ON u.id = k.user_id"
             " ORDER BY k.created_at DESC LIMIT ?",

@@ -17,6 +17,47 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Changed — client-visible
+
+These change what a client receives. They exist because the intended way to get a key is now for
+an AI agent to install this and interview its user, and an agent can only do that if the service
+is discoverable and unambiguous through HTTP alone.
+
+- **`GET /auth/register` serves the contract instead of 405.** Field names, formats and whether
+  each is required; the `machine_id` derivation rule *and* the instruction to persist the salt
+  (naming the failure: lose it and the next run mints a second key and strands the first); the
+  per-IP and per-machine limits, with `0` rendered as `"unlimited"` rather than a bare `0` that
+  reads as "you may not register"; and every `error.type` with what to *do* about it. Every value
+  derives from `Settings`, so the document cannot drift from the endpoint it describes. Live
+  capacity is deliberately absent and points at `/pool/status` — a document that changes between
+  two reads is not a contract.
+
+- **`/pool/status` renames `capped` to `pool_ceiling_configured`.** BREAKING for anything reading
+  the old name. It never meant "the pool is full"; it meant "a ceiling is configured", so it read
+  `true` on a pool that was 100% free. Nothing in this repository consumed it. Gate on
+  `accepting_requests`.
+
+- **New `error.type` values**: `invalid_json`, `request_too_large`, `key_superseded`,
+  `internal_error`, `not_found`, `method_not_allowed`. Framework-raised errors previously escaped
+  as Starlette's `{"detail": ...}`, so a client branching on `error.type` met a second,
+  undocumented shape on exactly the statuses it was most likely to hit.
+
+- **Validation failures name the field.** Every Pydantic rejection used to collapse into
+  `"Body must be a JSON object."`, which is false for most of them — `{"machine_id": 123}` is a
+  JSON object. Responses now carry `param`, `code`, `constraint` and an `errors` list. The
+  offending *value* is deliberately not echoed: on `/byok` it is somebody's upstream credential.
+
+- **`SUPPORT_CONTACT`** is published on `/health` and quoted into the five errors that say only
+  the operator can help. Unset degrades honestly — the message says this instance publishes no
+  channel and points at self-hosting, rather than implying one exists.
+
+- **The installers no longer send `label`.** They used to send `installer-<first 32 hex of the
+  machine fingerprint>` into a column nothing read back, which put half a value the service
+  otherwise stores only peppered into a neighbouring plaintext column — and the consent screen
+  that enumerates what leaves your machine never mentioned it. `label` is now a user-chosen
+  nickname, echoed at registration and returned by `/usage`, and the server refuses one that
+  contains a run of the same request's `machine_id`.
+
 ### Fixed
 
 - **The gateway could not start on Python 3.10**, which is the system Python on Ubuntu 22.04 LTS.

@@ -1246,7 +1246,8 @@ function Get-ApiKey {
 
     if ($DryRun) {
         Write-Info "would POST $Api/auth/register with machine_id=<machine id>"
-        Write-Info '  and label=installer-<first 32 chars of the same id>'
+        Write-Info '  and nothing else except -Email/-Invite if you passed them.'
+        Write-Info '  No label, no hostname, no user name - see the consent screen.'
         Write-Info "would store the returned key at $CredFile (user-only ACL)"
         $script:ApiKey = 'yb5_0000000000000000_DRYRUNDRYRUNDRYRUNxx'
         $script:KeyId  = '0000000000000000'
@@ -1287,8 +1288,18 @@ function Get-ApiKey {
     if (-not [regex]::IsMatch($fingerprint, '\A[0-9a-f]{64}\z')) {
         Stop-Install 'internal: the machine fingerprint is not 64 lowercase hex characters.' $EX_CONFIG
     }
-    $label = 'installer-' + $fingerprint.Substring(0, 32)
-    $payload = @{ machine_id = $fingerprint; label = $label }
+    # NO "label" FIELD, DELIBERATELY - see the long comment at the matching
+    # point in install.sh. Short version: it used to carry
+    # "installer-<first 32 characters of $fingerprint>", which is half of the
+    # digest this script refuses to print in full fifty lines above; it lands in
+    # users.label, a column no endpoint in this project ever reads back; the
+    # machine id is peppered by storage.hash_machine_id() everywhere else
+    # specifically so a stolen database cannot be tested against candidate
+    # fingerprints, and a plaintext half in the next table gave part of that
+    # back; and the consent screen's list of what leaves this machine never
+    # mentioned it. A human-readable name, if ever wanted, must be one the user
+    # typed - never one derived from the fingerprint.
+    $payload = @{ machine_id = $fingerprint }
     if (-not [string]::IsNullOrWhiteSpace($Email))  { $payload['email'] = $Email }
     if (-not [string]::IsNullOrWhiteSpace($Invite)) { $payload['invite_code'] = $Invite }
     $json = $payload | ConvertTo-Json -Compress
@@ -1345,6 +1356,22 @@ Troubleshooting, in order:
             Write-RemoteText -Value (Get-JsonField -Json $r.Body -Field 'warning') -MaxChars 400
         } else {
             Write-Ok "registered - key_id $($script:KeyId)"
+        }
+        # "Is this key going to be served right now" ships WITH the key and was
+        # being thrown away - see the long comment at the matching point in
+        # install.sh. gateway/app.py::_issuance_status attaches usable_now /
+        # not_usable_reason / not_usable_detail to every issuance precisely so an
+        # installer cannot store an unusable key and call that success, and
+        # -NoLiveTest skips the completion probe that would otherwise have
+        # noticed. An absent field leaves $usable empty, which warns about
+        # nothing - the safe direction.
+        $usable = Get-JsonField -Json $r.Body -Field 'usable_now'
+        if ($usable -eq 'False') {
+            Write-Warn 'the endpoint says this key cannot be served right now'
+            Write-RemoteText -Value (Get-JsonField -Json $r.Body -Field 'not_usable_detail') -MaxChars 400
+            Write-Info 'the key itself is valid and has been stored. This is the shared'
+            Write-Info 'pool being empty, not a fault in your install, and it clears on'
+            Write-Info 'its own - but calls made before then will fail.'
         }
         $script:InstallMode = 'registered'
         return
@@ -2024,6 +2051,30 @@ function Test-Installation {
     }
     if ($c.Status -eq 200) {
         Write-Ok "POST /v1/messages -> 200 in $($c.Seconds)s"
+        # The model's own reply, which install.sh has always printed here and
+        # this script never did. Not cosmetic: a 200 with an empty completion
+        # looks exactly like a 200 with a working one, so on Windows the single
+        # end-to-end proof this whole verification step exists to produce was
+        # invisible. `json_string text` in install.sh matches "text":"..."
+        # anywhere in the body; Get-JsonField walks only the top level and one
+        # step into "error", and the reply lives at content[0].text, so it
+        # cannot be used here and this reads the shape directly. Same sanitiser
+        # and the same 60-character cap as the POSIX script. Model output is
+        # remote text too - arguably the least trustworthy kind.
+        $reply = ''
+        try {
+            $parsed = $c.Body | ConvertFrom-Json
+            foreach ($block in @($parsed.content)) {
+                if ($null -ne $block -and
+                    $block.PSObject.Properties.Name -contains 'text') {
+                    $reply = [string]$block.text
+                    break
+                }
+            }
+        } catch {
+            $reply = ''
+        }
+        Write-RemoteText -Value $reply -MaxChars 60
         Write-Info 'this was a COLD request: 0% prompt-cache hit, by definition. The'
         Write-Info '99.53% figure applies to warm rounds inside one session only.'
         return $true

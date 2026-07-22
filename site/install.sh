@@ -1264,7 +1264,8 @@ obtain_key() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         info "would POST ${YB5_API}/auth/register with machine_id=<machine id>"
-        info "  and label=installer-<first 32 chars of the same id>"
+        info "  and nothing else except --email/--invite if you passed them."
+        info "  No label, no hostname, no user name — see the consent screen."
         info "would store the returned key at ${CRED_FILE} (mode 0600)"
         API_KEY="yb5_0000000000000000_DRYRUNDRYRUNDRYRUNxx"
         KEY_ID="0000000000000000"
@@ -1306,10 +1307,32 @@ obtain_key() {
     [ "${#FINGERPRINT}" -eq 64 ] || \
         fail "internal: the machine fingerprint is ${#FINGERPRINT} characters, expected 64." "$EX_CONFIG"
 
+    # NO "label" FIELD, DELIBERATELY. It used to carry
+    #     "installer-<first 32 characters of $FINGERPRINT>"
+    # — half of the very digest this script refuses to print in full fifty lines
+    # above, sent in the clear and stored in the clear. Three separate reasons
+    # it is gone and must not come back:
+    #
+    #   * Nothing reads it. gateway/app.py passes payload.label to
+    #     storage.issue_key, which writes it into users.label, and no endpoint
+    #     in this project ever selects that column again. It was write-only
+    #     exposure with no reader to justify it.
+    #   * The machine id is stored SALTED everywhere else on purpose —
+    #     storage.hash_machine_id() peppers it before it touches the database,
+    #     "because a raw fingerprint table would let anyone holding a stolen
+    #     copy test candidate fingerprints". Putting half of the raw value in
+    #     the neighbouring table gave part of that back, permanently, to every
+    #     backup and every dump.
+    #   * The consent screen above enumerates what leaves this machine and never
+    #     mentioned a label. An undisclosed field in the body makes that list a
+    #     false statement, and that list is the whole basis on which a human —
+    #     or the agent reading this script aloud to them — says yes.
+    #
+    # If a human-readable name is ever wanted here, it must come from the user
+    # (a --label flag they typed), never from the fingerprint.
     reg_body="${TMPD}/register.json"
     {
         printf '{"machine_id":"%s"' "$FINGERPRINT"
-        printf ',"label":"installer-%s"' "$(printf '%s' "$FINGERPRINT" | cut -c1-32)"
         if [ -n "$YB5_EMAIL" ]; then
             printf ',"email":"%s"' "$YB5_EMAIL"
         fi
@@ -1376,6 +1399,34 @@ NET
             else
                 ok "registered — key_id ${KEY_ID}"
             fi
+            # "Is this key going to be served right now" ships WITH the key and
+            # was being thrown away. gateway/app.py::_issuance_status attaches
+            # usable_now / not_usable_reason / not_usable_detail to every
+            # issuance, and says in its own docstring why: "the daily pool can be
+            # spent, the operator reserve can be engaged, or the single upstream
+            # account can be refusing — and in every one of those cases the key
+            # is perfectly valid and every request it makes is refused. An
+            # installer that stores such a key and reports success is lying to
+            # its user on this gateway's behalf."
+            #
+            # Which is what this did. --no-live-test skips the completion probe
+            # entirely, so the run ended on "the key is accepted" over a key that
+            # could not buy a single token; and with the probe, the user got an
+            # opaque upstream error at the end instead of the reason, up here,
+            # in the endpoint's own words.
+            #
+            # Matched on the raw body, like accepting_requests in verify(),
+            # because json_string only extracts string values and this is a JSON
+            # boolean. Absent field -> no warning, which is the safe direction.
+            case "$HTTP_BODY" in
+                *'"usable_now":false'*|*'"usable_now": false'*)
+                    warn "the endpoint says this key cannot be served right now"
+                    print_remote "$(printf '%s' "$HTTP_BODY" | json_string not_usable_detail)" 400
+                    info "the key itself is valid and has been stored. This is the shared"
+                    info "pool being empty, not a fault in your install, and it clears on"
+                    info "its own — but calls made before then will fail."
+                    ;;
+            esac
             MODE="registered"
             return 0
             ;;

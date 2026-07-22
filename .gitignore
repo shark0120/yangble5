@@ -55,3 +55,11 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# PowerShell writes its module cache under %LOCALAPPDATA%. The installer tests
+# redirect that (tests/test_installer_consent.py), but a harness that forgets
+# leaves `Microsoft/Windows/PowerShell/ModuleAnalysisCache` in the repo root,
+# where one `git add -A` commits a binary nobody meant to ship. Belt to the
+# redirect's braces.
+Microsoft/Windows/PowerShell/ModuleAnalysisCache
+Microsoft/
