@@ -161,6 +161,26 @@ case-insensitive substring test, use the shell: lowercase both sides with `tr`, 
 the needle stay literal. `tests/test_smoke_test_helpers.py` fails any `*.sh` that combines the
 two flags again.
 
+### A check that cannot pass is as bad as one that cannot fail
+
+That grep was not a one-off. In a single day, four separate checks in this repository were
+found unable to give the right answer — every one of them green on Linux, red or degraded on
+Windows, which is the direction that wastes the most time because it is green where the change
+is written and red where it is reviewed. If you are adding a gate, these are the four traps:
+
+| Trap | Symptom | What to write instead |
+|---|---|---|
+| `grep -iF` | SIGABRT (exit 134); the caller reads it as "no match" | `tr` to lowercase, then `case "$hay" in *"$needle"*)` |
+| `datetime.date.today()` | Local time; a UTC+8 workstation and a UTC runner disagree about what day it is | `datetime.datetime.now(datetime.timezone.utc).date()` — `tools/sitecheck.py` has `_utc_today()` |
+| `sha256sum` output | Git Bash writes `*` before the filename, GNU coreutils writes two spaces; a naive diff reports every file as changed | Normalise with `awk '{sub(/^\*/,"",$2); print $1, $2}'` |
+| `subprocess.run(text=True)` | Decodes with the *parent's locale* codec (cp950, cp1252). When the child writes UTF-8 — one em dash is enough — the `UnicodeDecodeError` is raised on subprocess's internal reader thread, so the call does **not** raise: it returns with `stdout=None`, and pytest reports `PytestUnhandledThreadExceptionWarning`, naming neither the encoding nor the file | `encoding="utf-8"` when the child writes UTF-8; `errors="replace"` when it writes the console codepage |
+
+The rule that catches all four: **after writing a check, break the thing it guards and confirm
+it goes red — then confirm it goes green again.** Both halves. Three of the four above passed
+the first half and failed the second, and one of them (`robots_problems`) was written, run
+against the exact defect it existed for, and found to be *green* — because it asked "is the
+file in `site/`?" when the file was on disk and simply never deployed.
+
 `--help`, `--dry-run` and `--self-test` must touch nothing. CI asserts that literally: it points
 `byok/setup.py --dry-run` at an empty directory and fails if the directory exists afterwards, and
 it runs `site/uninstall.sh --dry-run` against a fake `$HOME` and fails if the file is gone. A
