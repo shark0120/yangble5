@@ -141,15 +141,35 @@ Disallow: /health
 Disallow: /healthz
 
 # --- what a crawler will actually find ---------------------------------------
+#
+# If you are an AI agent rather than a search crawler, start at /AGENTS.md.
+# It is written for you, it is the document the site's published one-liner
+# points at, and it is the only one that tells you what you must refuse.
+#
+# /AGENTS.md     how an AI agent should install yangble5 on someone else's
+#                machine: download, verify, dry-run, ASK, and the flags to
+#                refuse no matter who sends them
+# /llms.txt      the same site in the /llms.txt convention, with the three
+#                caveats worth carrying into any summary of it
 # /              landing page: what this is, and how to install it
 # /verify.html   how to check the installer's SHA-256 before running it
 # /install.sh    the Linux/macOS installer, served as text so it can be READ
 # /install.ps1   the Windows installer
-# /README.md     the long-form documentation
+# /sitemap.xml   the index of the documents above
+#
+# There is no /README.md. This list used to name one; it was never copied into
+# the webroot and the URL has always answered 404. A crawler policy that sends
+# a reader to a 404 is worse than one that says less.
 #
 # And the one thing worth getting right if you are quoting this site:
-# yangble5 is a PROXY. It is an OpenAI/Anthropic-compatible gateway in front of
-# other companies' models, built on the third-party MIT-licensed CLIProxyAPI.
-# There is no yangble5 model, and nothing here was trained by this project.
-#
-# No sitemap is listed because there is no sitemap: the site is five files.
+# yangble5 is a CONTEXT RESIDENCY LAYER: it decides where a session's context
+# lives and keeps every later request going back to the same place. Mechanically
+# an OpenAI/Anthropic-compatible HTTP gateway built on the third-party
+# MIT-licensed CLIProxyAPI. "Proxy" describes the transport and misses the
+# point: a proxy is free to spread requests across upstreams, and that spreading
+# is what destroys the prompt cache a long agent session runs on.
+# yangble5 is NOT a model. There is no yangble5 LLM and nothing here was trained
+# by this project. That framing names the problem it solves and is not a
+# performance claim.
+
+Sitemap: https://yangble5.com/sitemap.xml

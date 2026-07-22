@@ -1028,6 +1028,102 @@ def wellknown_problems(site: pathlib.Path = SITE, today: datetime.date | None = 
     return problems
 
 
+# ── robots.txt: the paths it names have to be PUBLISHED ───────────────────
+# A crawler policy is read by every AI agent that touches this domain, and this
+# site's whole direction is to be a resource one of those can act on. So the
+# file carries a "what a crawler will actually find" list — and a list like that
+# rots exactly the way a sitemap does, only more quietly, because nothing
+# fetches it.
+#
+# It rotted: the list named `/README.md`, and https://yangble5.com/README.md has
+# always answered 404. Nothing noticed, because the entry is a comment and
+# comments are not directives.
+#
+# NOTE THE QUESTION THIS ASKS. "Is the file in site/?" is the WRONG one, and
+# getting it wrong here would have produced a checker that passed on the exact
+# rot it was written for: `site/README.md` does exist on disk. What it is not is
+# DEPLOYED — nothing copies it into the webroot. The authoritative list of what
+# a visitor can actually fetch is `PUBLISHED` in tools/drift_check.py, which is
+# also what verifies the served bytes, so that is what this compares against.
+#
+# The two tools are both standard-library-only and neither imports the other
+# back, so this import is safe. It is tried under BOTH spellings because this
+# module is loaded two ways and only one of them works with either:
+# `python tools/sitecheck.py` puts tools/ on sys.path (so `drift_check` works
+# and `tools.drift_check` does not), while pytest imports it as
+# `tools.sitecheck` from the repo root (the reverse). Getting that wrong is not
+# a crash -- it silently returns None, the check falls back to "is the file in
+# site/?", and that weaker rule PASSES the exact rot this exists to catch,
+# because site/README.md is on disk and simply never deployed. A degraded check
+# that still prints "OK" is the failure mode this whole file is about, so
+# `_published() is not None` is asserted in tests/test_sitecheck.py.
+ROBOTS = "robots.txt"
+_ROBOTS_PATH_RE = re.compile(r"(?m)^#[ \t]+(/[A-Za-z0-9._/-]*)")
+_ROBOTS_SITEMAP_RE = re.compile(r"(?mi)^Sitemap:[ \t]*(\S+)")
+
+
+def _published() -> frozenset[str] | None:
+    try:
+        from drift_check import PUBLISHED
+    except ImportError:
+        try:
+            from tools.drift_check import PUBLISHED
+        except ImportError:  # pragma: no cover - only from a partial tree
+            return None
+    return frozenset(PUBLISHED)
+
+
+def robots_problems(site: pathlib.Path = SITE) -> list[str]:
+    path = site / ROBOTS
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return [f"{ROBOTS}: cannot be read as UTF-8: {exc}"]
+
+    published = _published()
+    problems: list[str] = []
+
+    def unreachable(rel: str) -> bool:
+        """Would a visitor get a 404 for this?
+
+        Published-ness first, existence second. A file that is in `site/` but
+        not in PUBLISHED is not on the web, and that is the whole failure this
+        check exists for.
+        """
+        if published is not None:
+            return rel not in published
+        return not (site / rel).is_file()
+
+    for named in sorted(set(_ROBOTS_PATH_RE.findall(text))):
+        rel = "index.html" if named in ("", "/") else named.lstrip("/")
+        if ".." in rel.split("/"):
+            problems.append(f"{ROBOTS}: the annotated path {named} walks out of the webroot")
+            continue
+        if unreachable(rel):
+            problems.append(
+                f"{ROBOTS}: names {named} under 'what a crawler will actually "
+                f"find', but {rel} is not published — that URL is a 404. Either "
+                f"deploy it (site/, PART 3d's copy list, and PUBLISHED in "
+                f"tools/drift_check.py) or stop naming it here"
+            )
+
+    for loc in _ROBOTS_SITEMAP_RE.findall(text):
+        rel = _loc_to_relative(loc)
+        if rel is None:
+            problems.append(f"{ROBOTS}: Sitemap: {loc} is not a URL on this site")
+        elif unreachable(rel):
+            problems.append(f"{ROBOTS}: Sitemap: {loc} points at {rel}, which is not published")
+
+    # The reverse direction. A sitemap that exists and is not advertised is a
+    # sitemap most crawlers will not look for, which is the whole point of
+    # having published one.
+    if (site / SITEMAP).is_file() and not _ROBOTS_SITEMAP_RE.search(text):
+        problems.append(f"{ROBOTS}: {SITEMAP} is published but no `Sitemap:` line advertises it")
+    return problems
+
+
 # ── CSP hashes: recomputed and compared, not grepped for a literal ─────────
 # The recipe this replaces printed the recomputed hash and then grepped the
 # deploy configs for a hash spelled out in the prose.  Change an inline script
@@ -1667,7 +1763,7 @@ def main(argv: list[str]) -> int:
     # Same silence-on-success rule as the text files above, and for the same
     # reason: site/README.md quotes this program's stdout verbatim, so a new
     # "OK" line per index file would make the published documentation stale.
-    if index_problems := sitemap_problems(site) + wellknown_problems(site):
+    if index_problems := sitemap_problems(site) + wellknown_problems(site) + robots_problems(site):
         reports.append(("site index", index_problems))
     text_stale = unused_text_allow_problems(used_text)
     if text_stale:

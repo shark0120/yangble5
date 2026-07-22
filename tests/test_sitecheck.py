@@ -1119,3 +1119,63 @@ def test_the_one_day_grace_on_lastmod(site_copy, stamp, reported):
     problems = sitecheck.sitemap_problems(site_copy, today=datetime.date(2026, 7, 23))
     hit = any(stamp in p and "future" in p for p in problems)
     assert hit is reported, (stamp, problems)
+
+
+# ── robots.txt: the paths it names have to be reachable ────────────────────
+#
+# site/robots.txt carries a "what a crawler will actually find" list, and every
+# AI agent that touches this domain reads it. It had rotted: it named
+# `/README.md`, and https://yangble5.com/README.md has always answered 404.
+# Nothing noticed, because the entry is a comment and comments are not
+# directives.
+
+
+def test_the_shipped_robots_txt_names_only_reachable_paths():
+    assert sitecheck.robots_problems() == []
+
+
+def test_the_published_set_is_actually_available():
+    """The check must not be able to quietly become a weaker one.
+
+    `robots_problems` compares against `PUBLISHED` in tools/drift_check.py --
+    the list of what a visitor can really fetch -- and falls back to "is the
+    file in site/?" if that import fails. The fallback PASSES the exact defect
+    this was written for: `site/README.md` is on disk and simply never
+    deployed. So a failed import turns a working check into a green one that
+    proves nothing, which is the failure mode this whole module exists to
+    prevent.
+
+    The import is spelled two ways because this module is loaded two ways --
+    `python tools/sitecheck.py` puts tools/ on sys.path, pytest imports
+    `tools.sitecheck` from the root -- and only one spelling works under each.
+    """
+    published = sitecheck._published()
+    assert published is not None, (
+        "tools/sitecheck.py could not import PUBLISHED from tools/drift_check.py, "
+        "so robots_problems has silently downgraded to a check that passes on a "
+        "file which exists in site/ but is never deployed"
+    )
+    assert "index.html" in published and "AGENTS.md" in published
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expect"),
+    [
+        # The exact rot that was live. README.md IS in site/; it is not deployed.
+        (("# /verify.html", "# /README.md   the long-form documentation\n# /verify.html"),
+         "not published"),
+        (("# /AGENTS.md", "# /nope.md"), "not published"),
+        (("Sitemap: https://yangble5.com/sitemap.xml", ""), "no `Sitemap:` line advertises it"),
+        (("https://yangble5.com/sitemap.xml", "https://example.invalid/sitemap.xml"),
+         "not a URL on this site"),
+    ],
+)
+def test_robots_problems_reports_each_way_it_can_rot(site_copy, mutation, expect):
+    old, new = mutation
+    path = site_copy / "robots.txt"
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"the fixture no longer contains {old!r}; this test is mutating nothing"
+    path.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
+
+    problems = sitecheck.robots_problems(site_copy)
+    assert any(expect in p for p in problems), (expect, problems)

@@ -69,6 +69,23 @@ PUBLISHED = (
     ".well-known/security.txt",
 )
 
+# robots.txt is PUBLISHED but is deliberately NOT in the list above, and the
+# omission is written down because an unexplained gap in an enumerated list is
+# indistinguishable from an oversight.
+#
+# Cloudflare's managed robots.txt PREPENDS its own block to the origin's, so on
+# this deployment the served bytes legitimately differ from the repository's and
+# a byte comparison would fail on every run. Adding it here would make this tool
+# permanently red over a dashboard setting nobody can change from a checkout,
+# and a gate that is always red is a gate that gets switched off -- which would
+# take the other fourteen files down with it.
+#
+# It is covered instead by `deploy/smoke_test.sh` check 12b, which compares the
+# served DIRECTIVE lines against site/robots.txt and WARNS, naming exactly what
+# was injected. If the managed robots.txt is ever turned off, move it up into
+# PUBLISHED and delete this note.
+UNCHECKED_BECAUSE_THE_EDGE_REWRITES_IT = ("robots.txt",)
+
 # Transformations the edge is ALLOWED to apply, applied to the repo copy before
 # comparing. Each entry needs a reason, because every entry is a hole: anything
 # listed here is a difference this check will no longer report.
