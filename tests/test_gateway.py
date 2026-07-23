@@ -2311,3 +2311,46 @@ def test_a_negative_floor_is_rejected_rather_than_clamped(tmp_path):
         Settings.from_env(
             dict(BASE_ENV, DB_PATH=str(tmp_path / "n.db"), UNPARSED_USAGE_TOKEN_FLOOR="-1")
         )
+
+
+def test_get_byok_reports_server_capability_when_nothing_is_attached(build):
+    """The question an agent asks BEFORE attaching: would this server encrypt it?
+
+    GET /byok with nothing stored used to compute `encrypted_at_rest` off the
+    absent stored record, so it returned `false` on every server -- including one
+    configured to encrypt. An agent reading that to decide whether it is safe to
+    hand over the user's Google/OpenAI/xAI key got the most alarming possible
+    answer on the safest possible server.
+    """
+    pytest.importorskip("cryptography")
+
+    encrypting = build(BYOK_ENCRYPTION_KEY="test-only-byok-encryption-secret")
+    key = encrypting.new_key()
+    status = encrypting.client.get("/byok", headers={"Authorization": f"Bearer {key}"}).json()
+    assert status["attached"] is False
+    assert status["encrypted_at_rest"] is True, (
+        "an encrypting server reported encrypted_at_rest=false while nothing was "
+        "attached, which tells an agent the opposite of the truth"
+    )
+
+    plaintext = build()  # no BYOK_ENCRYPTION_KEY
+    k2 = plaintext.new_key()
+    s2 = plaintext.client.get("/byok", headers={"Authorization": f"Bearer {k2}"}).json()
+    assert s2["attached"] is False
+    assert s2["encrypted_at_rest"] is False
+
+
+def test_register_contract_exposes_byok_because_agents_md_says_it_does(build):
+    """site/AGENTS.md tells an agent BYOK availability is derivable from this
+    document. It was not -- the word did not appear. Now it is a field, reading
+    the same setting /health and /pool/status expose, so the three cannot
+    disagree."""
+    on = build(BYOK_ENABLED=True)
+    contract = on.client.get("/auth/register").json()
+    assert contract["byok"]["available"] is True
+    assert contract["byok"]["endpoint"] == {"method": "POST", "path": "/byok"}
+
+    off = build(BYOK_ENABLED=False)
+    c2 = off.client.get("/auth/register").json()
+    assert c2["byok"]["available"] is False
+    assert c2["byok"]["endpoint"] is None

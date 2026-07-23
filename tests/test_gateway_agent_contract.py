@@ -490,7 +490,9 @@ def test_only_one_generation_back_is_distinguishable(gw):
 
 def test_a_superseded_key_still_counts_as_a_failed_attempt(build):
     """It is an invalid credential presented to an unauthenticated surface. Not
-    counting it would carve a retry channel out of the backoff."""
+    counting it would carve a retry channel out of the backoff. Unchanged: the
+    fix for the lockout-of-registration deadlock is that REGISTRATION is no
+    longer gated on this backoff, not that the backoff stopped counting."""
     gw = build(AUTH_FAIL_LOCKOUT_THRESHOLD=2, AUTH_FAIL_LOCKOUT_SECONDS=300)
     stale = gw.new_key(machine_id=MACHINE_A)
     gw.register(machine_id=MACHINE_A)
@@ -500,6 +502,39 @@ def test_a_superseded_key_still_counts_as_a_failed_attempt(build):
     gw.client.get("/usage", headers=gw.auth(stale))
     locked = gw.client.get("/usage", headers=gw.auth(stale))
     assert locked.json()["error"]["type"] == "too_many_auth_failures"
+
+
+def test_registration_is_reachable_while_the_auth_backoff_is_locked(build):
+    """The deadlock this pair of tests exists to prevent.
+
+    A machine re-registers; a session still holding the OLD key retries it and,
+    because a superseded secret counts against the per-IP auth backoff (the test
+    above), the IP locks. The user is told — by ``key_superseded`` — to call
+    POST /auth/register to obtain the working key. That endpoint used to be
+    gated on the SAME backoff, so it answered 429: the one door out of the
+    lockout was locked by the lockout.
+
+    Registration presents no credential to brute-force. It has its own per-IP
+    limit. So it is no longer gated on the authentication backoff, and this is
+    the assertion of that.
+    """
+    gw = build(AUTH_FAIL_LOCKOUT_THRESHOLD=2, AUTH_FAIL_LOCKOUT_SECONDS=300)
+    stale = gw.new_key(machine_id=MACHINE_A)
+    gw.register(machine_id=MACHINE_A)  # supersedes `stale`
+
+    # Drive the shared per-IP auth backoff to locked by retrying the old key.
+    for _ in range(4):
+        gw.client.get("/usage", headers=gw.auth(stale))
+    assert gw.client.get("/usage", headers=gw.auth(stale)).json()["error"]["type"] == (
+        "too_many_auth_failures"
+    ), "precondition: the backoff must be locked for this test to mean anything"
+
+    # The endpoint key_superseded points the caller at must still answer.
+    again = gw.register(machine_id=MACHINE_A)
+    assert again.status_code == 200, (
+        f"registration was refused while the auth backoff was locked: {again.text}"
+    )
+    assert again.json().get("reused") is True, again.text
 
 
 # ---------------------------------------------------------------------------

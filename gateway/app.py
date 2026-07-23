@@ -545,12 +545,23 @@ async def parse_json_body(
         # caller actually sent instead of Pydantic's "valid dictionary or
         # instance of RegisterRequest", which leaks a class name and helps
         # nobody.
+        received = _JSON_TYPE_NAMES.get(type(data), type(data).__name__)
         return _error(
             400,
             "invalid_request_error",
             f"The request body must be a JSON object; received a JSON "
-            f"{_JSON_TYPE_NAMES.get(type(data), type(data).__name__)}. Send {expected}.",
+            f"{received}. Send {expected}.",
             param=None,
+            # `errors` is part of the invalid_request_error envelope the contract
+            # documents ("'errors' lists every field that failed"), so an agent
+            # branching on error.type reads error.errors unconditionally. This
+            # emitter used to omit it, KeyError-ing that agent on the one case
+            # where the whole body -- not a field -- is the wrong type. The list
+            # is not empty-because-nothing-failed; the body itself failed, so it
+            # says that, at the whole-body scope (param null).
+            errors=[
+                {"param": None, "code": "not_an_object", "constraint": f"got a JSON {received}"}
+            ],
         )
     try:
         return model.model_validate(data)
@@ -2024,6 +2035,27 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "registration_mode_meaning": _REGISTRATION_MODE_MEANINGS[
                     settings.registration_mode
                 ],
+                # BYOK availability, discoverable here on purpose: site/AGENTS.md
+                # tells an agent that "whether BYOK is available" is one of the
+                # per-deployment settings derivable from this document. It was
+                # not — the word did not appear in the payload — so an agent that
+                # believed the instruction and looked here found nothing. This is
+                # the same boolean /pool/status and /health expose; all three
+                # read the one setting, so they cannot disagree.
+                "byok": {
+                    "available": settings.byok_enabled,
+                    "endpoint": (
+                        {"method": "POST", "path": "/byok"} if settings.byok_enabled else None
+                    ),
+                    "meaning": (
+                        "You may attach your OWN upstream provider key (Google, "
+                        "OpenAI or xAI) instead of drawing on the shared pool. "
+                        "POST it to /byok. GET /byok reports whether this server "
+                        "stores it encrypted before you decide to."
+                        if settings.byok_enabled
+                        else "This instance does not accept bring-your-own-key credentials."
+                    ),
+                },
                 "requirement": requirement,
                 "fields": fields,
                 "responses": {
@@ -2108,10 +2140,10 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                         "This machine was registered before, but its key has since "
                         "been deleted. Only the operator can clear the binding."
                     ),
-                    "too_many_auth_failures": (
-                        "Too many failed attempts from this address. Wait out "
-                        "'Retry-After'."
-                    ),
+                    # No too_many_auth_failures here on purpose: registration is
+                    # no longer gated on the authentication backoff (that throttle
+                    # is for failed logins on /v1). The only 429 this endpoint
+                    # raises is rate_limit_error, documented above.
                     "internal_error": (
                         "The service failed, not your request. Nothing was created. "
                         "Retry once; if it repeats, the operator has to look. Do not "
@@ -2134,21 +2166,26 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         ip = client_ip(request, settings)
         ip_hash = state.storage.hash_ip(ip)
 
-        # Per-IP throttle first: this endpoint mints credentials, so it is the
-        # one an attacker scripts.
+        # Per-IP throttle: this endpoint mints credentials, so it is the one an
+        # attacker scripts. This is registration's OWN limit (auth_ip_rpm, plus
+        # REGISTER_MAX_PER_IP_PER_DAY below); it is what bounds abuse here.
         allowed, retry = state.auth_ip_rpm.check(ip_hash)
         if not allowed:
             return _error(
                 429, "rate_limit_error", "Too many registration attempts.",
                 retry_after_seconds=int(retry) + 1,
             )
-        locked = state.auth_backoff.locked_for(ip_hash)
-        if locked > 0:
-            return _error(
-                429, "too_many_auth_failures",
-                "Too many failed registration attempts. Try again later.",
-                retry_after_seconds=int(locked) + 1,
-            )
+
+        # DELIBERATELY NOT gated on state.auth_backoff. That backoff throttles
+        # failed AUTHENTICATION, and it is keyed on the IP and shared with /v1/*.
+        # Gating registration on it meant repeated failed logins elsewhere -- or,
+        # worst of all, a still-running session presenting a now-superseded key,
+        # which trips the same counter -- returned 429 from the ONE endpoint
+        # key_superseded tells the caller to hit to obtain the working key. A
+        # known, rotated-out key locked the user out of the fix for being locked
+        # out. Registration presents no credential to brute-force, so the
+        # authentication backoff has no business here; its own per-IP rate limit
+        # above, and REGISTER_MAX_PER_IP_PER_DAY, are what bound it.
 
         if settings.registration_mode == "closed":
             return _error(
@@ -2566,7 +2603,16 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         return JSONResponse(
             {
                 "attached": stored is not None,
-                "encrypted_at_rest": bool(stored and stored.scheme != "plaintext"),
+                # When something IS attached, report how it is actually stored.
+                # When nothing is, report whether THIS SERVER would encrypt one
+                # you attach -- which is the question an agent is asking before
+                # it decides to hand over a provider credential. Reading it off
+                # the (absent) stored record instead returned a flat `false` on
+                # every server, including one with encryption configured, which
+                # is the opposite of reassuring and is simply wrong.
+                "encrypted_at_rest": (
+                    stored.scheme != "plaintext" if stored else state.byok_cipher.encrypts
+                ),
                 "label": stored.label if stored else None,
                 "updated_at": stored.updated_at if stored else None,
                 "byok_available": settings.byok_enabled,
