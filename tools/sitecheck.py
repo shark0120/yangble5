@@ -285,7 +285,13 @@ ALLOW: dict[str, str] = {
     "2025": "quoted wrong answer from the Grok upstream (no live web search)",
     "256": "shasum -a 256 / sha256",
     "400": "quoted upstream error 'API Error: 400'",
-    "402": "HTTP 402 returned by the gateway when the shared pool is exhausted",
+    # 402 and 429 are HTTP status codes the page cites, not measured figures.
+    # The 402 description used to say "when the shared pool is exhausted", which
+    # was wrong AND blessed the page's matching error: a spent daily pool is
+    # 429 (pool_exhausted); 402 is the operator's MONTHLY budget cap
+    # (operator_budget_exhausted). See gateway/app.py.
+    "402": "HTTP 402 — gateway's operator_budget_exhausted (monthly cap reached)",
+    "429": "HTTP 429 — gateway's pool_exhausted (today's shared pool spent) / rate limits",
     "443": "80/443, the ports a pre-existing web server may already hold",
     "600": "chmod 600, a file mode",
     "700": "directory mode 700",
@@ -656,6 +662,24 @@ class Doc(HTMLParser):
         a = dict(attrs)
         if tag == "html":
             self.lang = a.get("lang")
+        # Meta description / og / twitter cards. Their text lives in the
+        # `content` ATTRIBUTE, so tag-stripping never saw it and the figure
+        # scanner was blind to exactly the strings that travel DETACHED from
+        # their evidence -- into a search result, into another model's summary.
+        # A fabricated "99.53%" or a bare "1M" in og:description passed this
+        # checker while an identical claim in the body failed it. Feed the
+        # human-readable ones into the same text the scanner reads.
+        if tag == "meta":
+            meta_name = (a.get("name") or a.get("property") or "").lower()
+            content = a.get("content", "")
+            if content and meta_name in (
+                "description",
+                "og:title",
+                "og:description",
+                "twitter:title",
+                "twitter:description",
+            ):
+                self.text.append(content)
         if tag == "style":
             self.styles += 1
         if tag == "script":

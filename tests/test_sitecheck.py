@@ -1293,3 +1293,59 @@ def test_agents_md_uninstall_does_not_lead_with_the_flag_section_8_forbids():
         "makes mandatory. The bare form has to come first: it is the one that "
         "prints the list of paths before anything is deleted."
     )
+
+
+# ── the figure guard must see <meta>, not just the body ────────────────────
+#
+# The meta description and og:/twitter: cards are the strings that travel
+# DETACHED from their evidence: into a search result, into another model's
+# summary of this site. A fabricated "99.53%" or a bare "1M" there is the worst
+# place for an unguarded number -- and the checker was blind to all of them,
+# because their text lives in a `content` attribute that tag-stripping dropped.
+
+
+def test_page_text_includes_meta_and_og_content():
+    src = (
+        '<!doctype html><html><head>'
+        '<meta name="description" content="body says one thing, meta says 91.11%">'
+        '<meta property="og:description" content="and og says 3,141,592 tokens">'
+        "</head><body>nothing numeric here</body></html>"
+    )
+    text = sitecheck.page_text(src)
+    assert "91.11" in text, "meta description is invisible to the figure scanner"
+    assert "3,141,592" in text, "og:description is invisible to the figure scanner"
+
+
+def test_a_bogus_figure_in_meta_description_is_caught():
+    """The whole point: an unaccounted number in meta must fail like one in body."""
+    src = (
+        '<!doctype html><html><head>'
+        '<meta name="description" content="measured cache hit rate 91.11%">'
+        "</head><body>ordinary copy</body></html>"
+    )
+    problems = sitecheck.check_text("index.html", src, set())
+    assert any("91.11" in p for p in problems), (
+        "a fabricated percentage placed only in the meta description passed the "
+        "figure guard. That is the string search engines and other models quote, "
+        "so it is the one that most needs guarding."
+    )
+
+
+def test_the_real_meta_description_carries_its_evidence():
+    """The live meta description states 748,918; the guard now sees it, so it
+    must also be able to account for it -- i.e. the shipped page is clean with
+    meta included, not merely clean because meta was ignored."""
+    src = (sitecheck.SITE / "index.html").read_text(encoding="utf-8")
+    # In the meta description specifically, not merely somewhere on the page.
+    import re
+
+    metas = re.findall(r'<meta[^>]+content="([^"]*)"', src)
+    meta_blob = " ".join(metas)
+    assert "748,918" in meta_blob, (
+        "the meta description no longer carries the 748,918 evidence figure; if it "
+        "was replaced by a bare '1M' or similar, that is the drift this guards"
+    )
+    assert "748,918" in sitecheck.page_text(src), "page_text dropped the meta figure"
+    # And the whole checker, run the way main() runs it, is still green -- proven
+    # by the separate CLI self-test; here we assert the figure is under guard,
+    # not ignored.

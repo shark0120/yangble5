@@ -844,7 +844,7 @@ self-test: the consumed-equals-checked invariant must itself fail when the token
     PASS  invariant  historical pattern flagged
               -> INVARIANT VIOLATED: the set of characters consumed is not the set checked — 2 digit(s) fell outside every token the scanner produced: '5' at offset 7 
 self-test: an unmatched allow-list entry must be reported
-    PASS  stale-allow  all 20 entries reported when nothing matches them
+    PASS  stale-allow  all 21 entries reported when nothing matches them
 self-test: a stale or missing CSP hash must be reported
     PASS  csp  correct
     PASS  csp  a bare hash in prose is not a directive
@@ -864,7 +864,7 @@ $ python tools/sitecheck.py --quiet
 index.html: OK
 verify.html: OK
 CSP hashes: OK
-allow-list: OK (20 entries, all matched)
+allow-list: OK (21 entries, all matched)
 $ echo exit=$?
 exit=0
 ```
@@ -881,7 +881,7 @@ $ python tools/sitecheck.py --quiet --site "$work"
 index.html: 1 PROBLEM(S)
     - unaccounted figure: 99.54  (as written: 99.54)
 verify.html: OK
-allow-list: OK (20 entries, all matched)
+allow-list: OK (21 entries, all matched)
 $ echo exit=$?
 exit=1
 ```
@@ -944,7 +944,8 @@ figure       as written     page                   ruled in by
 12h          12h            index                  session-affinity TTL written as 12h
 256          256            index,verify           shasum -a 256 / sha256
 400          400            index                  quoted upstream error 'API Error: 400'
-402          402            index                  HTTP 402 returned by the gateway when the shared pool is exhausted
+402          402            index                  HTTP 402 — gateway's operator_budget_exhausted (monthly cap reached)
+429          429            index                  HTTP 429 — gateway's pool_exhausted (today's shared pool spent) / rate limits
 443          443            index                  80/443, the ports a pre-existing web server may already hold
 600          600            index,verify           chmod 600, a file mode
 700          700            index,verify           directory mode 700
@@ -984,7 +985,7 @@ figure       as written     page                   ruled in by
 2246844      2,246,844      index                  warm prompt total = rounds 2+3+4
 2995762      2,995,762      index                  all-four prompt total
 
-43 distinct figures in scope.
+44 distinct figures in scope.
 ```
 
 Nothing on the pages needed correcting: all 43 are in the authoritative record, derived from it by
@@ -1375,7 +1376,7 @@ $ python tools/sitecheck.py --quiet
 index.html: OK
 verify.html: OK
 CSP hashes: OK
-allow-list: OK (20 entries, all matched)
+allow-list: OK (21 entries, all matched)
 ```
 
 Proven to fail, by editing an inline script for real

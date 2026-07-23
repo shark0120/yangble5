@@ -902,10 +902,13 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             <code>model_context_window</code>）把這個天花板打開。實測送進 <b>748,918</b> tokens 沒有被截斷。</li>
           <li><b>不會被打壞的 prompt cache。</b>底層引擎有一個看起來很合理的 model pool 設定，會用一個全域計數器逐請求輪替上游、無視你設的路由策略與 session 綁定。改成 1:1 別名之後，暖輪實測 <b>99.53%</b> 命中（~749K 前綴）。<a href="#finding">機制圖解在下面</a>。</li>
           <li><b>一個端點，兩個 agent。</b>
-            Claude Code 與 Codex 指向同一個閘道、同一組設定。Claude Code 走完整條鏈路的
-            3/3 冒煙測試紀錄在
+            Claude Code 與 Codex 指向同一個閘道、同一組設定。那個 3/3 冒煙測試
+            測的是 Claude Code 的請求格式(工具定義、<code>thinking</code>、<code>context_management</code>)
+            能通過 <b>shim→引擎</b> 翻譯並拿回正確字串 —— 它<b>沒有</b>經過閘道的認證與額度那一層(記錄裡的
+            <code>ANTHROPIC_BASE_URL</code> 就寫著這點)。紀錄與它的適用範圍在
             <a href="https://github.com/shark0120/yangble5/blob/main/docs/evidence/claude-code-e2e.md">docs/evidence/claude-code-e2e.md</a>
-            ——那是冒煙測試，不是 benchmark。</li>
+            ——那是冒煙測試，不是 benchmark。閘道那一段(認證、額度、串流)由
+            <code>deploy/smoke_test.sh</code> 從站外另外驗。</li>
           <li><b>可以打自己臉的量測工具。</b>
             <code>tools/cache_bench.py</code> 與 <code>tools/cache_stats_sidecar.py</code>
             會照實印出上游回報的 token 數，我們自己不估算任何一個數字。你可以拿它去量你自己的上游，量出不一樣的結果請開 issue。</li>
@@ -1192,7 +1195,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             <td class="nm">沒有 pool 對 direct 的 A/B 執行紀錄</td>
           </tr>
           <tr>
-            <th scope="row">Claude Code 走完整條鏈路可用</th>
+            <th scope="row">Claude Code 請求格式通過 shim→引擎(不含閘道)</th>
             <td class="n">3/3</td>
             <td>冒煙測試 (n=3)</td>
             <td><a href="https://github.com/shark0120/yangble5/blob/main/docs/evidence/claude-code-e2e.md">docs/evidence/claude-code-e2e.md</a></td>
@@ -1530,8 +1533,8 @@ $env:YANGBLE5_EMAIL = '<!--email_off-->you@example.com<!--/email_off-->'; $env:Y
     <details class="faq">
       <summary>我打的字會被看到嗎？</summary>
       <div class="faq-body">
-        <p><strong>閘道只記錄中繼資料，從不記錄 prompt 或回覆內容。</strong>實際寫進日誌的欄位就是這些：金鑰 ID、端點路徑、模型名稱、HTTP 狀態、
-          token 數量、快取命中率、花費、延遲。程式碼在
+        <p><strong>閘道只記錄中繼資料，從不記錄 prompt 或回覆內容。</strong><code>request.completed</code> 寫進日誌的欄位就是這些十六個：金鑰 ID、端點路徑、模型名稱、HTTP 狀態、
+          是否串流、輸入 token、快取讀取 token、快取寫入 token、輸出 token、合計 token、快取命中率、花費、延遲、用量是否成功解析、用量是否為估算、是否計費 —— 全部是中繼資料，沒有一個是內容。程式碼在
           <a href="https://github.com/shark0120/yangble5/blob/main/gateway/app.py">gateway/app.py</a>，你可以自己搜 <code>request.completed</code> 核對。</p>
         <p>但是請把這件事聽完：<strong>任何代理，在技術上都看得到經過它的明文內容。</strong>我們的政策與程式碼是不記錄，而政策不等於物理隔離。真正敏感的東西，不要送進任何你不是自己在營運的代理 —— 包含這一個。</p>
         <p>另外，你的內容一定會送到<strong>上游供應商</strong> (Google / xAI / OpenAI)，適用的是他們的條款，不是我們的。</p>
@@ -1541,7 +1544,8 @@ $env:YANGBLE5_EMAIL = '<!--email_off-->you@example.com<!--/email_off-->'; $env:Y
     <details class="faq">
       <summary>額度用完怎麼辦？</summary>
       <div class="faq-body">
-        <p>共用池滿的時候，閘道會回 <code>402</code> 並停止把請求送去上游 ——
+        <p>共用池(當日額度)用完的時候，閘道會回 <code>429</code>(<code>pool_exhausted</code>)並停止把請求送去上游;
+          營運者的<em>月度</em>預算上限用完則是 <code>402</code>(<code>operator_budget_exhausted</code>)。兩種都是明確拒絕 ——
           它不會偷偷降級成別的模型，也不會給你一個假的回答。上面的<a href="#status">狀態區塊</a>也會同步切換成綁自己帳號的說明。</p>
         <p>兩條路：等重置，或者<strong>綁自己的上游帳號</strong>。第二條路永遠不會滿，而且整套東西開源，自架跟共用池跑的是同一份程式碼。</p>
       </div>

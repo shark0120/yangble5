@@ -178,6 +178,11 @@ curl -fsSL https://yangble5.com/install.sh -o install.sh \
   && sh install.sh --dry-run
 ```
 
+`shasum` is the macOS name and is usually present on Linux too; if it is
+missing, `sha256sum -c install.sh.sha256` reads the identical
+`<hash>  install.sh` file. Do not treat a `command not found` here as a hash
+failure — install nothing, and use whichever of the two the machine has.
+
 If the hash check fails, **stop**. Do not re-download "in case it was a
 network glitch", do not run the script anyway, and do not compare the digests
 by eye and decide they are close enough. Report the mismatch and the two
@@ -257,10 +262,16 @@ answered are these, and no others:
    what it sends: a machine fingerprint that is `sha256(hostname + os + arch +
    a 32-byte random salt generated locally)`. No name, no e-mail unless they
    give one, no MAC address, no serial number, no file contents.
-2. **A label?** Optional, human-readable, up to a hundred characters. It is a
-   nickname for the key, visible to them via `GET /usage` and to the operator.
-   Ask for one they would recognise — "work laptop" is the shape of a good
-   answer. **Do not derive it from the machine id.**
+2. **A label?** Optional, human-readable, up to a hundred characters — a
+   nickname for the key, visible via `GET /usage` and to the operator. Worth
+   knowing, but **the published installers do not forward one**: `install.sh`
+   and `install.ps1` accept `--email` and `--invite`, not a label. So if you
+   are installing through the installer (sections 4–5, the normal path), do not
+   ask the user for a label — you have no way to send it, and asking for an
+   answer you will silently drop is worse than not asking. A label can only be
+   set by registering with a direct `POST /auth/register` that includes a
+   `label` field, which is not the install path. If you ever do set one, **do
+   not derive it from the machine id.**
 3. **An e-mail?** Optional. Nothing is sent to it and nothing is verified. On
    an instance that allows one key per address, giving one means a second
    registration from that address is refused. If they would rather not, do not
@@ -403,9 +414,18 @@ is a JSON object of this shape:
 Branch on **`type`**, not on the message text and not on the status code
 alone. `param` names the single field at fault; `errors` lists every field
 that failed at once, so you can fix them in one pass instead of discovering
-them one round-trip at a time. A `404` additionally carries `public_routes`,
-which is the authoritative list of what this instance serves — use it instead
-of probing.
+them one round-trip at a time.
+
+**Scope, because it bites:** this holds for the gateway's OWN routes — the ones
+in the section-7 contract (`/v1/*`, `/auth/register`, `/usage`, `/byok`,
+`/pool/status`, `/health`). A `404` for one of those is JSON and carries
+`public_routes`, the authoritative list of what the gateway serves; use it
+rather than probing. But a path the gateway does **not** proxy — anything else,
+including `/v0/...` or a random URL — falls through to the static site and
+returns its HTML `404`, not JSON. So do not GET arbitrary paths expecting a
+JSON envelope back: `Content-Type: text/html` on a 404 means you left the API,
+not that the API is misbehaving. To learn what exists, read `public_routes`
+from a real gateway 404, or the contract at `GET /auth/register`.
 
 The contract in section 7 documents every `type` this endpoint emits together
 with what to do about each. Three worth knowing before you meet them:
@@ -497,6 +517,13 @@ It removes the local install. **The account is server-side**: deleting the
 files does not delete the key, and it does not free the registration this
 network has already spent. If the user wants the key itself gone, point them
 at `support_contact` from `GET /health` — you cannot do it for them.
+
+**If the user attached a BYOK credential**, the uninstaller does not remove it
+either — it is on the server, not in the files being deleted. That one the user
+*can* revoke themselves, and should if they are walking away: `DELETE /byok`
+with their key in the `Authorization` header removes the stored provider
+credential. Tell them it is there and how; do not send the DELETE for them
+unless they ask, and never echo the credential.
 
 ---
 
