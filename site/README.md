@@ -861,6 +861,7 @@ exit=0
 
 ```
 $ python tools/sitecheck.py --quiet
+fable5/index.html: OK
 index.html: OK
 verify.html: OK
 CSP hashes: OK
@@ -878,6 +879,7 @@ that file, which is a destructive way to run a read-only check.
 $ work="$(mktemp -d)/site"; cp -r site "$work"
 $ sed -i '0,/99.53%/s//99.54%/' "$work/index.html"
 $ python tools/sitecheck.py --quiet --site "$work"
+fable5/index.html: OK
 index.html: 1 PROBLEM(S)
     - unaccounted figure: 99.54  (as written: 99.54)
 verify.html: OK
@@ -942,7 +944,7 @@ figure       as written     page                   ruled in by
 --------------------------------------------------------------------------------------------------------------
 1M           1M             index                  the 1,000,000-token context window the page is about
 12h          12h            index                  session-affinity TTL written as 12h
-256          256            index,verify           shasum -a 256 / sha256
+256          256            fable5/index,index,verify shasum -a 256 / sha256
 400          400            index                  quoted upstream error 'API Error: 400'
 402          402            index                  HTTP 402 — gateway's operator_budget_exhausted (monthly cap reached)
 429          429            index                  HTTP 429 — gateway's pool_exhausted (today's shared pool spent) / rate limits
