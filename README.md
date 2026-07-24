@@ -1,16 +1,31 @@
 # yangble5
 
+**Prompt-cache hits as an acceptance gate, not a hope.**
+
 [![CI](https://github.com/shark0120/yangble5/actions/workflows/ci.yml/badge.svg)](https://github.com/shark0120/yangble5/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![warm cache hit (n=1)](https://img.shields.io/badge/warm_cache_hit_(n%3D1)-99.53%25-brightgreen.svg)](#results)
+[![engine](https://img.shields.io/badge/engine-CLIProxyAPI_7.1.23_(pinned)-7b3fb5.svg)](#credits-and-attribution)
 
-**A model-pool config that looks correct silently splits your prompt cache across upstreams.
-With the 1:1 alias that fixes it, one long session read 99.53% of its 748,918-token prompt
-out of the upstream cache on warm rounds - measured by a script in this repo, on one machine,
-in one run, with the cold first request at 0%.**
+yangble5 is a **context residency layer** for long agent sessions: a config, a shim and a
+measurement gate that keep every request in one conversation going back to the **same upstream
+account and model** — because that pair is the only place a prompt cache exists.
 
-That is the whole claim. No quality comparison against any model was measured, recall over that
-context was not tested, and cache hits did **not** reliably make requests faster.
+* **The bug** — in CLIProxyAPI 7.1.23, one alias mapped to two upstream names rotates upstreams
+  per request via a global counter, ignoring your routing strategy and session affinity.
+  Verified in source; check your own binary with one `strings` command. [→ the finding](#the-finding-a-model-pool-that-silently-caps-your-cache-hit-rate)
+* **The fix** — a direct 1:1 `oauth-model-alias` plus `fill-first` + 12h session affinity:
+  one upstream, one translation hop, a session that stays put. [→ the fix](#the-fix-a-direct-11-alias-on-the-provider-channel)
+* **The proof** — with the fix, warm rounds read **99.53%** of a **748,918-token** prompt from
+  upstream cache (token-weighted; one machine, one run; cold first round **0%**; latency did
+  *not* reliably improve). Re-run it yourself: `python tools/cache_bench.py`. [→ results](#results)
+
+**Jump to:** [60-second start](#run-it-in-60-seconds) ·
+[Results + raw rounds](#results) ·
+[Limitations](#limitations) ·
+[vs LiteLLM / OpenRouter / direct API — including where we lose](docs/COMPARISON.md) ·
+[中文導讀](#中文導讀)
 
 yangble5 is a **context residency layer**: it decides *where a session's context lives* and
 keeps every later request going back to the same place.
@@ -29,6 +44,23 @@ model-pool config in the underlying proxy **silently destroys upstream prompt ca
 That framing names the problem it solves. It is **not** a performance claim — the measured
 numbers are above, and cache hits did not reliably make requests faster.
 
+```text
+ Claude Code / Codex / tools/cache_bench.py
+                    │
+                    ▼
+   ┌────────────────────────────────────┐
+   │  CLIProxyAPI engine  :8318         │   stores NO prompt cache.
+   │   oauth-model-alias  (1:1)         │   its one cache-relevant job:
+   │   fill-first + session-affinity 12h│   send turn N+1 where turn N went
+   └────────────────┬───────────────────┘
+                    ▼
+   upstream (account × model)  ← the ONLY place the prompt cache lives
+   ─ pin the pair  → warm reads          (measured: 99.53%, n=1)
+   ─ rotate either → a different, cold cache entry
+```
+
+Full diagram with every port and component: [Architecture](#architecture).
+
 | | |
 |---|---|
 | **What yangble5 is** | A config, a shim, and two measurement tools that make an existing OSS Go proxy ([CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) cache-correct for long agent sessions, plus the client-side settings that raise your client's assumed context window. |
@@ -36,6 +68,33 @@ numbers are above, and cache hits did not reliably make requests faster.
 | **Is it a hosted service?** | **This repository is not one, but it ships the software to run one — and the maintainer runs one.** `gateway/` is a self-serve edge (key issuance, registration, quotas, spend caps) and `site/` is a landing page plus a client installer that registers against it. Cloning this repo gives you nothing hosted; running `deploy/` makes *you* the operator, with the bill and the liability. |
 | **Is there an instance I can just sign up for?** | **Yes, one: [`https://yangble5.com`](https://yangble5.com), run by the maintainer, registration open** - `POST /auth/register` issues a key to anyone who asks, and `GET /health` reports the live `registration` mode. Read this before you use it: the tokens are billed to the **operator's own personal upstream accounts**, the 1M-context tier is served by **exactly one** personal OAuth credential, there is **no SLA, no support and no uptime commitment**, and **the operator is a third party who can read every request you send**. It is a demo that can disappear. If your prompts are confidential, run your own instance or use BYOK against your own upstream - see [`byok/`](byok/) and [`docs/OPERATING_A_PUBLIC_SERVICE.md`](docs/OPERATING_A_PUBLIC_SERVICE.md), which also explains why a public endpoint funded by personal accounts is a pattern you should not copy. |
 | **Who wrote what** | CLIProxyAPI (the Go engine, MIT) is somebody else's excellent work - see [Credits](#credits-and-attribution). Everything in `tools/`, `gateway/`, `byok/`, `site/`, `deploy/`, `docs/` and `assets/` is ours. |
+
+---
+
+## Run it in 60 seconds
+
+**Track 0 — costs nothing, needs no account.** Offline unit tests plus the tools' own CLI;
+no network, no credentials, zero billed tokens:
+
+```bash
+git clone https://github.com/shark0120/yangble5
+cd yangble5
+pip install -e ".[dev]"     # tools/ are stdlib-only; the install is for pytest + dev extras
+pytest                      # offline test suite - no network, no credentials
+python tools/cache_bench.py --help
+```
+
+**Track 1 — smallest real measurement.** Needs a running CLIProxyAPI with one authenticated
+upstream (see [Quickstart](#quickstart-local-bring-your-own-upstream) for config). The default
+`--prefix-tokens 30000` confirms the plumbing before you commit to anything bigger:
+
+```bash
+python tools/cache_bench.py --model yangble5              # default: ~30K-token prefix, 5 rounds
+```
+
+Every measured token is billed to **your** upstream account. The headline 748,918-token run
+below moved ~3M prompt tokens; do not start there. Exit codes: `0` pass, `1` below target,
+`2` measurement never happened - the tool fails loudly rather than printing a nice number.
 
 ---
 
@@ -149,6 +208,17 @@ More diagrams, all with the measured numbers attached:
 ---
 
 ## Results
+
+<!-- TODO: record a terminal GIF/asciinema of a cache_bench run (round 1: cached=0 -> round 2:
+     cached=745,438) and embed it in the hero. Not yet produced. -->
+
+**A model-pool config that looks correct silently splits your prompt cache across upstreams.
+With the 1:1 alias that fixes it, one long session read 99.53% of its 748,918-token prompt
+out of the upstream cache on warm rounds - measured by a script in this repo, on one machine,
+in one run, with the cold first request at 0%.**
+
+That is the whole claim. No quality comparison against any model was measured, recall over that
+context was not tested, and cache hits did **not** reliably make requests faster.
 
 All numbers below were produced on **one Windows 11 machine, one run per configuration,
 on 2026-07-21**, against Gemini through CLIProxyAPI 7.1.23's `antigravity` OAuth channel.
@@ -326,6 +396,24 @@ What the direct alias buys you: one translation hop instead of two, the real Cla
 session id survives for credential pinning, a single stable upstream model, and Gemini's
 `cachedContentTokenCount` surfaces to the client as `cache_read_input_tokens` so you can
 actually measure any of this.
+
+### Pool rotation vs the 1:1 alias, claim by claim
+
+| | Rotating pool (7.1.23, one alias → two upstream names) | Direct 1:1 alias (this repo's config) | Evidence level |
+|---|---|---|---|
+| Upstream chosen by | global counter `nextModelPoolOffset`, keyed by the pool — no session input | one provider-channel model; credential pinned by session affinity | **Verified in source** (pool path); config in this repo (alias) |
+| `routing.strategy` consulted | no | yes (documented engine semantics; restart behaviour reasoned, not benchmarked) | **Verified** (pool) / documented (alias) |
+| Session affinity effect | binds a *credential*, never a pool member — rotation continues regardless | binds the session to one credential for the TTL (12h in our config) | **Verified in source** |
+| Translation hops (our setup) | 2 — the pool was a self-loop through the same proxy | 1 | **Observed**, our deployment |
+| Dead pool member | every request rotated onto `gemini-3-pro-high` returned 502 | n/a — single upstream | **Observed**, our deployment, one setup |
+| Measured warm hit rate | **not measured.** No pool-vs-direct A/B was ever run; the "~50% ceiling" is a structural argument, not a number | **99.53%** token-weighted, warm rounds 2-4, one machine, one run | **Not measured** / **Measured** |
+| Cold first request | 0% by construction | 0% by construction | definitional |
+
+The left column's missing number is deliberate: this repo contains **no** "before" measurement,
+and the mechanism being verified in source does not license inventing one.
+
+How this compares to **LiteLLM, OpenRouter and direct API use** - a table where we lose most
+rows, on purpose: [docs/COMPARISON.md](docs/COMPARISON.md).
 
 Full writeup, including the streaming bug below: [`docs/FINDINGS.md`](docs/FINDINGS.md).
 Side-by-side sequence diagrams of the rotating pool versus the direct alias:
@@ -571,6 +659,7 @@ yangble5/
 └─ docs/
    ├─ FINDINGS.md                all six contributions, with evidence and repro steps
    ├─ BENCHMARK.md               methodology precise enough to refute us, incl. every confound
+   ├─ COMPARISON.md              vs LiteLLM / OpenRouter / direct API, including where we lose
    ├─ OPERATING_A_PUBLIC_SERVICE.md   spend caps, provider terms, pre-launch checklist
    ├─ UPGRADING_ENGINE.md        moving to a newer CLIProxyAPI, and dropping the shim
    ├─ REPO_METADATA.md           description, topics, social-preview copy
@@ -579,9 +668,9 @@ yangble5/
    ├─ diagrams/
    │  ├─ architecture.md         request path, where the cache lives, the bug vs the fix
    │  └─ cache-lifecycle.md      cold round 1 -> warm rounds 2..N, with the measured numbers
-   └─ launch/                    draft launch copy (HN, Reddit, X, PTT), a comparison table,
-                                 and prepared answers to the hardest questions. Drafts, not
-                                 published claims - the repo is the authority.
+   └─ launch/                    draft launch copy (HN, Reddit, X, PTT) and prepared answers
+                                 to the hardest questions. Drafts, not published claims -
+                                 the repo is the authority.
 ```
 
 `site/`, `gateway/` and `byok/` are the three directories that decide which side of the
@@ -631,6 +720,8 @@ MIT - see [LICENSE](LICENSE). Copyright (c) 2026 shark0120.
 <a name="中文導讀"></a>
 
 ## 中文導讀
+
+**快取命中不是祈禱,是驗收條件。**
 
 **yangble5 是什麼:** 一組本機代理設定 + 相容層 + 量測工具。**它不是模型**,不是訓練成果,
 也不提供任何免費額度 —— 所有 token 都算在你自己設定的上游帳號上。底層引擎是別人寫的開源 Go
@@ -697,6 +788,15 @@ SHA256、用 `--dry-run` 空跑一遍(一個檔案都不寫),把計畫給你看�
 | 超過 748,918 tokens 的上下文 | **未實測** | — |
 | 長上下文的記憶/檢索品質 | **未實測** | 沒有做 needle-in-a-haystack |
 
+**60 秒跑起來:**
+
+- **軌道 0(零成本、不需帳號):** `pip install -e ".[dev]"` 之後跑 `pytest`(離線測試,
+  不連網、不需憑證、不花任何 token),再跑 `python tools/cache_bench.py --help` 看工具本身。
+- **軌道 1(最小實測):** 需要一個已認證上游的 CLIProxyAPI;用預設的
+  `--prefix-tokens 30000` 先確認管線通了。**注意:實測的每一個 token 都計費在你自己的
+  上游帳號**;下面那個 748,918-token 的招牌跑法一次會送出約 300 萬個 prompt token,
+  不要從那裡開始。
+
 **快速開始:**
 
 ```bash
@@ -743,3 +843,5 @@ python tools/cache_bench.py --model yangble5 --prefix-tokens 600000 --rounds 4
 壞掉的 pool 輪替 vs 修好的 1:1 別名)見 [`docs/diagrams/architecture.md`](docs/diagrams/architecture.md);
 快取生命週期(冷啟動 0% → 暖輪次 99.53%)見
 [`docs/diagrams/cache-lifecycle.md`](docs/diagrams/cache-lifecycle.md)。
+跟 LiteLLM / OpenRouter / 直連 API 的誠實對比(含我們輸掉的項目)見
+[`docs/COMPARISON.md`](docs/COMPARISON.md)。
