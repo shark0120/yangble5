@@ -55,6 +55,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 BASE_URL_ENV = "YANGBLE5_BASE_URL"
@@ -212,6 +213,110 @@ def summarize(rounds: Sequence[dict[str, Any]], target: float = DEFAULT_TARGET) 
 
 
 # --------------------------------------------------------------------------
+# Replay. Recompute a past run's headline from its committed raw per-round
+# usage, with NO network and NO API key. This is what lets a stranger check the
+# number instead of trusting it: the same pure functions above run over the same
+# usage blocks the upstream returned. The fixture also carries the headline it is
+# supposed to produce, so any edited number is caught (see ``run_replay``).
+# --------------------------------------------------------------------------
+
+
+def load_replay(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read a replay JSONL: one optional ``_meta`` line plus one line per round.
+
+    Each round line carries the raw ``usage`` block as the upstream returned it;
+    it is fed through the same ``usage_to_round`` the live path uses, so replay
+    cannot compute the number any differently than a real run did.
+    """
+    meta: dict[str, Any] = {}
+    rounds: list[dict[str, Any]] = []
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"error: {path} line {lineno} is not valid JSON: {exc}")
+        if "_meta" in obj:
+            meta = obj["_meta"]
+            continue
+        if "usage" not in obj or "round" not in obj:
+            raise SystemExit(
+                f"error: {path} line {lineno} needs both 'round' and 'usage' keys"
+            )
+        rounds.append(
+            usage_to_round(
+                int(obj["round"]), obj["usage"] or {}, int(obj.get("latency_ms") or 0)
+            )
+        )
+    return meta, rounds
+
+
+def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., None]) -> int:
+    """Recompute and verify a committed run offline. Returns a process exit code."""
+    meta, rounds = load_replay(path)
+    if not rounds:
+        raise SystemExit(f"error: no round records in {path}")
+
+    result = summarize(rounds, target)
+    cold = result["cold_round"]
+
+    log(f"cache_bench --replay {path} (offline; no API key; no upstream call)")
+    for record in rounds:
+        log(_format_round(record))
+    log("-" * 68)
+    if cold:
+        log(
+            f"  cold round 1 (EXCLUDED from the headline number): "
+            f"prompt={cold['prompt_total']:,} cached={cold['cache_read']:,} "
+            f"ratio={cold['ratio']:.2%}"
+        )
+    log(
+        f"  eligible hit rate (warm rounds, token-weighted): "
+        f"{result['eligible_hit_rate']:.2%} "
+        f"({result['cached_tokens']:,} / {result['prompt_tokens']:,} tok) "
+        f"target {target:.0%} -> {'PASS' if result['pass'] else 'FAIL'}"
+    )
+    for note in result["notes"]:
+        log(f"  NOTE: {note}")
+    for qualifier in meta.get("qualifiers", []):
+        log(f"  qualifier: {qualifier}")
+
+    # Tamper check: the fixture records the headline it must produce. Recompute
+    # from the raw usage above and compare. If a number was edited, this fails
+    # loudly rather than quietly publishing a doctored figure.
+    reproduced = True
+    expected = meta.get("expected_headline") or {}
+    checks = (
+        ("warm_token_weighted_hit_rate", result["eligible_hit_rate"]),
+        ("cached_tokens", result["cached_tokens"]),
+        ("prompt_tokens", result["prompt_tokens"]),
+    )
+    for key, got in checks:
+        want = expected.get(key)
+        if want is not None and want != got:
+            reproduced = False
+            log(f"  MISMATCH: {key} expected {want} but recomputed {got} (fixture edited?)")
+    if expected:
+        log(
+            "  replay: REPRODUCED the recorded headline from raw per-round usage"
+            if reproduced
+            else "  replay: DID NOT reproduce the recorded headline -- fixture may be tampered"
+        )
+
+    if json_mode:
+        payload = dict(result)
+        payload["replay_source"] = str(path)
+        payload["reproduced"] = reproduced
+        payload["meta"] = meta
+        payload["rounds"] = rounds
+        print(json.dumps(payload, indent=2))
+
+    return 0 if (result["pass"] and reproduced) else 1
+
+
+# --------------------------------------------------------------------------
 # Configuration + HTTP
 # --------------------------------------------------------------------------
 
@@ -322,6 +427,13 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=f"The API key is read from ${API_KEY_ENV} and cannot be passed as a flag.",
     )
+    parser.add_argument(
+        "--replay",
+        default=None,
+        metavar="PATH",
+        help="recompute a committed run's headline from a JSONL evidence file, "
+        "offline and with no API key (e.g. evidence/run-749k-20260721.jsonl)",
+    )
     parser.add_argument("--base-url", default=None, help=f"overrides ${BASE_URL_ENV}")
     parser.add_argument("--model", default="yangble5")
     parser.add_argument("--prefix-tokens", type=int, default=30000)
@@ -360,6 +472,11 @@ def _format_round(record: dict[str, Any]) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     log = _logger(args.json)
+
+    # Replay is offline and needs no key or network, so it short-circuits before
+    # any URL or credential is resolved.
+    if args.replay:
+        return run_replay(Path(args.replay), args.target, args.json, log)
 
     if args.rounds < 1:
         raise SystemExit("error: --rounds must be at least 1")

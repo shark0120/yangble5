@@ -64,3 +64,9 @@ deploy/nginx/*.conf.example                 text eol=lf
 site/fable5/index.html          text eol=lf
 site/fable5/FABLE5.md           text eol=lf
 site/fable5/*.tar.gz            binary
+
+# The replay evidence fixture is load-bearing data: tools/cache_bench.py --replay
+# recomputes the published headline from these exact per-round records, and the
+# file carries the headline it must reproduce. A CRLF checkout changes bytes
+# nobody edited; pin it to LF so the fixture is byte-identical on every platform.
+evidence/*.jsonl                text eol=lf
