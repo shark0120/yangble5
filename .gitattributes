@@ -70,3 +70,7 @@ site/fable5/*.tar.gz            binary
 # file carries the headline it must reproduce. A CRLF checkout changes bytes
 # nobody edited; pin it to LF so the fixture is byte-identical on every platform.
 evidence/*.jsonl                text eol=lf
+
+# Demo payloads for tools/cache_guard.py. Not hashed, but pinned to LF so a CRLF
+# checkout does not change bytes nobody edited and churn the diff on Windows.
+examples/**/*.jsonl             text eol=lf
