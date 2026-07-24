@@ -64,6 +64,25 @@ English.
 - [GET /health](https://yangble5.com/health): service state and
   `support_contact`.
 
+## Fable5: an execution-protocol skill, downloadable here
+
+Fable5 is a separate, self-contained deliverable: a skill for Claude Code and
+Codex that runs a fixed execution loop with a scoring gate before shipping,
+tagging every claim VERIFIED, SUPPORTED, UNVERIFIED or CONTESTED. It is not a
+model, calls no model, and runs entirely offline. Its scoring is structural: a
+gate PASS means the process was followed, never that the answer is correct.
+
+- [Fable5 page](https://yangble5.com/fable5/index.html): what it is, the
+  download link, the published SHA-256 digest in full, and the install steps.
+- [FABLE5.md](https://yangble5.com/fable5/FABLE5.md): how an AI agent should
+  install it on someone else's machine — download, verify the digest, list the
+  archive before extracting, ask the human, then install. Read it before
+  running anything.
+- [fable5-v1.0.0.tar.gz](https://yangble5.com/fable5/fable5-v1.0.0.tar.gz):
+  the archive, with
+  [its digest](https://yangble5.com/fable5/fable5-v1.0.0.tar.gz.sha256)
+  published beside it on the same origin.
+
 ## Reference
 
 - [The long-form documentation](https://github.com/shark0120/yangble5/blob/main/site/README.md):

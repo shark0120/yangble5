@@ -53,3 +53,14 @@ site/.well-known/*              text eol=lf
 deploy/Caddyfile                            text eol=lf
 deploy/nginx/*.conf                         text eol=lf
 deploy/nginx/*.conf.example                 text eol=lf
+
+# The Fable5 release surface, same reasoning as the agent-facing set above:
+# tools/drift_check.py compares these against the live site byte for byte, so
+# a CRLF checkout changes bytes nobody edited. The archive is pinned binary
+# EXPLICITLY rather than left to content detection: its published .sha256 is
+# computed over exact bytes, and any eol translation would break the one
+# verification step users are told to perform. (*.sha256 is already covered
+# by the wildcard at the top of this file.)
+site/fable5/index.html          text eol=lf
+site/fable5/FABLE5.md           text eol=lf
+site/fable5/*.tar.gz            binary
