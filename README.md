@@ -19,7 +19,8 @@ account and model** — because that pair is the only place a prompt cache exist
   one upstream, one translation hop, a session that stays put. [→ the fix](#the-fix-a-direct-11-alias-on-the-provider-channel)
 * **The proof** — with the fix, warm rounds read **99.53%** of a **748,918-token** prompt from
   upstream cache (token-weighted; one machine, one run; cold first round **0%**; latency did
-  *not* reliably improve). Re-run it yourself: `python tools/cache_bench.py`. [→ results](#results)
+  *not* reliably improve). Re-run it yourself: `python tools/cache_bench.py` — the default is a
+  cheap ~30K sanity pass; the exact headline command is with the raw rounds. [→ results](#results)
 
 **Jump to:** [60-second start](#run-it-in-60-seconds) ·
 [Results + raw rounds](#results) ·
