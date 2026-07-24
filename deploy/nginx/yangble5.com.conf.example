@@ -674,8 +674,10 @@
     # Everything not matched above is served from the webroot. Copy the
     # contents of site/ there — index.html, verify.html, install.sh,
     # install.ps1, uninstall.sh, uninstall.ps1, robots.txt, the four .sha256
-    # files, and the agent-facing set: AGENTS.md, llms.txt, sitemap.xml and
-    # .well-known/security.txt.
+    # files, the agent-facing set: AGENTS.md, llms.txt, sitemap.xml and
+    # .well-known/security.txt — and the fable5/ directory whole: its
+    # index.html, FABLE5.md, the .tar.gz release archive and that archive's
+    # .sha256, which must always deploy as a pair.
     #
     # AGENTS.md is not optional decoration. The one-liner published on the
     # landing page — the one a human pastes into an AI agent — points at
@@ -715,6 +717,17 @@
         # Deliberately short: install.sh and its .sha256 must never be served
         # as a stale pair from a CDN edge. If you lengthen it, purge
         # Cloudflare on every release.
+    }
+
+    # The one binary exception to the text-only webroot: the Fable5 release
+    # archive under /fable5/. Served as text/plain it renders as garbage in a
+    # browser instead of downloading, so it gets its honest type. Same block
+    # as in static-content-type.conf — the test suite asserts the two copies
+    # agree — and, exactly like everywhere else, NO add_header in here: one
+    # would silently drop the server-level CSP for these URLs.
+    location ~* \.tar\.gz$ {
+        try_files $uri =404;
+        default_type application/gzip;
     }
 
 
