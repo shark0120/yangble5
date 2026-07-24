@@ -157,7 +157,7 @@ likely thing to be misrepresented, and getting ahead of it costs nothing and buy
 | "so it's free Claude?" | No. Every token bills to an upstream account you configure and pay for. This makes a session you already pay for cheaper; it doesn't make it free. |
 | "just use OpenRouter" | For most people, yes. Honest comparison table in the repo, and we lose rows on provider breadth, ecosystem maturity and bus factor. |
 | "99.53% is cherry-picked" | Yes, and post 7 says so. Warm-only, prefix-dependent, n=1, and an upper bound — the harness tail grows 15 tokens/round. Cold-included is 74.6%. |
-| "did you tell the maintainer" | [Link the upstream issue. If it isn't filed, don't post the thread — see hn.md pre-flight.] |
+| "did you tell the maintainer" | [Link the upstream issue. If it isn't filed, don't post the thread.] |
 | "is this against ToS" | A public pool of personal free-tier accounts is, and I don't defend it. Documented recommendation is BYOK or licensed paid keys. |
 | Someone screenshots "99.53%" alone | Quote-tweet your own post 7. Do not argue in replies; just make the caveat as visible as the number. |
 

@@ -1,25 +1,8 @@
 # Hacker News — Show HN
 
----
-
-## PRE-FLIGHT (internal — do not paste any of this)
-
-- [ ] **File the pool-rotation behaviour with CLIProxyAPI upstream first.** We are publishing a
-      source-level finding about somebody else's MIT-licensed project. If the maintainer reads
-      about it on HN before hearing from us, that is the fastest possible way to lose the thread,
-      and we would deserve it. Link the issue from the post once it exists.
-- [ ] Repo public, README renders, `cache_bench.py` runs clean from a fresh clone.
-- [ ] The CLIProxyAPI credit is visible **above the fold** on the repo README. It is.
-- [ ] Post Tue–Thu, roughly 08:00–11:00 US Eastern. Be at the keyboard for the next three hours.
-      An unanswered Show HN dies; a well-answered one with a hostile top comment does fine.
-- [ ] No vote solicitation anywhere, including Threads/LINE/Discord. HN detects it and it is fatal.
-- [ ] Decide before posting: are we comfortable that every number below is one we can defend at
-      2am against someone who has read the source? If not, cut the number, not the qualifier.
-- [ ] The "Claude Code 3/3 successful end-to-end" observation is backed by a raw record at
-      [`docs/evidence/claude-code-e2e.md`](../evidence/claude-code-e2e.md). If you mention it,
-      link that file in the same breath and call it a **smoke test, not a benchmark** - three
-      manual runs of one prompt show the path works and measure nothing else. Never let it sit
-      next to 99.53% as though both were measurements of the same kind.
+> Draft copy. Before posting: file the pool-rotation behaviour with CLIProxyAPI upstream and
+> link the issue from the post — publishing a source-level finding about someone else's project
+> without telling them first is not acceptable.
 
 ---
 
@@ -231,7 +214,7 @@ LiteLLM, at OpenRouter, or at llama.cpp, and I'd genuinely like to see those num
 
 ### 7. "Why post this instead of filing it upstream?"
 
-[Link the upstream issue here — see PRE-FLIGHT. If it is not filed, do not post the thread.]
+[Link the upstream issue here. If it is not filed, do not post the thread.]
 Also worth saying: the second bug in the writeup, a mid-conversation `role: "system"` message
 that 400s the streaming path but not the non-streaming one, *was* fixed upstream in v7.2.93. The
 shim in this repo only exists to bridge older engines and is meant to be deleted on upgrade.

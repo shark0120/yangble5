@@ -25,8 +25,8 @@ ss -ltnp | grep -E ':(80|443)\b'      # any output = YES
 > holds, so `docker compose up -d` either fails outright, or — if you "fixed"
 > it by stopping nginx first — every other site on that box returns
 > connection-refused from that moment until you stop the stack and start nginx
-> again. This is not a theoretical risk. It is what happens, immediately, on a
-> host with 28 vhosts.
+> again. This is not a theoretical risk. It is what happens, immediately, on
+> any host already serving live sites.
 >
 > There is no flag or environment variable that makes `docker-compose.yml`
 > safe on a busy host. Use the other file.
