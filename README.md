@@ -90,6 +90,11 @@ pytest                      # offline test suite - no network, no credentials
 python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl
 
 python tools/cache_bench.py --help
+
+# Lint a prompt for the change that silently breaks caching: a timestamp, UUID
+# or rendered date in the cacheable prefix. Offline, CI-friendly. See
+# examples/cache_guard/ for a good-vs-broken prompt and a before/after cost diff.
+python tools/cache_guard.py scan examples/cache_guard/bad_prompt.jsonl
 ```
 
 **Track 1 — smallest real measurement.** Needs a running CLIProxyAPI with one authenticated
