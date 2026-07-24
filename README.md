@@ -19,8 +19,9 @@ account and model** — because that pair is the only place a prompt cache exist
   one upstream, one translation hop, a session that stays put. [→ the fix](#the-fix-a-direct-11-alias-on-the-provider-channel)
 * **The proof** — with the fix, warm rounds read **99.53%** of a **748,918-token** prompt from
   upstream cache (token-weighted; one machine, one run; cold first round **0%**; latency did
-  *not* reliably improve). Re-run it yourself: `python tools/cache_bench.py` — the default is a
-  cheap ~30K sanity pass; the exact headline command is with the raw rounds. [→ results](#results)
+  *not* reliably improve). You don't need our proxy or even an API key to check it:
+  `python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl` recomputes that
+  99.53% offline from the run's committed raw usage. [→ results](#results)
 
 **Jump to:** [60-second start](#run-it-in-60-seconds) ·
 [Results + raw rounds](#results) ·
@@ -82,6 +83,12 @@ git clone https://github.com/shark0120/yangble5
 cd yangble5
 pip install -e ".[dev]"     # tools/ are stdlib-only; the install is for pytest + dev extras
 pytest                      # offline test suite - no network, no credentials
+
+# Recompute the 99.53% headline yourself, offline, with no API key. This reads
+# the run's committed raw per-round usage and runs the SAME math the live
+# benchmark does; edit any number in the file and it fails the tamper check.
+python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl
+
 python tools/cache_bench.py --help
 ```
 
@@ -227,6 +234,7 @@ Read the footnotes before quoting anything.
 
 | Measurement | Value | How to reproduce |
 |---|---|---|
+| The 99.53% headline, **recomputed offline with no API key** | **99.53%** | `python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl` |
 | Prompt-cache hit rate, warm rounds, token-weighted | **99.53%** | `python tools/cache_bench.py --model yangble5 --prefix-tokens 600000 --rounds 4` |
 | Largest prompt processed with no truncation | **748,918 tokens** | same run - round 1 prints the prompt size |
 | Cold-round hit rate (first request of any session) | **0%** | same run - round 1 |

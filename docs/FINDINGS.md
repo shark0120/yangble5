@@ -232,6 +232,18 @@ Warm token-weighted hit rate:
 = 0.99530  ->  99.53%
 ```
 
+Those four rows are committed, machine-readable, in
+[`evidence/run-749k-20260721.jsonl`](../evidence/run-749k-20260721.jsonl) (numeric fields only;
+no account identity). You do not have to trust this table or run the proxy to check the number:
+
+```bash
+python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl
+```
+
+runs offline, with no API key, feeds those raw usage blocks through the *same* functions the live
+benchmark uses, and prints 99.53% again. The fixture also records the headline it must produce, so
+editing any number in it fails a tamper check instead of quietly publishing a doctored figure.
+
 Read this with the following in mind.
 
 **It is warm-only, on purpose.** Round 1 is a cold cache write and is 0.00% by construction.
