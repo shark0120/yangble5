@@ -83,7 +83,7 @@ launch, not after.
 ## 3. "Why not just use OpenRouter or LiteLLM?"
 
 **For most people: do.** Genuinely. There's a full table in
-[`comparison.md`](comparison.md) where we lose rows on ecosystem maturity, provider breadth, live
+[`COMPARISON.md`](../COMPARISON.md) where we lose rows on ecosystem maturity, provider breadth, live
 web search and bus factor.
 
 Short version of when each is right:

@@ -14,7 +14,7 @@ win. If you read only one section, read
 - Claims about **LiteLLM, OpenRouter and direct API use** are read from their **public
   documentation and general availability as of 2026-07-21**. We have **not** benchmarked them,
   have **not** run the cache benchmark against them, and do **not** claim any of them exhibits the
-  cache-splitting behaviour documented in [`FINDINGS.md`](../FINDINGS.md). That bug is specific to
+  cache-splitting behaviour documented in [`FINDINGS.md`](FINDINGS.md). That bug is specific to
   **CLIProxyAPI 7.1.23**, which is the engine *this* project sits on.
 - Feature sets in this space change monthly. **If a cell about someone else's project is wrong,
   it's a bug — open an issue and we'll fix it.** We would rather be corrected than flattered.
@@ -49,7 +49,7 @@ production, yangble5's benchmark pointed at whatever they already run*.
 | **Observability / dashboards** | 🔴 A sidecar that writes `stats.json`. That's it. | 🟢 Dashboards, callbacks, logging integrations | 🟢 Hosted dashboard and usage UI | 🟡 Provider console |
 | **Enterprise features** (SSO, RBAC, audit, teams) | 🔴 **None.** | 🟢 Yes | 🟡 Org/team features | 🟡 Varies |
 | **Benchmark rigour of published claims** | 🔴 **n=1.** One machine, one run, one afternoon, no error bars, no cross-provider comparison. | ⚪ Not directly comparable | ⚪ Not directly comparable | ⚪ n/a |
-| **Hosted option** | 🔴 **One, and it is a hobby instance.** The maintainer runs a public instance at [yangble5.com](https://yangble5.com); registration is **open** — `POST /auth/register` issues a key to anyone who asks. The tokens are billed to the **operator's own personal upstream accounts**, the 1M-context tier is served by **exactly one** personal OAuth credential, and there is **no SLA, no support, no company and no uptime commitment**. Treat it as a demo that can vanish. The repo also *ships* the gateway and landing page so **you** can become the operator instead — with the bill, the abuse reports and the provider terms. See [`OPERATING_A_PUBLIC_SERVICE.md`](../OPERATING_A_PUBLIC_SERVICE.md). | 🟡 Self-host or their cloud | 🟢 Fully hosted | 🟢 Fully hosted |
+| **Hosted option** | 🔴 **One, and it is a hobby instance.** The maintainer runs a public instance at [yangble5.com](https://yangble5.com); registration is **open** — `POST /auth/register` issues a key to anyone who asks. The tokens are billed to the **operator's own personal upstream accounts**, the 1M-context tier is served by **exactly one** personal OAuth credential, and there is **no SLA, no support, no company and no uptime commitment**. Treat it as a demo that can vanish. The repo also *ships* the gateway and landing page so **you** can become the operator instead — with the bill, the abuse reports and the provider terms. See [`OPERATING_A_PUBLIC_SERVICE.md`](OPERATING_A_PUBLIC_SERVICE.md). | 🟡 Self-host or their cloud | 🟢 Fully hosted | 🟢 Fully hosted |
 | **Breadth of tested configurations** | 🔴 One OS (Windows 11), one engine version (7.1.23), one upstream channel. | 🟢 Broad | 🟢 Broad | 🟢 Broad |
 | **Failure modes you inherit** | 🔴 Ours **plus** CLIProxyAPI's — a third-party engine we don't control and didn't write. | 🟡 Theirs | 🟡 Theirs | 🟢 Fewest — one hop |
 | **Documentation breadth** | 🟡 Deep on a narrow topic; nonexistent outside it. | 🟢 Broad | 🟢 Broad | 🟢 Broad |
@@ -94,7 +94,7 @@ If you run it, hold these equal or the comparison means nothing:
 - one session id for the whole run
 - report the cold round separately for every provider
 - state which `input_tokens` convention each provider used (see
-  [`BENCHMARK.md` §4](../BENCHMARK.md))
+  [`BENCHMARK.md` §4](BENCHMARK.md))
 
 A provider that reports no cache fields at all is **not scoring 0%** — it's unmeasurable on that
 path, and the tool says so rather than printing a zero next to a green checkmark.
@@ -117,7 +117,7 @@ themselves after a weekend:
   [yangble5.com](https://yangble5.com), run by the maintainer, registration open — but it is a
   single-maintainer hobby instance with no SLA, no support and no company behind it, and its
   1M-context tier is served by **exactly one** personal OAuth credential. It is also precisely
-  the shape of deployment [`OPERATING_A_PUBLIC_SERVICE.md`](../OPERATING_A_PUBLIC_SERVICE.md)
+  the shape of deployment [`OPERATING_A_PUBLIC_SERVICE.md`](OPERATING_A_PUBLIC_SERVICE.md)
   §1 warns you not to build: a public endpoint funded by the operator's own personal accounts.
   That warning is not retracted by the fact that the author ignored it — read it before you copy
   the pattern, and do not build a business on the demo. If you want a hosted endpoint with
@@ -139,7 +139,7 @@ speaking OpenAI / Gemini / Claude / Codex / Grok wire formats, OAuth credential 
 failover. **We did not write it and this project is useless without it.** We do not redistribute
 it; you bring your own binary.
 
-The bug documented in [`FINDINGS.md`](../FINDINGS.md) is a bug in a specific version of a good
+The bug documented in [`FINDINGS.md`](FINDINGS.md) is a bug in a specific version of a good
 project, found by using it heavily. It is not a reason to avoid it, and the streaming-role bug
 alongside it was **already fixed upstream in v7.2.93**. If this comparison is useful to you, go
 star CLIProxyAPI before you star us.
