@@ -341,3 +341,59 @@ def test_main_rejects_a_zero_round_run_before_making_any_request(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         cache_bench.main(["--rounds", "0"])
     assert "--rounds" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# Replay: recompute a committed run offline, and catch a tampered fixture.
+# --------------------------------------------------------------------------
+
+import json as _json
+from pathlib import Path as _Path
+
+_EVIDENCE = _Path(__file__).resolve().parents[1] / "evidence" / "run-749k-20260721.jsonl"
+
+
+def test_replay_flag_exists_and_needs_no_key():
+    dests = {action.dest for action in cache_bench.build_parser()._actions}
+    assert "replay" in dests
+
+
+def test_replay_reproduces_the_committed_headline_offline(monkeypatch, capsys):
+    """The shipped fixture must recompute to its own recorded headline with no key."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    monkeypatch.delenv(cache_bench.BASE_URL_ENV, raising=False)
+    code = cache_bench.main(["--replay", str(_EVIDENCE), "--json"])
+    assert code == 0
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["reproduced"] is True
+    assert payload["eligible_hit_rate"] == 0.9953
+    assert payload["cached_tokens"] == 2236290
+    assert payload["prompt_tokens"] == 2246844
+    assert payload["pass"] is True
+
+
+def test_load_replay_feeds_raw_usage_through_the_same_pure_path():
+    meta, rounds = cache_bench.load_replay(_EVIDENCE)
+    assert meta["run"] == "run-749k-20260721"
+    assert [r["round"] for r in rounds] == [1, 2, 3, 4]
+    # round 2 denominator is input (input >= cache_read under this upstream)
+    assert rounds[1]["prompt_total"] == 748933
+    assert rounds[1]["cache_read"] == 745438
+
+
+def test_replay_detects_a_tampered_number(tmp_path, monkeypatch):
+    """Inflating a cached count must fail the tamper check, not pass silently."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    lines = _EVIDENCE.read_text(encoding="utf-8").splitlines()
+    doctored = [ln.replace("745438", "747000") for ln in lines]
+    bad = tmp_path / "tampered.jsonl"
+    bad.write_text("\n".join(doctored) + "\n", encoding="utf-8")
+    code = cache_bench.main(["--replay", str(bad)])
+    assert code == 1  # recomputed rate no longer matches the recorded headline
+
+
+def test_replay_fixture_carries_no_account_identity():
+    """The evidence file must never leak an email / account label."""
+    text = _EVIDENCE.read_text(encoding="utf-8")
+    assert "@" not in text
+    assert "gmail" not in text.lower()
