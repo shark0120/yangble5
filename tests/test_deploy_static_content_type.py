@@ -49,6 +49,16 @@ SMOKE = ROOT / "deploy" / "smoke_test.sh"
 # text/plain is a bug even though it decodes fine.
 TEXT_SUFFIXES = {".html", ".md", ".txt", ".xml", ".sh", ".ps1", ".sha256"}
 
+# The binaries site/ is allowed to hold, each with the mime type BOTH nginx
+# copies must declare for it.  This is the "give it a real mime type in the
+# include and add the suffix here in the same commit" path the failure message
+# below prescribes: an entry here without the matching declaration in the
+# include AND in PART 3d is a red test (see
+# test_declared_binaries_have_an_honest_content_type), so a suffix cannot be
+# waved through by editing this dict alone.  Today it holds exactly one entry:
+# the Fable5 release archive under site/fable5/.
+BINARY_SUFFIXES = {".gz": "application/gzip"}
+
 
 def _site_files() -> list[Path]:
     return sorted(p for p in SITE.rglob("*") if p.is_file())
@@ -59,6 +69,12 @@ def test_site_holds_only_text_because_default_type_says_so() -> None:
     offenders: list[str] = []
     for path in _site_files():
         rel = path.relative_to(SITE).as_posix()
+        if path.suffix.lower() in BINARY_SUFFIXES:
+            # A declared binary is exempt from the text checks below, but not
+            # from being served honestly:
+            # test_declared_binaries_have_an_honest_content_type asserts both
+            # nginx copies carry its mime type.
+            continue
         if path.suffix.lower() not in TEXT_SUFFIXES:
             offenders.append(f"{rel}: suffix {path.suffix or '(none)'} is not in TEXT_SUFFIXES")
             continue
@@ -76,9 +92,10 @@ def test_site_holds_only_text_because_default_type_says_so() -> None:
         "`default_type text/plain`, which is only safe while every file in it is\n"
         "text. These are not:\n  " + "\n  ".join(offenders) + "\n\n"
         "Serving a binary as text/plain renders it as garbage in a browser. If\n"
-        "site/ genuinely needs a non-text asset, give it a real mime type in the\n"
-        "include (a `types { }` block, or a `location ~ \\.png$`) and add the\n"
-        "suffix here in the same commit — do not just widen TEXT_SUFFIXES."
+        "site/ genuinely needs a non-text asset, give it a real mime type in\n"
+        "BOTH nginx copies (a `location ~* \\.png$` with its own default_type,\n"
+        "as the .tar.gz block already does) and add the suffix to\n"
+        "BINARY_SUFFIXES in the same commit — do not just widen TEXT_SUFFIXES."
     )
 
 
@@ -130,6 +147,35 @@ def test_include_declares_no_add_header() -> None:
         "that drops EVERY add_header inherited from the server block, CSP "
         "included. If a header really is needed here, re-include "
         "security-headers.conf inside the same location in the same commit."
+    )
+
+
+def test_declared_binaries_have_an_honest_content_type() -> None:
+    """Every BINARY_SUFFIXES entry must be backed by a declaration in BOTH
+    nginx copies, and every binary actually present in site/ must have an
+    entry.  Without this, adding a suffix to the dict above would silently
+    reopen the exact hole the text test closes: a binary served as
+    text/plain."""
+    include = _uncommented(INCLUDE)
+    snippet = _uncommented(SNIPPET)
+    present = {p.suffix.lower() for p in _site_files()} & set(BINARY_SUFFIXES)
+    for suffix, mime in BINARY_SUFFIXES.items():
+        directive = f"default_type {mime};"
+        assert directive in re.sub(r"\s+", " ", include), (
+            f"BINARY_SUFFIXES allows {suffix} but static-content-type.conf "
+            f"never declares `{directive}` — the binary would fall through to "
+            f"text/plain"
+        )
+        assert directive in re.sub(r"\s+", " ", snippet), (
+            f"BINARY_SUFFIXES allows {suffix} but PART 3d never declares "
+            f"`{directive}` — the paste-the-whole-file path would serve it as "
+            f"text/plain"
+        )
+    stale = set(BINARY_SUFFIXES) - present
+    assert not stale, (
+        f"BINARY_SUFFIXES lists {sorted(stale)} but no file in site/ carries "
+        f"that suffix — a stale exemption is cover for the next binary that "
+        f"lands on it"
     )
 
 
