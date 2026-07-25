@@ -699,6 +699,38 @@ def test_missing_engine_key_is_fatal():
         Settings.from_env({"REGISTRATION_MODE": "closed"})
 
 
+def test_zero_or_negative_upstream_timeout_is_fatal_not_unlimited(tmp_path):
+    """0 is a zero-second httpx timeout, not 'no timeout'; accepting it (a plausible
+    mistake given this repo's 0=unlimited convention) would fail every upstream
+    request while startup reported healthy."""
+    for var in ("UPSTREAM_TIMEOUT_SECONDS", "UPSTREAM_CONNECT_TIMEOUT_SECONDS"):
+        for bad in ("0", "-1"):
+            env = dict(BASE_ENV)
+            env["DB_PATH"] = str(tmp_path / "x.db")
+            env[var] = bad
+            with pytest.raises(ConfigError, match=var):
+                Settings.from_env(env)
+
+
+def test_max_ips_per_key_must_be_below_the_abuse_threshold_when_auto_suspend_is_on(tmp_path):
+    """Equal thresholds let a roaming key be suspended (distinct >= threshold) without
+    ever being throttled first (distinct > max_ips), voiding the documented ordering."""
+    env = dict(BASE_ENV)
+    env["DB_PATH"] = str(tmp_path / "x.db")
+    env["ABUSE_AUTO_SUSPEND"] = "true"
+    env["MAX_IPS_PER_KEY"] = "8"
+    env["ABUSE_DISTINCT_IP_THRESHOLD"] = "8"
+    with pytest.raises(ConfigError, match="MAX_IPS_PER_KEY"):
+        Settings.from_env(env)
+    # Strictly below the threshold is accepted.
+    env["MAX_IPS_PER_KEY"] = "7"
+    assert Settings.from_env(env).max_ips_per_key == 7
+    # And with auto-suspend off, the relation is not enforced (no suspension can fire).
+    env["MAX_IPS_PER_KEY"] = "8"
+    env["ABUSE_AUTO_SUSPEND"] = "false"
+    assert Settings.from_env(env).abuse_auto_suspend is False
+
+
 def test_deploy_env_spelling_is_honoured_not_ignored(tmp_path):
     """deploy/docker-compose.yml ships REGISTRATION_OPEN / GLOBAL_BUDGET_TOKENS.
 
@@ -1016,7 +1048,11 @@ def test_oversized_body_is_rejected(build):
 
 
 def test_abuse_auto_suspend_on_ip_fanout(build):
-    gw = build(ABUSE_DISTINCT_IP_THRESHOLD=3, ABUSE_AUTO_SUSPEND=True,
+    # MAX_IPS_PER_KEY=2 (< the threshold of 3) is now required: the config gate
+    # rejects the recommended-against max_ips >= threshold ordering. The soft
+    # throttle fires at distinct=3 (>2) on the same request suspension triggers
+    # (>=3), so suspension still happens -- just after the throttle, as documented.
+    gw = build(MAX_IPS_PER_KEY=2, ABUSE_DISTINCT_IP_THRESHOLD=3, ABUSE_AUTO_SUSPEND=True,
                TRUST_PROXY_HEADERS=True)
     key = gw.new_key()
     key_id = parse_key(key)[0]

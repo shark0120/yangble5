@@ -547,6 +547,47 @@ class Settings:
                 "upstream unhealthy before it had failed once."
             )
 
+        # Bounded like every sibling above. Unlike them these two were parsed inline
+        # with no floor, so 0 -- a plausible mistake given this repo's 0=unlimited
+        # convention -- passed validation and became a ZERO-second httpx timeout
+        # (only None disables one), failing every upstream request while startup
+        # reported healthy; a negative value crashed httpx.Timeout at construction.
+        upstream_timeout = _float(env, "UPSTREAM_TIMEOUT_SECONDS", 900.0)
+        upstream_connect_timeout = _float(env, "UPSTREAM_CONNECT_TIMEOUT_SECONDS", 10.0)
+        for _tname, _tval in (
+            ("UPSTREAM_TIMEOUT_SECONDS", upstream_timeout),
+            ("UPSTREAM_CONNECT_TIMEOUT_SECONDS", upstream_connect_timeout),
+        ):
+            if _tval <= 0:
+                raise ConfigError(
+                    f"{_tname} must be > 0 — 0 is a zero-second timeout, not 'no "
+                    "timeout' (only httpx None disables one), so it would fail every "
+                    "upstream request. There is no unlimited option here on purpose."
+                )
+
+        # The soft per-key IP throttle must be reachable BEFORE the hard resale
+        # suspension, or a legitimately roaming key is suspended (needing operator
+        # action to restore) without ever getting the self-clearing throttle first.
+        # The throttle fires on `distinct > max_ips_per_key` and the suspension on
+        # `distinct >= abuse_distinct_ip_threshold`, so the ordering holds only when
+        # max_ips_per_key < abuse_distinct_ip_threshold. .env.example documents this
+        # ("keep MAX_IPS_PER_KEY below ..."); enforce it rather than trust it.
+        max_ips_per_key = _int(env, "MAX_IPS_PER_KEY", 5)
+        abuse_distinct_ip_threshold = _int(env, "ABUSE_DISTINCT_IP_THRESHOLD", 8)
+        abuse_auto_suspend = _bool(env, "ABUSE_AUTO_SUSPEND", False)
+        if (
+            abuse_auto_suspend
+            and max_ips_per_key > 0
+            and abuse_distinct_ip_threshold > 0
+            and max_ips_per_key >= abuse_distinct_ip_threshold
+        ):
+            raise ConfigError(
+                "MAX_IPS_PER_KEY must be < ABUSE_DISTINCT_IP_THRESHOLD when "
+                f"ABUSE_AUTO_SUSPEND is on ({max_ips_per_key} >= "
+                f"{abuse_distinct_ip_threshold}); otherwise a roaming key is "
+                "suspended before the self-clearing soft throttle ever fires."
+            )
+
         # A successful response whose usage report we could not parse used real
         # upstream capacity. Charging it zero makes it invisible to every budget,
         # so a client that can reliably provoke an unparseable response gets an
@@ -565,8 +606,8 @@ class Settings:
             engine_url=engine_url,
             engine_api_key=engine_api_key,
             engine_management_key=_raw(env, "ENGINE_MANAGEMENT_KEY"),
-            upstream_timeout_seconds=_float(env, "UPSTREAM_TIMEOUT_SECONDS", 900.0),
-            upstream_connect_timeout_seconds=_float(env, "UPSTREAM_CONNECT_TIMEOUT_SECONDS", 10.0),
+            upstream_timeout_seconds=upstream_timeout,
+            upstream_connect_timeout_seconds=upstream_connect_timeout,
             upstream_pool_timeout_seconds=upstream_pool_timeout,
             upstream_max_connections=upstream_max_connections,
             upstream_max_concurrency=upstream_max_concurrency,
@@ -577,7 +618,7 @@ class Settings:
             allow_multiple_keys_per_email=_bool(env, "ALLOW_MULTIPLE_KEYS_PER_EMAIL", False),
             register_max_per_ip_per_day=_int(env, "REGISTER_MAX_PER_IP_PER_DAY", 5),
             max_keys_per_ip=_int(env, "MAX_KEYS_PER_IP", 3),
-            max_ips_per_key=_int(env, "MAX_IPS_PER_KEY", 5),
+            max_ips_per_key=max_ips_per_key,
             ip_binding_window_hours=_int(
                 env, "IP_BINDING_WINDOW_HOURS", _int(env, "ABUSE_IP_WINDOW_HOURS", 24)
             ),
@@ -598,9 +639,9 @@ class Settings:
             auth_rpm_per_ip=_int(env, "AUTH_RPM_PER_IP", 10),
             auth_fail_lockout_threshold=_int(env, "AUTH_FAIL_LOCKOUT_THRESHOLD", 8),
             auth_fail_lockout_seconds=_int(env, "AUTH_FAIL_LOCKOUT_SECONDS", 300),
-            abuse_distinct_ip_threshold=_int(env, "ABUSE_DISTINCT_IP_THRESHOLD", 8),
+            abuse_distinct_ip_threshold=abuse_distinct_ip_threshold,
             abuse_ip_window_hours=_int(env, "ABUSE_IP_WINDOW_HOURS", 24),
-            abuse_auto_suspend=_bool(env, "ABUSE_AUTO_SUSPEND", False),
+            abuse_auto_suspend=abuse_auto_suspend,
             key_hash_scheme=key_hash_scheme,
             key_pepper=_str(env, "KEY_PEPPER", ""),
             admin_api_key=_raw(env, "ADMIN_API_KEY") or _raw(env, "ADMIN_KEY"),
