@@ -17,6 +17,35 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Added — measurement you can check without trusting us
+
+The project's claim is that its numbers are reproducible rather than believed. These make that
+literal: a stranger recomputes the headline offline, a CI check stops a prompt change from
+silently costing money, and the disclosure discipline is enforced by a test rather than by memory.
+
+- **`tools/cache_bench.py --replay <evidence.jsonl>`** recomputes a past run's headline offline,
+  with no API key and no upstream call, by feeding the run's committed raw per-round usage through
+  the *same* pure functions the live path uses. The 749K headline ships as
+  `evidence/run-749k-20260721.jsonl` — the real machine-captured records (numeric fields only; no
+  account identity). The fixture records the headline it must produce, so editing any number fails
+  a tamper check instead of quietly publishing a doctored figure.
+
+- **`tools/cache_guard.py`** — an offline, no-key, CI-friendly linter for the prompt change that
+  silently breaks caching: a timestamp, UUID or rendered date in the cacheable prefix. `scan`
+  flags volatile content in a single payload; `diff` compares before/after prefix stability and
+  reports an **estimated** cost delta per 1,000 requests, with its assumptions printed inline — it
+  never invents a request volume or claims a measured saving. Worked example in
+  `examples/cache_guard/`.
+
+- **`tools/honesty_gate.py`** (CI step, and a test that holds the repo to it) fails the build on
+  the two ways this project would overclaim: mislabelling fable5's structural stable-prefix ratio
+  as a live cache-read metric, or reviving a borrowed five-figure Bedrock-bill shock number with
+  no source here. It deliberately does *not* police bare headline numbers — on an
+  already-disciplined repo a regex cannot tell a naked claim from a datum, a caveat or a diagram
+  node without false-positiving, and a gate that cries wolf gets switched off. Scope kept to what
+  it can catch with zero false positives. This changelog entry is itself written to pass that gate
+  — the discipline is not exempt from the discipline.
+
 ### Changed — client-visible
 
 These change what a client receives. They exist because the intended way to get a key is now for
