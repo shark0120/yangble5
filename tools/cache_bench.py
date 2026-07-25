@@ -117,7 +117,9 @@ def build_prefix(target_tokens: int, tokens_per_line: int = TOKENS_PER_LINE) -> 
     return "\n".join(lines)
 
 
-def prompt_denominator(input_tokens: int, cache_read_tokens: int) -> int:
+def prompt_denominator(
+    input_tokens: int, cache_read_tokens: int, cache_creation_tokens: int = 0
+) -> int:
     """Return the round's true prompt size, normalising two upstream conventions.
 
     WHY: providers disagree on whether ``input_tokens`` already contains the
@@ -125,19 +127,24 @@ def prompt_denominator(input_tokens: int, cache_read_tokens: int) -> int:
 
     * Verified live on 2026-07-21: CLIProxyAPI maps Gemini's ``promptTokenCount``
       straight through to ``input_tokens``, and that count ALREADY INCLUDES the
-      cached read, so ``input >= cache_read``.
-    * The pure Anthropic convention is the opposite: ``input_tokens`` counts only
-      the uncached remainder, so ``cache_read`` routinely exceeds it.
+      cached read (and any write), so ``input >= cache_read`` and ``input`` alone
+      is the whole prompt.
+    * The pure Anthropic convention splits the prompt into three DISJOINT counts:
+      ``input_tokens`` (the uncached remainder), ``cache_read_input_tokens`` and
+      ``cache_creation_input_tokens``. The true prompt is their sum. Omitting the
+      creation count would hide the tokens this round paid full cache-WRITE price
+      for and inflate the hit rate — the exact inflation this tool exists to catch.
 
     Dividing cached tokens by raw ``input_tokens`` therefore gives either the
     right answer or a nonsensical rate above 100%, depending on which upstream
-    answered. Taking ``input`` when it is already the larger of the two, and
-    ``input + cache_read`` when it is not, yields the same denominator under both
-    conventions and can never report more than 100%.
+    answered. Taking ``input`` when it already dominates ``cache_read``, and the
+    sum of all three disjoint counts when it does not, yields a denominator that
+    is correct under both conventions and can never report more than 100%.
     """
     inp = max(0, int(input_tokens))
     cread = max(0, int(cache_read_tokens))
-    return inp if inp >= cread else inp + cread
+    cwrite = max(0, int(cache_creation_tokens))
+    return inp if inp >= cread else inp + cread + cwrite
 
 
 def usage_to_round(
@@ -151,7 +158,7 @@ def usage_to_round(
     cread = int(usage.get("cache_read_input_tokens") or 0)
     cwrite = int(usage.get("cache_creation_input_tokens") or 0)
     out = int(usage.get("output_tokens") or 0)
-    prompt = prompt_denominator(inp, cread)
+    prompt = prompt_denominator(inp, cread, cwrite)
     return {
         "round": round_no,
         "prompt_total": prompt,
@@ -185,8 +192,16 @@ def token_weighted_hit_rate(rounds: Sequence[dict[str, Any]]) -> float:
 
 
 def summarize(rounds: Sequence[dict[str, Any]], target: float = DEFAULT_TARGET) -> dict[str, Any]:
-    """Build the honest result object: cold round separated, warm rounds scored."""
-    rounds = list(rounds)
+    """Build the honest result object: cold round separated, warm rounds scored.
+
+    The cold round is the LOWEST round number, not whatever happens to be first in
+    the list. The live path appends in order so this is a no-op there, but replay
+    reads a committed file whose rows may have been reordered or hand-edited; keying
+    the cold round off file position would then exclude a warm round and count the
+    real cold write, wrecking the headline. Sorting by round number makes replay
+    order-insensitive.
+    """
+    rounds = sorted(rounds, key=lambda r: int(r.get("round") or 0))
     cold = rounds[0] if rounds else None
     warm = rounds[1:]
     cached, prompt = totals(warm)
@@ -507,6 +522,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read()[:300].decode("utf-8", errors="replace")
+            exc.close()  # release the response body; an unclosed HTTPError leaks its fp
             log(f"  round {number}: HTTP {exc.code} {detail}")
             return 2
         except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as exc:

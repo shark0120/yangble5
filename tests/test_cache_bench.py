@@ -8,7 +8,9 @@ pass/fail decision -- is verifiable offline.
 
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -91,6 +93,32 @@ def test_prompt_denominator_cannot_produce_a_rate_above_100_percent():
             denominator = cache_bench.prompt_denominator(inp, cread)
             if denominator:
                 assert cread / denominator <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("inp", "cread", "cwrite", "expected", "why"),
+    [
+        (12, 748_906, 5_000, 753_918, "Anthropic wire: creation is a THIRD disjoint count"),
+        (748_918, 745_400, 3_000, 748_918, "Gemini: input already includes read AND write"),
+        (500, 500, 100, 500, "boundary: input dominates, creation not double-counted"),
+        (12, 748_906, 0, 748_918, "no creation reported behaves like the 2-arg form"),
+    ],
+)
+def test_prompt_denominator_folds_cache_creation_into_the_anthropic_branch(
+    inp, cread, cwrite, expected, why
+):
+    """The uncached remainder + cached read + cache WRITE is the true prompt on the
+    Anthropic wire. Dropping the write hid tokens paid full price and inflated the rate."""
+    assert cache_bench.prompt_denominator(inp, cread, cwrite) == expected, why
+
+
+def test_prompt_denominator_still_cannot_exceed_100_percent_with_creation():
+    for inp in (0, 12, 500, 748_918):
+        for cread in (0, 500, 748_906):
+            for cwrite in (0, 100, 5_000):
+                denom = cache_bench.prompt_denominator(inp, cread, cwrite)
+                if denom:
+                    assert cread / denom <= 1.0
 
 
 # --------------------------------------------------------- usage_to_round ---
@@ -209,6 +237,19 @@ def test_summarize_of_nothing_is_a_failure_not_a_crash():
     result = cache_bench.summarize([], target=0.99)
     assert result["cold_round"] is None
     assert result["pass"] is False
+
+
+def test_summarize_picks_the_cold_round_by_number_not_file_position():
+    """A replay file whose rows were reordered must still exclude the real cold
+    write. Keying off list position would count round 1's zero as a warm miss and
+    drop a genuine warm round, wrecking the headline on a legitimate reordering."""
+    ordered = [rnd(1, 1000, 0), rnd(2, 1000, 1000), rnd(3, 1000, 1000)]
+    shuffled = [ordered[2], ordered[0], ordered[1]]  # 3, 1, 2
+    result = cache_bench.summarize(shuffled, target=0.99)
+    assert result["cold_round"]["round"] == 1
+    assert result["warm_round_numbers"] == [2, 3]
+    assert result["eligible_hit_rate"] == 1.0
+    assert result == cache_bench.summarize(ordered, target=0.99)
 
 
 def test_all_zero_cached_rounds_raise_the_diagnostic_note():
@@ -395,3 +436,67 @@ def test_replay_fixture_carries_no_account_identity():
     text = _EVIDENCE.read_text(encoding="utf-8")
     assert "@" not in text
     assert "gmail" not in text.lower()
+
+
+def test_load_replay_rejects_a_non_json_line(tmp_path):
+    bad = tmp_path / "broken.jsonl"
+    bad.write_text('{"round": 1, "usage": {}}\nnot json at all\n', encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cache_bench.load_replay(bad)
+    assert "line 2" in str(excinfo.value) and "not valid JSON" in str(excinfo.value)
+
+
+def test_load_replay_rejects_a_line_missing_round_or_usage(tmp_path):
+    bad = tmp_path / "incomplete.jsonl"
+    bad.write_text('{"round": 1}\n', encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cache_bench.load_replay(bad)
+    assert "'round' and 'usage'" in str(excinfo.value)
+
+
+def test_load_replay_returns_no_rounds_for_a_meta_only_file(tmp_path):
+    """load_replay parses; the emptiness check belongs to its caller (see below)."""
+    bare = tmp_path / "meta-only.jsonl"
+    bare.write_text('{"_meta": {"run": "x"}}\n', encoding="utf-8")
+    meta, rounds = cache_bench.load_replay(bare)
+    assert meta == {"run": "x"}
+    assert rounds == []
+
+
+def test_replay_of_a_file_with_no_round_records_exits_nonzero(tmp_path, monkeypatch):
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    bare = tmp_path / "meta-only.jsonl"
+    bare.write_text('{"_meta": {"run": "x"}}\n', encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cache_bench.main(["--replay", str(bare)])
+    assert "no round records" in str(excinfo.value)
+
+
+# ----------------------------------------------------- live-path error exits ---
+
+
+def test_main_returns_2_on_an_http_error_without_leaking_a_traceback(monkeypatch, capsys):
+    """An upstream 429/5xx must become a clean exit 2, not an unhandled stack trace."""
+    monkeypatch.setenv(cache_bench.API_KEY_ENV, "test-key-not-a-real-secret")
+    monkeypatch.setenv(cache_bench.BASE_URL_ENV, "http://127.0.0.1:8318")
+
+    def boom(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:8318", 429, "Too Many Requests", None, io.BytesIO(b"rate limited")
+        )
+
+    monkeypatch.setattr(cache_bench, "post_message", boom)
+    assert cache_bench.main(["--rounds", "2"]) == 2
+    assert "HTTP 429" in capsys.readouterr().out
+
+
+def test_main_returns_2_when_the_proxy_is_unreachable(monkeypatch, capsys):
+    monkeypatch.setenv(cache_bench.API_KEY_ENV, "test-key-not-a-real-secret")
+    monkeypatch.setenv(cache_bench.BASE_URL_ENV, "http://127.0.0.1:8318")
+
+    def boom(*_args, **_kwargs):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(cache_bench, "post_message", boom)
+    assert cache_bench.main(["--rounds", "2"]) == 2
+    assert "FAILED" in capsys.readouterr().out
