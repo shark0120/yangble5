@@ -1698,17 +1698,15 @@ if [ -z "${YANGBLE5_API_KEY:-}" ]; then
     printf 'yangble5: add one, or re-run the installer.\n' >&2
     exit 6
 fi
-case "$YANGBLE5_API_KEY" in
-    yb5_*) : ;;
-    *)
-        printf 'yangble5: YANGBLE5_API_KEY in %s is not a yb5_ key.\n' "$yb5_cred" >&2
-        exit 6 ;;
-esac
-case "$YANGBLE5_API_KEY" in
-    *[!A-Za-z0-9_-]*)
-        printf 'yangble5: YANGBLE5_API_KEY in %s has illegal characters.\n' "$yb5_cred" >&2
-        exit 6 ;;
-esac
+# Require the STRUCTURE yb5_<hex>_<url-safe secret>, not just a yb5_ prefix plus a
+# clean charset. The .cmd launcher's findstr guard already enforces this shape, so
+# a bare-prefix check here made the two launchers disagree on a hand-edited key
+# like `yb5_notreallyhex` (POSIX accepted, Windows refused). Same structure the
+# installer's own valid_key checks; both launchers now reach the same verdict.
+if ! printf '%s' "$YANGBLE5_API_KEY" | grep -Eq '^yb5_[0-9a-f]+_[A-Za-z0-9_-]+$'; then
+    printf 'yangble5: YANGBLE5_API_KEY in %s is not a well-formed yb5_<hex>_<secret> key.\n' "$yb5_cred" >&2
+    exit 6
+fi
 
 export YANGBLE5_API YANGBLE5_API_KEY YANGBLE5_MODEL
 

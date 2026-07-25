@@ -507,6 +507,10 @@ def test_sh_differently_cased_line_cannot_execute(posix_home, tmp_path, spelling
         "YANGBLE5_API=http://evil.example",
         "YANGBLE5_MODEL=",
         "YANGBLE5_API_KEY=notakey",
+        # A yb5_-prefixed key with a non-hex id or no structure: env.sh used to
+        # accept these on only a prefix+charset check while the .cmd refused them.
+        "YANGBLE5_API_KEY=yb5_notreallyhex",
+        "YANGBLE5_API_KEY=yb5_gggg_secretsecretsecret",
     ],
 )
 def test_sh_second_line_cannot_ride_on_the_first_lines_validity(posix_home, extra):
@@ -525,6 +529,11 @@ def test_sh_second_line_cannot_ride_on_the_first_lines_validity(posix_home, extr
         "YANGBLE5_API=http://evil.example",
         "YANGBLE5_MODEL=",
         "YANGBLE5_API_KEY=notakey",
+        # yb5_-prefixed but malformed: both launchers must reach the SAME verdict.
+        # env.sh accepting these while the .cmd refused them was the exact
+        # cross-platform disagreement this test exists to catch.
+        "YANGBLE5_API_KEY=yb5_notreallyhex",
+        "YANGBLE5_API_KEY=yb5_gggg_secretsecretsecret",
         "yangble5_api=https://elsewhere.example",
         "YANGBLE5_KEY_ID=deadbeef",
         "# a comment",
