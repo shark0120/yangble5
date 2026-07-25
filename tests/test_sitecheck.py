@@ -406,6 +406,39 @@ def test_authoritative_figure_in_a_text_file_is_accepted(name, fname, payload):
     assert problems == [], f"{name}: {payload!r} in {fname} was wrongly flagged: {problems!r}"
 
 
+def test_external_subresource_detection_is_case_insensitive_and_trimmed():
+    """Browsers lower-case the URL scheme and strip leading whitespace, so each of
+    these loads an external resource and must be flagged -- not only the lowercase
+    form the disciplined pages happen to use."""
+    for src in (
+        '<img src="HTTPS://evil.example/x.png">',
+        '<img src=" https://evil.example/x.png">',
+        '<iframe src="HTTP://evil.example/x"></iframe>',
+        '<img src="//evil.example/x.png">',  # protocol-relative is external too
+    ):
+        d = sitecheck.Doc()
+        d.feed(src)
+        d.close()
+        assert d.external, f"external subresource not detected: {src!r}"
+
+
+def test_local_subresource_is_not_flagged_external():
+    for src in ('<img src="/local/x.png">', '<img src="asset.png">'):
+        d = sitecheck.Doc()
+        d.feed(src)
+        d.close()
+        assert d.external == [], src
+
+
+def test_uppercase_css_external_reference_is_flagged():
+    for css in (
+        "<style>@IMPORT url(x);</style>",
+        "<style>a{background:URL('HTTPS://evil/x')}</style>",
+    ):
+        problems = sitecheck.check_page("index.html", css, set())
+        assert any("external CSS reference" in p for p in problems), css
+
+
 def test_a_per_file_allowance_does_not_leak():
     """site/README.md may print `99.54%` because it documents the negative
     control. site/install.sh may not, and neither may a page."""

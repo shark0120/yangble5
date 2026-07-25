@@ -342,6 +342,15 @@ TEXT_GROUPED_RE = re.compile(r"(?<![0-9A-Za-z_.,])([0-9]{1,3}(?:,[0-9]{3})+)(?![
 TEXT_UNIT_RE = re.compile(
     r"(?<![0-9A-Za-z_.,])([0-9][0-9.,]*(?:" + "|".join(UNITS) + r"))(?![0-9A-Za-z_])"
 )
+# A comma-bearing numeric run long enough to pose as a grouped total but not
+# validly grouped -- "74,8918" and "7,48,918" both read as ~748,918. The page
+# path (account_figures) rejects these via COMMA_FORM; a text file must too, or
+# an obfuscated token total slips into install.sh/ps1 unchecked. The >=4-digit
+# floor applied in check_text is what keeps the incidental commas this file is
+# deliberately lenient about -- regex quantifiers like {1,64}, the ~0,24 substring
+# op -- from tripping it, while the real figures 748,918 and 1,000,000 pass because
+# they ARE well-formed.
+TEXT_COMMA_NUM_RE = re.compile(r"(?<![0-9A-Za-z_.])([0-9][0-9.,]*[0-9])(?![0-9A-Za-z_])")
 
 
 def scan_figures(text: str, atom_re: re.Pattern = ATOM):
@@ -640,6 +649,22 @@ def check_text(name: str, text: str, used: set[tuple[str, str]]) -> list[str]:
         for m in pattern.finditer(text):
             canonical = m.group(1).replace(",", "")
             rule(canonical, kind, any(canonical in t for t in (MEASURED, PERCENT, ALLOW)))
+    # A malformed thousands separator is a mis-grouped figure the page path also
+    # rejects. It stays allow-listable ONLY so site/README.md can quote the guard's
+    # own rejection of the fixture (the same reason it may print `99.54%`); the
+    # fixture form is auto-added to README's allowance by _fixture_figures, and no
+    # other file carries one. The >=4-digit floor keeps the regex quantifiers and
+    # substring ops installers legitimately carry out of it.
+    for m in TEXT_COMMA_NUM_RE.finditer(text):
+        raw = m.group(1)
+        if "," in raw and sum(c in DIGITS for c in raw) >= 4 and not COMMA_FORM.match(raw):
+            if raw in allow:
+                used.add((name, raw))
+            else:
+                problems.append(
+                    f"malformed thousands separator: {raw!r} — grouped digits must "
+                    f"be 1-3 then groups of exactly 3"
+                )
 
     for i, ch in enumerate(text):
         if ch.isdigit() and ch not in DIGITS:
@@ -723,7 +748,9 @@ class Doc(HTMLParser):
         )
         for k in ("src", "href"):
             v = a.get(k, "")
-            if subresource and re.match(r"^(https?:)?//", v):
+            # Browsers lower-case the URL scheme and strip leading whitespace, so
+            # <img src=" HTTPS://evil/x"> loads externally; match the way they read.
+            if subresource and re.match(r"^(https?:)?//", v.strip(), re.IGNORECASE):
                 self.external.append(f"<{tag} {k}={v}>")
         if tag not in VOID:
             self.stack.append((tag, self.getpos()))
@@ -770,7 +797,7 @@ def check_page(name: str, src: str, used: set[str]) -> list[str]:
 
     problems += [f"external subresource: {e}" for e in d.external]
     problems += [f"inline event handler: {h}" for h in d.inline_handlers]
-    for m in re.finditer(r"@import|url\(\s*['\"]?https?:", src):
+    for m in re.finditer(r"@import|url\(\s*['\"]?https?:", src, re.IGNORECASE):
         problems.append(f"external CSS reference: {m.group(0)}")
 
     if d.styles != 1:
@@ -1334,6 +1361,16 @@ def _fixture_figures() -> dict[str, str]:
                     m.group(1).replace(",", ""),
                     f"planted by the must-fail fixture {case!r}, which {GUARD_DOC} documents",
                 )
+        # A malformed thousands separator matches none of the three shapes above,
+        # so it needs its own pass or README could not quote the guard rejecting it.
+        # The key keeps its comma -- check_text tests the raw form against the allow.
+        for m in TEXT_COMMA_NUM_RE.finditer(payload):
+            raw = m.group(1)
+            if "," in raw and sum(c in DIGITS for c in raw) >= 4 and not COMMA_FORM.match(raw):
+                out.setdefault(
+                    raw,
+                    f"planted by the must-fail fixture {case!r}, which {GUARD_DOC} documents",
+                )
     return out
 
 
@@ -1374,6 +1411,21 @@ TEXT_MUST_FAIL = [
         "non-ASCII digit",
     ),
     ("a file with no per-file allowance of its own", "llms.txt", "hit rate 99.61%", "99.61"),
+    # The page path rejects a mis-grouped figure as a malformed separator; a file
+    # users pipe into a shell must too, or "74,8918" (reads as ~748,918) obfuscates
+    # a token total past the guard. Both mis-groupings are exercised.
+    (
+        "a mis-grouped token total in an installer",
+        "install.sh",
+        "a 74,8918-token prefix",
+        "thousands separator",
+    ),
+    (
+        "an interior mis-group in an installer",
+        "install.ps1",
+        "about 7,48,918 tokens",
+        "thousands separator",
+    ),
 ]
 
 # ── the claim cases ────────────────────────────────────────────────────────
@@ -1457,6 +1509,19 @@ TEXT_MUST_PASS = [
     ("a batch substring expression is not a percentage", "install.ps1", "%KEY:~0,24%"),
     ("the checker's own 4-place provenance", GUARD_DOC, "= 99.5333% and = 74.6485%"),
     ("the negative control, in the file that documents it", GUARD_DOC, "CI plants `99.54%`"),
+    # The incidental commas an installer legitimately carries -- regex quantifiers
+    # and the batch substring op -- have fewer than four digits and must not read
+    # as malformed thousands separators. This is what the >=4-digit floor protects.
+    (
+        "regex quantifiers are not mis-grouped figures",
+        "install.sh",
+        "hosts match {1,64} and ports {1,5}",
+    ),
+    (
+        "a real grouped total is well-formed and passes",
+        "install.sh",
+        "748,918 tokens, not 1,000,000",
+    ),
 ]
 
 
