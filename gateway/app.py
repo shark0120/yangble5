@@ -2568,7 +2568,21 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         if isinstance(byok_label, JSONResponse):
             return byok_label
 
-        sealed = state.byok_cipher.seal(payload.credential.strip())
+        # min_length=8 on ByokRequest.credential is enforced on the RAW string, so
+        # eight spaces passes it and strips to "". An empty stored credential is
+        # worse than no credential: resolve_byok would return "" (not None), which
+        # the request path reads as "BYOK attached" (skip every pool/budget gate)
+        # while the falsy `or` fallback routes on the OPERATOR's engine key -- free,
+        # unmetered, accounting-invisible use of the operator's account. Reject it
+        # here so it can never be stored.
+        credential = payload.credential.strip()
+        if len(credential) < 8:
+            return _error(
+                400, "invalid_request_error",
+                "credential must be at least 8 characters after trimming whitespace.",
+            )
+
+        sealed = state.byok_cipher.seal(credential)
         await run_in_threadpool(
             lambda: state.storage.put_byok(
                 ctx.key_id,
@@ -2694,6 +2708,13 @@ def _make_proxy_handler(state: GatewayState, path: str):
         # A BYOK caller pays their own upstream, so none of the pool gates below
         # apply to them — that is the entire point of attaching a credential.
         byok_credential = await resolve_byok(state, ctx.key_id) if spending else None
+        # Defence in depth for the empty-credential case attach_byok now blocks: a
+        # legacy or otherwise-empty stored credential is NOT a credential. Normalise
+        # it to None so the three decisions below AGREE -- `is None` (billable),
+        # `or` (which key), `is not None` (byok flag) -- instead of granting a free,
+        # unmetered request on the operator's engine key.
+        if not byok_credential:
+            byok_credential = None
         billable = spending and byok_credential is None
 
         if billable:
@@ -2891,18 +2912,24 @@ async def _proxy(
     # sanitised envelope with a reason that distinguishes "out of quota" from
     # "not working". BYOK callers are still passed through untouched — that is
     # their own account's error, and theirs to read.
+    # Gate on `not byok` (shared-pool traffic on the OPERATOR'S engine key), NOT on
+    # `billable`. A non-spending shared-pool request -- GET /v1/models -- is
+    # billable=False yet still runs on the operator's account, so its error body
+    # (which can name the internal host or operator account) must be sanitised the
+    # same way a spending one is. BYOK requests remain passed through: that is the
+    # caller's own account's error, and theirs to read.
     intercept = (
-        billable
+        not byok
         and not (200 <= status < 300)
         and status not in _UPSTREAM_PASSTHROUGH_STATUSES
     )
-    if billable and 200 <= status < 300:
+    if not byok and 200 <= status < 300:
         # Proof the SHARED account is serving. Clears the failure window, so a
         # burst of errors followed by a success does not leave /pool/status
         # claiming an outage that has ended.
         #
-        # `billable` is load-bearing and must match the guard on record_failure
-        # below. A BYOK request is served by the CALLER'S own credential, so its
+        # `not byok` is load-bearing and must match the intercept/record_failure
+        # guard. A BYOK request is served by the CALLER'S own credential, so its
         # 200 says nothing whatsoever about the operator's account -- but it was
         # clearing the window anyway. The shared pool could be returning 500 to
         # everyone while one active BYOK user kept /pool/status reporting

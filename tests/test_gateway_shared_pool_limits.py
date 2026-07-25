@@ -622,6 +622,24 @@ def test_no_upstream_failure_body_reaches_a_shared_pool_caller(build, status):
     assert "byok_instructions" in body
 
 
+def test_a_non_spending_shared_pool_get_does_not_leak_the_upstream_error(build):
+    """GET /v1/models is non-spending, so billable=False -- but it still runs on the
+    operator's engine key (byok=False). Its upstream error body must be sanitised
+    the same way a spending POST is. Gating interception on `billable` sent this
+    raw; gating on `not byok` (shared-pool) catches it."""
+    gw = build(UPSTREAM_HEALTH_FAILURE_THRESHOLD=99, RATE_LIMIT_RPM=0)
+    key = gw.new_key()
+    gw.upstream.status = 503
+    gw.upstream.chunks = [LEAKY_BODY]
+
+    response = gw.client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+    assert "operator-private-42@example.com" not in response.text
+    assert "127.0.0.1" not in response.text
+    assert "8318" not in response.text
+    assert response.status_code == 503
+    assert response.json()["reason"] == "upstream_unavailable"
+
+
 @pytest.mark.parametrize("status", [400, 413, 415, 422])
 def test_a_verdict_on_the_callers_own_request_is_still_forwarded(build, status):
     """The other half of the property. Withholding "your JSON is malformed"

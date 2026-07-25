@@ -1756,7 +1756,32 @@ def test_byok_rejects_a_malformed_body(build):
     assert gw.client.post(
         "/byok", headers=auth, json={"credential": "y" * 5000}
     ).status_code == 400
+    # Whitespace-only passes min_length=8 on the RAW string but strips to "" (or to
+    # too-few real chars). An empty stored credential would grant free, unmetered
+    # use of the operator's engine key, so it must be rejected before storage.
+    assert gw.client.post("/byok", headers=auth, json={"credential": " " * 8}).status_code == 400
+    assert gw.client.post("/byok", headers=auth, json={"credential": "  a b  "}).status_code == 400
     assert gw.storage.get_byok(parse_key(key)[0]) is None
+
+
+def test_an_empty_stored_credential_is_billed_to_the_pool_not_free(build):
+    """Defence in depth for the empty-credential hole. Even if an empty credential
+    somehow reaches storage (the attach guard now blocks the API path), a spending
+    request must go through the shared-pool gates on the engine key and be metered,
+    not treated as free BYOK on the operator's account."""
+    gw = build(DAILY_TOKEN_BUDGET=1_000_000)
+    key = gw.new_key()
+    key_id = parse_key(key)[0]
+    # Inject an empty credential directly, bypassing attach_byok's guard.
+    sealed = gw.app.state.gateway.byok_cipher.seal("")
+    gw.storage.put_byok(
+        key_id, scheme=sealed.scheme, nonce=sealed.nonce, ciphertext=sealed.ciphertext, label=None
+    )
+    gw.upstream.set_json_usage(input_tokens=1_000_000, output_tokens=0)
+    assert gw.call(key).status_code == 200
+    # Metered against the caller's billable slice AND the global pool -- not free.
+    assert gw.storage.usage_for_day(key_id, billable_only=True).total_tokens == 1_000_000
+    assert gw.storage.global_usage_for_day().total_tokens == 1_000_000
 
 
 def test_byok_users_skip_the_operator_reserve(build):
