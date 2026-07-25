@@ -107,7 +107,27 @@ BODY_TOO_LARGE = (
 # Hard ceiling on a request body. A 1M-token prompt is a few MB of JSON; 64 MiB
 # is generous for that and still bounds the memory one client can pin, since the
 # shim must buffer the body to rewrite roles.
-MAX_BODY_BYTES = int(os.environ.get("YANGBLE5_SHIM_MAX_BODY_BYTES") or 64 * 1024 * 1024)
+_DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
+def _resolve_max_body_bytes(env: dict[str, str] | None = None) -> int:
+    """Read the body-size ceiling from the environment, defensively.
+
+    A non-integer value (``64MB``) must not crash the shim at import the way a bare
+    ``int()`` would, and a zero or negative value must not silently turn every
+    request into a 413 -- both degrade to the 64 MiB default, mirroring how
+    build_parser guards the port. This is why the value is resolved here rather
+    than inline.
+    """
+    env = os.environ if env is None else env
+    try:
+        value = int(env.get("YANGBLE5_SHIM_MAX_BODY_BYTES") or _DEFAULT_MAX_BODY_BYTES)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_BODY_BYTES
+    return value if value > 0 else _DEFAULT_MAX_BODY_BYTES
+
+
+MAX_BODY_BYTES = _resolve_max_body_bytes()
 
 
 # --------------------------------------------------------------------------

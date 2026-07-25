@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from tools import claude_shim
 from tools.claude_shim import (
     ShimConfig,
     fix_system_roles,
@@ -27,6 +28,27 @@ from tools.claude_shim import (
 
 def encode(payload: object) -> bytes:
     return json.dumps(payload).encode("utf-8")
+
+
+_DEFAULT_MAX = 64 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, _DEFAULT_MAX),       # unset -> default
+        ("", _DEFAULT_MAX),         # empty -> default via `or`
+        ("1048576", 1_048_576),     # a valid override is honoured
+        ("64MB", _DEFAULT_MAX),     # non-integer -> default, NOT a crash at import
+        ("0", _DEFAULT_MAX),        # zero would 413 every body -> default
+        ("-5", _DEFAULT_MAX),       # negative likewise
+    ],
+)
+def test_max_body_bytes_env_is_parsed_defensively(value, expected):
+    """A misconfigured YANGBLE5_SHIM_MAX_BODY_BYTES must degrade to the default,
+    not crash the shim at import (non-integer) or 413 every request (0/negative)."""
+    env = {} if value is None else {"YANGBLE5_SHIM_MAX_BODY_BYTES": value}
+    assert claude_shim._resolve_max_body_bytes(env) == expected
 
 
 # ---------------------------------------------------------------- mapping ---
