@@ -213,6 +213,20 @@ contains_ci() {
     esac
 }
 
+# ── equals_ci: case-insensitive WHOLE-VALUE equality, surrounding space trimmed
+#
+# For a header whose value is a single complete token, a substring test is WRONG:
+# `no-referrer` is a substring of the valid-but-weaker `no-referrer-when-downgrade`,
+# and `same-origin` of `same-origin-allow-popups`, so contains_ci reports the weaker
+# policy as PASS -- the exact value-drift this smoke test exists to catch. Exact
+# match closes that. The value is trimmed first so `no-referrer ` still matches.
+equals_ci() {
+    local a b
+    a="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    b="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ "$a" = "$b" ]
+}
+
 # events, gap-in-seconds -> streaming | buffered | inconclusive
 #
 # `--self-test` proves this says all three things. It is a separate function
@@ -273,6 +287,28 @@ check 9b: no-store is present, so the API is not publicly cacheable|no-store, no
 check 9b: THE DEFECT -- a public API response must not read as no-store|public, max-age=300|no-store|0
 EOF
 
+    # ---- equals_ci: whole-value, for the headers that must be exact ----------
+    # description | got | want | expected (1 = equal, 0 = not)
+    while IFS='|' read -r desc hay ndl want; do
+        [ -n "$desc" ] || continue
+        if equals_ci "$hay" "$ndl"; then got=1; else got=0; fi
+        if [ "$got" = "$want" ]; then
+            printf '  ok    %s\n' "$desc"
+        else
+            printf '  FAIL  %s (expected %s, got %s) hay=%s ndl=%s\n' \
+                   "$desc" "$want" "$got" "$hay" "$ndl"
+            failures=$((failures+1))
+        fi
+    done <<'EOF'
+referrer-policy: the intended value matches|no-referrer|no-referrer|1
+referrer-policy THE DEFECT: the weaker superset must NOT pass|no-referrer-when-downgrade|no-referrer|0
+coop: the intended value matches|same-origin|same-origin|1
+coop THE DEFECT: same-origin-allow-popups must NOT pass same-origin|same-origin-allow-popups|same-origin|0
+equals_ci folds case|NO-REFERRER|no-referrer|1
+equals_ci trims surrounding whitespace| no-referrer |no-referrer|1
+equals_ci is not a substring test|no-referrer-extra|no-referrer|0
+EOF
+
     # ---- stream_verdict: events | gap seconds | expected verdict -----------
     #
     # The first row is the one that matters. On 2026-07-23 a healthy origin
@@ -314,7 +350,7 @@ EOF
         printf 'script prints is unreliable until they are fixed.\n'
         return 1
     fi
-    printf '\nself-test: contains_ci says yes and no when it should;\n'
+    printf '\nself-test: contains_ci and equals_ci say yes and no when they should;\n'
     printf 'stream_verdict says streaming, buffered and inconclusive when it should.\n'
     return 0
 }
@@ -855,33 +891,42 @@ check_security_headers() {
         return
     fi
 
-    # header name -> substring that must appear in its value. The substring is
-    # the part that is ours; matching the whole line would break on harmless
-    # ordering or spacing differences between nginx and Caddy.
+    # header name -> value requirement, and how to compare it. `contains` matches a
+    # substring -- the part that is ours -- so harmless ordering/spacing differences
+    # between nginx and Caddy in a multi-token value (HSTS, CSP, Permissions-Policy)
+    # do not fail. `exact` matches the WHOLE value: a header whose value is a single
+    # token (Referrer-Policy, Cross-Origin-Opener-Policy) must not be satisfied by a
+    # valid-but-weaker superset (`no-referrer-when-downgrade`, `same-origin-allow-popups`).
     hdr_value() { printf '%s' "$hdrs" | grep -i "^$1:" | head -1 | cut -d: -f2- | sed 's/^ *//'; }
+    hdr_ok() {  # got | want | mode  -> success if the value satisfies the requirement
+        case "$3" in
+            exact) equals_ci "$1" "$2" ;;
+            *)     contains_ci "$1" "$2" ;;
+        esac
+    }
 
-    local name want got missing=0
-    while IFS='|' read -r name want; do
+    local name want mode got missing=0
+    while IFS='|' read -r name want mode; do
         [ -n "$name" ] || continue
         got="$(hdr_value "$name")"
         if [ -z "$got" ]; then
             fail "hdr/$name" "ABSENT — the origin is not serving it, and Cloudflare will not add it for you"
             missing=$((missing+1))
-        elif [ -n "$want" ] && ! contains_ci "$got" "$want"; then
-            fail "hdr/$name" "present but wrong: expected to contain '$want', got '$(printf '%s' "$got" | cut -c1-45)'"
+        elif [ -n "$want" ] && ! hdr_ok "$got" "$want" "$mode"; then
+            fail "hdr/$name" "present but wrong: expected value to ${mode:-contain} '$want', got '$(printf '%s' "$got" | cut -c1-45)'"
             missing=$((missing+1))
         else
             pass "hdr/$name" "$(printf '%s' "$got" | cut -c1-45)"
         fi
     done <<'EOF'
-Strict-Transport-Security|includeSubDomains
-X-Content-Type-Options|nosniff
-X-Frame-Options|DENY
-Referrer-Policy|no-referrer
-Content-Security-Policy|frame-ancestors 'none'
-Cross-Origin-Opener-Policy|same-origin
-Cross-Origin-Resource-Policy|same-origin
-Permissions-Policy|camera=()
+Strict-Transport-Security|includeSubDomains|contains
+X-Content-Type-Options|nosniff|contains
+X-Frame-Options|DENY|contains
+Referrer-Policy|no-referrer|exact
+Content-Security-Policy|frame-ancestors 'none'|contains
+Cross-Origin-Opener-Policy|same-origin|exact
+Cross-Origin-Resource-Policy|same-origin|contains
+Permissions-Policy|camera=()|contains
 EOF
 
     if [ "$missing" -gt 0 ]; then
