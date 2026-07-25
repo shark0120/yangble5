@@ -725,7 +725,9 @@
     # as in static-content-type.conf — the test suite asserts the two copies
     # agree — and, exactly like everywhere else, NO add_header in here: one
     # would silently drop the server-level CSP for these URLs.
-    location ~* \.tar\.gz$ {
+    # Matches `\.gz$`, not `\.tar\.gz$`, so a plain `.gz` cannot fall through to
+    # text/plain: the location must cover exactly what the text test exempts.
+    location ~* \.gz$ {
         try_files $uri =404;
         default_type application/gzip;
     }

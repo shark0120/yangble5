@@ -120,6 +120,16 @@ def _uncommented(path: Path) -> str:
     return "\n".join(line.split("#", 1)[0] for line in lines)
 
 
+def _nginx_regex_matches(nginx_regex: str, filename: str) -> bool:
+    """True if an nginx ``location ~* <regex>`` would match ``filename``.
+
+    The regexes here (``\\.gz$``) are PCRE that Python's ``re`` accepts directly,
+    and ``~*`` is case-insensitive. A regex Python cannot compile raises rather
+    than passing silently — that would mean this coverage check stopped checking.
+    """
+    return re.search(nginx_regex, filename, re.IGNORECASE) is not None
+
+
 def test_include_declares_default_type_and_charset() -> None:
     body = _uncommented(INCLUDE)
     assert re.search(r"^\s*default_type\s+text/plain\s*;", body, re.M), (
@@ -161,16 +171,22 @@ def test_declared_binaries_have_an_honest_content_type() -> None:
     present = {p.suffix.lower() for p in _site_files()} & set(BINARY_SUFFIXES)
     for suffix, mime in BINARY_SUFFIXES.items():
         directive = f"default_type {mime};"
-        assert directive in re.sub(r"\s+", " ", include), (
-            f"BINARY_SUFFIXES allows {suffix} but static-content-type.conf "
-            f"never declares `{directive}` — the binary would fall through to "
-            f"text/plain"
-        )
-        assert directive in re.sub(r"\s+", " ", snippet), (
-            f"BINARY_SUFFIXES allows {suffix} but PART 3d never declares "
-            f"`{directive}` — the paste-the-whole-file path would serve it as "
-            f"text/plain"
-        )
+        sample = "release-archive" + suffix
+        for label, body in (("static-content-type.conf", include), ("PART 3d", snippet)):
+            assert directive in re.sub(r"\s+", " ", body), (
+                f"BINARY_SUFFIXES allows {suffix} but {label} never declares "
+                f"`{directive}` — the binary would fall through to text/plain"
+            )
+            # Declaring the mime type is not enough: the `location ~* ...` regex
+            # that CARRIES it must actually match a file with this suffix, or the
+            # file falls through to `location /` and text/plain anyway. This is the
+            # gap `\.tar\.gz$` left for a plain `.gz`.
+            regexes = re.findall(r"location\s+~\*\s+(\S+)\s*\{", body)
+            assert any(_nginx_regex_matches(rx, sample) for rx in regexes), (
+                f"{label} declares `{directive}` for {suffix} but no `location ~* "
+                f"...` regex matches a real file like {sample!r}; it would fall "
+                f"through to `location /` and be served as text/plain"
+            )
     stale = set(BINARY_SUFFIXES) - present
     assert not stale, (
         f"BINARY_SUFFIXES lists {sorted(stale)} but no file in site/ carries "
