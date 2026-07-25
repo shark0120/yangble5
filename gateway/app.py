@@ -2481,6 +2481,13 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
 
         day = await run_in_threadpool(state.storage.usage_for_day, ctx.key_id)
         month = await run_in_threadpool(state.storage.usage_for_month, ctx.key_id)
+        # tokens_remaining below must track the SAME billable-only total the budget
+        # gate enforces (see key_budget_state), not day.total_tokens which also
+        # counts BYOK the user paid for themselves. Otherwise a BYOK-heavy day
+        # reports 0 remaining while the shared-pool allowance is in fact untouched.
+        billable_day = await run_in_threadpool(
+            state.storage.usage_for_day, ctx.key_id, billable_only=True
+        )
         record = ctx.record
         token_budget = (
             record.daily_token_budget
@@ -2506,7 +2513,9 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     "token_budget": token_budget or None,
                     "cost_usd_budget": cost_budget or None,
                     "tokens_remaining": (
-                        max(0, token_budget - day.total_tokens) if token_budget > 0 else None
+                        max(0, token_budget - billable_day.total_tokens)
+                        if token_budget > 0
+                        else None
                     ),
                 },
                 "this_month": {

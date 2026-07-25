@@ -1594,6 +1594,35 @@ def test_byok_requests_do_not_decrement_the_shared_budget(build):
     assert gw.call(key).status_code == 429
 
 
+def test_usage_tokens_remaining_reflects_the_billable_only_allowance(build):
+    """/usage must report the SAME allowance the budget gate enforces. BYOK usage
+    the user paid for themselves never touched the shared pool, so it must not be
+    subtracted from tokens_remaining -- otherwise a BYOK-heavy day shows 0 remaining
+    while a shared-pool request is in fact still admitted."""
+    gw = build(
+        DAILY_TOKEN_BUDGET=1_000_000, DAILY_COST_USD_BUDGET=0,
+        PRICE_TABLE_JSON=json.dumps(
+            {"default": {"input": 10.0, "cached_input": 1.0, "output": 30.0}}
+        ),
+    )
+    key = gw.new_key()
+    assert gw.attach_byok(key).status_code == 201
+
+    gw.upstream.set_json_usage(input_tokens=1_000_000, output_tokens=0)
+    assert gw.call(key).status_code == 200
+
+    body = gw.client.get("/usage", headers={"Authorization": f"Bearer {key}"}).json()
+    # The full day's activity is still visible...
+    assert body["today"]["total_tokens"] == 1_000_000
+    # ...but the shared-pool allowance the gate enforces is untouched, so the whole
+    # budget remains. Before the fix this read 0 (the unfiltered total), telling the
+    # user they were rate-limited when they were not.
+    assert body["today"]["tokens_remaining"] == 1_000_000
+    # The gate agrees: on the shared pool the very same request is still admitted.
+    assert gw.client.delete("/byok", headers={"Authorization": f"Bearer {key}"}).status_code == 200
+    assert gw.call(key).status_code == 200
+
+
 def test_byok_routes_with_the_users_credential_not_the_engine_key(build):
     gw = build()
     key = gw.new_key()
