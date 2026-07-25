@@ -9,6 +9,7 @@ pass/fail decision -- is verifiable offline.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -347,10 +348,7 @@ def test_main_rejects_a_zero_round_run_before_making_any_request(monkeypatch):
 # Replay: recompute a committed run offline, and catch a tampered fixture.
 # --------------------------------------------------------------------------
 
-import json as _json
-from pathlib import Path as _Path
-
-_EVIDENCE = _Path(__file__).resolve().parents[1] / "evidence" / "run-749k-20260721.jsonl"
+_EVIDENCE = Path(__file__).resolve().parents[1] / "evidence" / "run-749k-20260721.jsonl"
 
 
 def test_replay_flag_exists_and_needs_no_key():
@@ -364,7 +362,7 @@ def test_replay_reproduces_the_committed_headline_offline(monkeypatch, capsys):
     monkeypatch.delenv(cache_bench.BASE_URL_ENV, raising=False)
     code = cache_bench.main(["--replay", str(_EVIDENCE), "--json"])
     assert code == 0
-    payload = _json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)
     assert payload["reproduced"] is True
     assert payload["eligible_hit_rate"] == 0.9953
     assert payload["cached_tokens"] == 2236290

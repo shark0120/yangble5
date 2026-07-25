@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from tools import cache_guard
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "cache_guard"
@@ -53,9 +51,12 @@ def test_common_prefix_len_basic():
 
 
 def test_find_volatility_flags_high_severity_patterns():
-    names = {f["rule"] for f in cache_guard.find_volatility(
-        "id 3f2504e0-4f89-41d3-9a0c-0305e82c3301 at 2026-07-25T03:14:07Z epoch 1784000000"
-    )}
+    names = {
+        f["rule"]
+        for f in cache_guard.find_volatility(
+            "id 3f2504e0-4f89-41d3-9a0c-0305e82c3301 at 2026-07-25T03:14:07Z epoch 1784000000"
+        )
+    }
     assert "uuid" in names
     assert "iso8601_datetime" in names
     assert "unix_epoch_s" in names
@@ -127,12 +128,16 @@ def test_cli_scan_bad_example_exits_one():
 
 
 def test_cli_diff_good_to_bad_reports_regression(capsys):
-    code = cache_guard.main([
-        "diff",
-        "--before", str(EXAMPLES / "good_prompt.jsonl"),
-        "--after", str(EXAMPLES / "bad_prompt.jsonl"),
-        "--json",
-    ])
+    code = cache_guard.main(
+        [
+            "diff",
+            "--before",
+            str(EXAMPLES / "good_prompt.jsonl"),
+            "--after",
+            str(EXAMPLES / "bad_prompt.jsonl"),
+            "--json",
+        ]
+    )
     assert code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["regressed"] is True

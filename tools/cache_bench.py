@@ -237,18 +237,14 @@ def load_replay(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise SystemExit(f"error: {path} line {lineno} is not valid JSON: {exc}")
+            raise SystemExit(f"error: {path} line {lineno} is not valid JSON: {exc}") from exc
         if "_meta" in obj:
             meta = obj["_meta"]
             continue
         if "usage" not in obj or "round" not in obj:
-            raise SystemExit(
-                f"error: {path} line {lineno} needs both 'round' and 'usage' keys"
-            )
+            raise SystemExit(f"error: {path} line {lineno} needs both 'round' and 'usage' keys")
         rounds.append(
-            usage_to_round(
-                int(obj["round"]), obj["usage"] or {}, int(obj.get("latency_ms") or 0)
-            )
+            usage_to_round(int(obj["round"]), obj["usage"] or {}, int(obj.get("latency_ms") or 0))
         )
     return meta, rounds
 

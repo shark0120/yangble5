@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,7 +70,9 @@ VOLATILITY_RULES: tuple[Volatility, ...] = (
     Volatility(
         "uuid",
         "high",
-        re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+        re.compile(
+            r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+        ),
         "a UUID/request-id is unique per call; it invalidates the whole prefix after it",
     ),
     Volatility(
@@ -101,7 +102,9 @@ VOLATILITY_RULES: tuple[Volatility, ...] = (
     Volatility(
         "now_marker",
         "medium",
-        re.compile(r"(?i)\b(current (date|time)|generated (at|on)|today('?s)? date|as of|timestamp)\b"),
+        re.compile(
+            r"(?i)\b(current (date|time)|generated (at|on)|today('?s)? date|as of|timestamp)\b"
+        ),
         "phrases like 'current date' usually sit next to a value that changes",
     ),
 )
@@ -156,7 +159,7 @@ def _blocks_text(content: Any) -> str:
 
 def common_prefix_len(texts: Sequence[str]) -> int:
     """Length of the longest byte-identical leading run shared by all texts."""
-    texts = [t for t in texts]
+    texts = list(texts)
     if not texts:
         return 0
     if len(texts) == 1:
@@ -298,12 +301,12 @@ def load_payloads(path: Path) -> list[Any]:
             try:
                 out.append(json.loads(raw))
             except json.JSONDecodeError as exc:
-                raise SystemExit(f"error: {path} line {lineno}: {exc}")
+                raise SystemExit(f"error: {path} line {lineno}: {exc}") from exc
         return out
     try:
         obj = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"error: {path}: {exc}")
+        raise SystemExit(f"error: {path}: {exc}") from exc
     return obj if isinstance(obj, list) else [obj]
 
 
@@ -316,27 +319,38 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     report = scan_payloads(payloads, strict=args.strict)
 
     if args.json:
-        print(json.dumps({
-            "payloads": report.payloads,
-            "prefix_chars": report.prefix_chars,
-            "high": report.high,
-            "medium": report.medium,
-            "findings": report.findings,
-            "clean": report.clean,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "payloads": report.payloads,
+                    "prefix_chars": report.prefix_chars,
+                    "high": report.high,
+                    "medium": report.medium,
+                    "findings": report.findings,
+                    "clean": report.clean,
+                },
+                indent=2,
+            )
+        )
         return 0 if report.clean else 1
 
-    print(f"cache_guard scan: {report.payloads} payload(s), "
-          f"{report.prefix_chars:,} chars of cacheable prefix")
+    print(
+        f"cache_guard scan: {report.payloads} payload(s), "
+        f"{report.prefix_chars:,} chars of cacheable prefix"
+    )
     if report.clean:
         print("  OK: no volatile content found in the cacheable prefix.")
         return 0
     for f in report.findings:
-        print(f"  [{f['severity'].upper():6}] {f['rule']} at char {f['at_char']} "
-              f"in payload {f['payload']}: {f['match']!r}")
+        print(
+            f"  [{f['severity'].upper():6}] {f['rule']} at char {f['at_char']} "
+            f"in payload {f['payload']}: {f['match']!r}"
+        )
         print(f"           -> {f['hint']}")
-    print(f"  {report.high} high / {report.medium} medium finding(s). "
-          f"Volatile content in a cached prefix invalidates the cache every request.")
+    print(
+        f"  {report.high} high / {report.medium} medium finding(s). "
+        f"Volatile content in a cached prefix invalidates the cache every request."
+    )
     return 1
 
 
@@ -347,37 +361,51 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         raise SystemExit("error: both --before and --after need at least one payload")
     report = diff_payloads(before, after)
     delta = report.cost_delta_per_1k(args.price_per_mtok)
-    price_note = (
-        f"at ${args.price_per_mtok:g}/Mtok"
-        + (" (EXAMPLE price -- pass --price-per-mtok)" if args.price_per_mtok == DEFAULT_PRICE_PER_MTOK else "")
+    price_note = f"at ${args.price_per_mtok:g}/Mtok" + (
+        " (EXAMPLE price -- pass --price-per-mtok)"
+        if args.price_per_mtok == DEFAULT_PRICE_PER_MTOK
+        else ""
     )
 
     if args.json:
-        print(json.dumps({
-            "before_ratio": report.before_ratio,
-            "after_ratio": report.after_ratio,
-            "before_prefix_chars": report.before_prefix_chars,
-            "after_prefix_chars": report.after_prefix_chars,
-            "churned_tokens_est": report.churned_tokens_est,
-            "regressed": report.regressed,
-            "cost_delta_per_1k_requests_est": round(delta, 4),
-            "price_per_mtok": args.price_per_mtok,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "before_ratio": report.before_ratio,
+                    "after_ratio": report.after_ratio,
+                    "before_prefix_chars": report.before_prefix_chars,
+                    "after_prefix_chars": report.after_prefix_chars,
+                    "churned_tokens_est": report.churned_tokens_est,
+                    "regressed": report.regressed,
+                    "cost_delta_per_1k_requests_est": round(delta, 4),
+                    "price_per_mtok": args.price_per_mtok,
+                },
+                indent=2,
+            )
+        )
         return 1 if report.regressed else 0
 
     print("cache_guard diff: stable cacheable prefix, before vs after")
-    print(f"  before: {report.before_ratio:.2%} stable "
-          f"({report.before_prefix_chars:,}/{report.before_min_chars:,} chars)")
-    print(f"  after:  {report.after_ratio:.2%} stable "
-          f"({report.after_prefix_chars:,}/{report.after_min_chars:,} chars)")
+    print(
+        f"  before: {report.before_ratio:.2%} stable "
+        f"({report.before_prefix_chars:,}/{report.before_min_chars:,} chars)"
+    )
+    print(
+        f"  after:  {report.after_ratio:.2%} stable "
+        f"({report.after_prefix_chars:,}/{report.after_min_chars:,} chars)"
+    )
     if not report.regressed:
         print("  OK: the cacheable prefix did not get less stable.")
         return 0
-    print(f"  REGRESSION: the stable prefix shrank by ~{report.churned_tokens_est:,} "
-          f"estimated tokens per request (~{CHARS_PER_TOKEN_EST} chars/token).")
+    print(
+        f"  REGRESSION: the stable prefix shrank by ~{report.churned_tokens_est:,} "
+        f"estimated tokens per request (~{CHARS_PER_TOKEN_EST} chars/token)."
+    )
     print(f"  Estimated extra cost: ${delta:,.2f} per 1,000 requests {price_note}.")
-    print("  This is an ESTIMATE from the byte diff, not a measured bill. Supply your "
-          "own price and request volume for your real number.")
+    print(
+        "  This is an ESTIMATE from the byte diff, not a measured bill. Supply your "
+        "own price and request volume for your real number."
+    )
     return 1
 
 
@@ -394,11 +422,17 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--json", action="store_true")
     scan.set_defaults(func=_cmd_scan)
 
-    diff = sub.add_parser("diff", help="compare cacheable-prefix stability before vs after a change")
+    diff = sub.add_parser(
+        "diff", help="compare cacheable-prefix stability before vs after a change"
+    )
     diff.add_argument("--before", required=True, help="payload file for the baseline")
     diff.add_argument("--after", required=True, help="payload file for the change under test")
-    diff.add_argument("--price-per-mtok", type=float, default=DEFAULT_PRICE_PER_MTOK,
-                      help="input token price per million, for the cost estimate")
+    diff.add_argument(
+        "--price-per-mtok",
+        type=float,
+        default=DEFAULT_PRICE_PER_MTOK,
+        help="input token price per million, for the cost estimate",
+    )
     diff.add_argument("--json", action="store_true")
     diff.set_defaults(func=_cmd_diff)
     return parser
