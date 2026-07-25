@@ -1678,6 +1678,14 @@ findstr /R /C:"^YANGBLE5_API=" "%YB5_CRED%" | findstr /V /R /C:"^YANGBLE5_API=ht
 if not errorlevel 1 set "YB5_BAD=YANGBLE5_API"
 findstr /R /C:"^YANGBLE5_API=.*[^A-Za-z0-9:/._~-]" "%YB5_CRED%" >nul
 if not errorlevel 1 set "YB5_BAD=YANGBLE5_API"
+REM A loopback host must be TERMINATED by ':' , '/' or end of line, or a look-alike
+REM like http://127.0.0.1.evil.com poses as local and the key goes cleartext to a
+REM DNS-controllable remote host. findstr's '$' is unusable here (it never matches
+REM on the LF file GATE 2 guarantees), so reject a loopback prefix FOLLOWED BY a
+REM non-':' non-'/' byte; a bare host, ':port' or '/path' has no such byte and
+REM passes -- the same set the anchored preflight above allows.
+findstr /R /C:"^YANGBLE5_API=http://127\.0\.0\.1[^:/]" /C:"^YANGBLE5_API=http://localhost[^:/]" "%YB5_CRED%" >nul
+if not errorlevel 1 set "YB5_BAD=YANGBLE5_API"
 findstr /R /C:"^YANGBLE5_API_KEY=yb5_[0-9a-f][0-9a-f]*_[A-Za-z0-9_-][A-Za-z0-9_-]*" "%YB5_CRED%" >nul
 if errorlevel 1 set "YB5_BAD=YANGBLE5_API_KEY"
 findstr /R /C:"^YANGBLE5_API_KEY=" "%YB5_CRED%" | findstr /V /R /C:"^YANGBLE5_API_KEY=yb5_[0-9a-f][0-9a-f]*_[A-Za-z0-9_-][A-Za-z0-9_-]*" >nul

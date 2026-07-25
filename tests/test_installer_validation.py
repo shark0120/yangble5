@@ -87,6 +87,11 @@ def sh_predicate(func: str, value: str) -> bool:
     return out.strip() == "YES"
 
 
+def sh_transport(url: str) -> str:
+    """Classify --api the way preflight does: https / local / remote / bad."""
+    return run_sh('api_transport "$YB5_TEST_VALUE"', YB5_TEST_VALUE=url).strip()
+
+
 def sh_sanitize(value: str, max_chars: int = 200) -> str:
     return run_sh(
         'printf "[%s]" "$(sanitize_remote "$YB5_TEST_VALUE" "$YB5_TEST_MAX")"',
@@ -217,6 +222,39 @@ def test_sh_accepts_ordinary_urls(url):
 @pytest.mark.parametrize("url", INVALID_URLS)
 def test_sh_rejects_hostile_urls(url):
     assert sh_predicate("is_valid_api_url", url) is False
+
+
+# is_valid_api_url accepts each of these as a structurally valid URL; api_transport
+# is the SEPARATE guard that decides whether sending an API key over it is safe. The
+# look-alike hosts are the regression a bare `http://127.0.0.1*` glob let through:
+# DNS can point 127.0.0.1.evil.com anywhere, so it is a remote plaintext host.
+API_TRANSPORT = [
+    ("https://yangble5.com", "https"),
+    ("https://127.0.0.1.evil.com", "https"),  # https is encrypted regardless of host
+    ("http://127.0.0.1", "local"),
+    ("http://127.0.0.1:8320", "local"),
+    ("http://127.0.0.1/v1", "local"),
+    ("http://localhost", "local"),
+    ("http://localhost:8320/v1", "local"),
+    ("http://127.0.0.1.evil.com", "remote"),  # look-alike host -> remote, cleartext
+    ("http://localhost.evil.com", "remote"),
+    ("http://127.0.0.1x", "remote"),
+    ("http://localhostx/y", "remote"),
+    ("http://example.com", "remote"),
+    ("ftp://example.com", "bad"),
+    ("not-a-url", "bad"),
+]
+
+
+@needs_sh
+@pytest.mark.parametrize(
+    "url,expected", API_TRANSPORT, ids=[u or "empty" for u, _ in API_TRANSPORT]
+)
+def test_sh_api_transport_refuses_plaintext_to_a_look_alike_local_host(url, expected):
+    """A plaintext URL to the loopback host is fine; one to a host that merely
+    starts with 127.0.0.1/localhost is a remote host and must be refused, or the
+    API key and machine-id travel in cleartext to wherever its DNS points."""
+    assert sh_transport(url) == expected
 
 
 @needs_sh

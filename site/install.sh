@@ -798,6 +798,26 @@ random_hex32() {
     return 1
 }
 
+# Classify an --api URL by whether it sends the API key in cleartext, and to whom:
+#   https  -> encrypted; always fine
+#   local  -> plaintext but to the loopback host (127.0.0.1 / localhost). The host
+#             MUST be terminated by ':' , '/' or end of string, so a look-alike
+#             like http://127.0.0.1.evil.com (which DNS can point anywhere) cannot
+#             pose as local. Mirrors install.ps1's anchored `(:|/|$)` regex.
+#   remote -> plaintext to a non-loopback host; the caller refuses it
+#   bad    -> not an http(s) URL at all
+# A function, not an inline case, so the guard the installer runs is the exact one
+# the tests check -- a copy in a test file would only prove the copy works.
+api_transport() {
+    case "$1" in
+        https://*) printf 'https\n' ;;
+        http://127.0.0.1 | http://127.0.0.1:* | http://127.0.0.1/* | http://localhost | http://localhost:* | http://localhost/*)
+            printf 'local\n' ;;
+        http://*)  printf 'remote\n' ;;
+        *)         printf 'bad\n' ;;
+    esac
+}
+
 preflight() {
     step "preflight"
 
@@ -829,14 +849,11 @@ preflight() {
         *)             warn "platform ${OS_NAME}/${ARCH_NAME} is untested; continuing anyway" ;;
     esac
 
-    case "$YB5_API" in
-        https://*) : ;;
-        http://127.0.0.1*|http://localhost*)
-            warn "using plaintext HTTP to a local endpoint (${YB5_API}) — fine for testing" ;;
-        http://*)
-            fail "refusing to send an API key over plaintext HTTP to a remote host: ${YB5_API}" "$EX_USAGE" ;;
-        *)
-            fail "--api must be a http(s) URL, got: ${YB5_API}" "$EX_USAGE" ;;
+    case "$(api_transport "$YB5_API")" in
+        https)  : ;;
+        local)  warn "using plaintext HTTP to a local endpoint (${YB5_API}) — fine for testing" ;;
+        remote) fail "refusing to send an API key over plaintext HTTP to a remote host: ${YB5_API}" "$EX_USAGE" ;;
+        *)      fail "--api must be a http(s) URL, got: ${YB5_API}" "$EX_USAGE" ;;
     esac
 
     TMPD="$(mktemp -d 2>/dev/null || mktemp -d -t yangble5)" || \
@@ -1656,9 +1673,11 @@ yb5_load_credentials
 
 # The values above are data and are never executed — but a hand-edited
 # credentials file should still not be able to hand a client something absurd.
-# Same allow-lists the installer applied, re-checked with plain globs.
+# Same allow-lists the installer applied, re-checked with plain globs. The
+# loopback host is anchored (terminated by ':' , '/' or end) so a look-alike like
+# http://127.0.0.1.evil.com cannot pose as local -- same reason as the installer.
 case "$YANGBLE5_API" in
-    https://*|http://127.0.0.1*|http://localhost*) : ;;
+    https://*|http://127.0.0.1|http://127.0.0.1:*|http://127.0.0.1/*|http://localhost|http://localhost:*|http://localhost/*) : ;;
     *)
         printf 'yangble5: YANGBLE5_API in %s is not an https:// or local URL.\n' "$yb5_cred" >&2
         exit 6 ;;
