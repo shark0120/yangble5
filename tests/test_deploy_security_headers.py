@@ -201,6 +201,21 @@ def test_caddy_and_nginx_agree_on_every_mandatory_header():
             f"  nginx: {nginx.get(header)!r}")
 
 
+def test_caddy_auth_surface_is_no_store():
+    """The credential-bearing /auth/register response must not be cacheable on the
+    Caddy path. nginx marks /auth/ no-store; without matching it a browser bfcache
+    or a shared proxy could retain the one-time plaintext API key. Cache-Control is
+    per-path, not a MANDATORY server-level header, so the parity test above does not
+    cover it -- this asserts the auth surface specifically."""
+    text = CADDYFILE.read_text(encoding="utf-8")
+    m = re.search(r"handle @auth \{(.*?)\n\t\}", text, re.DOTALL)
+    assert m, "could not find the `handle @auth` block in the Caddyfile"
+    assert re.search(r'Cache-Control\s+"no-store', m.group(1)), (
+        "handle @auth does not set Cache-Control no-store; the /auth/register "
+        "credential response would be cacheable on the Caddy deployment"
+    )
+
+
 def test_no_location_declares_its_own_add_header():
     """The nginx gotcha, asserted rather than merely commented.
 

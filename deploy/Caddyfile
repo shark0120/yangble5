@@ -247,6 +247,13 @@
 	# STOCK CADDY USERS: delete the rate_limit block, keep the rest.
 	@auth path /auth/* /register /register/* /login /login/* /v1/auth/*
 	handle @auth {
+		# POST /auth/register returns the one-time plaintext API key in its body.
+		# Without no-store a browser bfcache/disk cache or a misconfigured shared
+		# proxy may retain that credential. nginx marks every /auth/ response
+		# no-store (yangble5.com.conf.example); the Caddy path must match, or the
+		# two documented-equivalent deployments differ on the credential surface.
+		header Cache-Control "no-store, no-transform"
+
 		rate_limit {
 			zone yb5_auth {
 				key {client_ip}
