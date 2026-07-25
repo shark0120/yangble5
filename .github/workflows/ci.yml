@@ -280,6 +280,16 @@ jobs:
           }
           exit $status
 
+      - name: Honesty gate
+        # The project's pitch is that its numbers are checkable, not believed.
+        # This fails the build on the two ways it would overclaim: calling
+        # fable5's stable-prefix ratio a "cache hit rate", or reviving a borrowed
+        # $38k Bedrock-bill hook with no source in this repo. It deliberately
+        # does NOT police bare headline numbers -- see the tool's docstring for
+        # why a regex cannot do that without false-positiving a disciplined repo.
+        # tests/test_honesty_gate.py also asserts the repo passes its own gate.
+        run: python tools/honesty_gate.py --root .
+
       - name: preflight.sh --self-test
         # Pure address/CIDR/ELF helpers against known inputs. No network, no
         # root, no server -- the script says so in its own --help and this is

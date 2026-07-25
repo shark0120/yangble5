@@ -74,6 +74,7 @@ dev = [
 yangble5-cache-bench = "tools.cache_bench:main"
 yangble5-cache-guard = "tools.cache_guard:main"
 yangble5-cache-stats = "tools.cache_stats_sidecar:main"
+yangble5-honesty-gate = "tools.honesty_gate:main"
 yangble5-claude-shim = "tools.claude_shim:main"
 
 [tool.setuptools]

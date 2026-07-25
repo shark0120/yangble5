@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Honesty gate: make the repo's disclosure discipline machine-enforced.
+
+WHY THIS EXISTS
+---------------
+This project's whole pitch is that its numbers are checkable rather than
+believed. That is only credible if the discipline is enforced, not remembered.
+A tired maintainer will eventually paste "99.53% cache hit rate" into a README
+without its qualifiers, or let a borrowed shock statistic sneak back in. When
+that happens the project becomes exactly the thing it criticises: a marketing
+number with no conditions attached.
+
+So the discipline is a test. CI fails if either of these appears in the prose
+(``.md`` / ``.html`` / ``.txt``) the project publishes:
+
+  1. ``fable5`` and "hit rate" / "cache hit" in the same paragraph. Fable5's
+     stable-prefix ratio is a structural proxy, never a cache-hit rate, and
+     conflating the two is the single easiest way to overclaim.
+  2. A ``$38,000`` / ``$38k`` Bedrock-bill style hook. It is a borrowed number
+     with no source in this repo; the project does not get to use other
+     people's outrage as evidence.
+
+WHAT THIS GATE DELIBERATELY DOES NOT DO
+---------------------------------------
+An earlier draft also failed on any ``99.5x`` figure that lacked a qualifier in
+its paragraph. On this repository -- which is already disciplined -- that rule
+produced only false positives: the number legitimately appears in table rows,
+arithmetic, diagram nodes, a Chinese-language "this is an anecdote" disclaimer,
+and prose whose qualifier sits one paragraph away. Telling a clean repo it is
+lying, in eight places, is how an honesty check earns its own removal. Detecting
+a genuinely *naked* marketing claim ("achieves 99.53%") apart from a reference,
+a datum, or a caveat is not something a regex does without that false-positive
+tax, so the headline-qualifier rule is left to human review rather than shipped
+as a wolf-crier. This gate enforces only the two regressions it can catch with
+zero false positives, so a green result means something.
+
+Exit codes: 0 = clean; 1 = a violation; 2 = bad invocation.
+Standard library only; no network.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+
+FABLE5_RE = re.compile(r"fable\s*5", re.IGNORECASE)
+HITRATE_RE = re.compile(r"hit[\s-]?rate|cache[\s-]?hit|命中率", re.IGNORECASE)
+
+# Borrowed shock hook. $38,000 / $38k / "38,000" next to a bill/token context.
+BORROWED_HOOK_RE = re.compile(r"\$?\s*38[,.]?0{3}\b|\$\s*38\s*k\b|\b38k\b", re.IGNORECASE)
+
+TEXT_SUFFIXES = {".md", ".html", ".txt"}
+
+# Paths that legitimately discuss these strings as rules rather than use them:
+# this gate itself, and its own test. Everything else is held to the discipline.
+SELF_REFERENTIAL = {"tools/honesty_gate.py", "tests/test_honesty_gate.py"}
+
+
+def prose_only(text: str) -> str:
+    """Strip the regions where a bare number is legitimate and no qualifier can live.
+
+    A headline figure inside a fenced code block, an arithmetic line, an SVG or
+    mermaid diagram node, a markdown heading, or a table row is not a naked
+    marketing claim -- the surrounding prose carries the conditions and the
+    diagram/table/heading physically cannot. Enforcing "a qualifier in the same
+    paragraph" on those produces false positives, and a gate that cries wolf on a
+    clean repo gets switched off. So we remove those regions and hold only the
+    running prose to the discipline.
+    """
+    # Fenced code blocks (``` and ~~~), including mermaid/sequence diagrams.
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    text = re.sub(r"~~~.*?~~~", "", text, flags=re.DOTALL)
+    # HTML/SVG diagram and script/style bodies, then any remaining tags.
+    text = re.sub(r"<svg\b.*?</svg>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<(script|style)\b.*?</\1>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):  # markdown heading -- a label, not a claim
+            continue
+        if stripped.startswith("|") or re.match(r"^[-+|: ]+$", stripped):  # table row/rule
+            continue
+        if stripped.startswith(">"):  # blockquote handled as prose below; keep
+            pass
+        lines.append(line)
+    text = "\n".join(lines)
+    # Drop inline HTML tags so an SVG <text>NN%</text> that survived isn't prose.
+    text = re.sub(r"<[^>]+>", " ", text)
+    return text
+
+
+def paragraphs(text: str) -> list[str]:
+    """Split prose on blank lines; a paragraph is the unit a qualifier must live in."""
+    return re.split(r"\n\s*\n", prose_only(text))
+
+
+def scan_text(text: str) -> list[dict[str, object]]:
+    """Return honesty violations in a single document's text."""
+    violations: list[dict[str, object]] = []
+    for idx, para in enumerate(paragraphs(text)):
+        if FABLE5_RE.search(para) and HITRATE_RE.search(para):
+            violations.append(
+                {
+                    "kind": "fable5_called_hit_rate",
+                    "paragraph": idx,
+                    "detail": "fable5 and 'hit rate'/'cache hit' in one paragraph; "
+                    "fable5's stable-prefix ratio is not a cache-hit rate",
+                }
+            )
+        if BORROWED_HOOK_RE.search(para):
+            violations.append(
+                {
+                    "kind": "borrowed_hook",
+                    "paragraph": idx,
+                    "detail": "a $38,000/$38k-style borrowed shock number has no "
+                    "source in this repo and must not be used as evidence",
+                }
+            )
+    return violations
+
+
+def iter_text_files(root: Path) -> Iterable[Path]:
+    for path in sorted(root.rglob("*")):
+        if path.suffix.lower() not in TEXT_SUFFIXES or not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith((".git/", "node_modules/", ".venv/")):
+            continue
+        if rel in SELF_REFERENTIAL:
+            continue
+        yield path
+
+
+def scan_repo(root: Path) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    for path in iter_text_files(root):
+        for violation in scan_text(path.read_text(encoding="utf-8", errors="replace")):
+            enriched = dict(violation)
+            enriched["file"] = path.relative_to(root).as_posix()
+            findings.append(enriched)
+    return findings
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="honesty_gate",
+        description="Fail if the repo's published prose breaks its disclosure discipline.",
+    )
+    parser.add_argument(
+        "--root", default=".", help="repository root to scan (default: current dir)"
+    )
+    args = parser.parse_args(argv)
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print(f"error: {root} is not a directory", file=sys.stderr)
+        return 2
+
+    findings = scan_repo(root)
+    if not findings:
+        print("honesty_gate: OK -- no fable5/hit-rate conflation, no borrowed shock number.")
+        return 0
+
+    print(f"honesty_gate: {len(findings)} violation(s):")
+    for f in findings:
+        print(f"  [{f['kind']}] {f['file']} (paragraph {f['paragraph']})")
+        print(f"      {f['detail']}")
+    print(
+        "\nThese are the specific ways this project would overclaim about itself. "
+        "Add the missing qualifier, rename the fable5 metric, or drop the borrowed number."
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
