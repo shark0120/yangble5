@@ -46,11 +46,22 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-FABLE5_RE = re.compile(r"fable\s*5", re.IGNORECASE)
+# Match the model name however it is punctuated -- "fable5", "fable 5",
+# "fable-5", "fable_5". A bare `\s*` let "Fable-5 cache hit rate" slip the gate.
+FABLE5_RE = re.compile(r"fable[\s\-_]*5", re.IGNORECASE)
 HITRATE_RE = re.compile(r"hit[\s-]?rate|cache[\s-]?hit|命中率", re.IGNORECASE)
 
-# Borrowed shock hook. $38,000 / $38k / "38,000" next to a bill/token context.
-BORROWED_HOOK_RE = re.compile(r"\$?\s*38[,.]?0{3}\b|\$\s*38\s*k\b|\b38k\b", re.IGNORECASE)
+# The borrowed "$38,000 Bedrock bill" shock hook, in its currency-anchored forms.
+# These are unambiguous: a dollar sign in front of the figure means money.
+BORROWED_HOOK_RE = re.compile(r"\$\s*38[,.]?0{3}\b|\$\s*38\s*k\b", re.IGNORECASE)
+# The same figure WITHOUT a currency sign ("38,000", "38k") only counts as the
+# borrowed hook when a billing word shares the paragraph. Otherwise "38k tokens"
+# or "38,000 requests" is an ordinary count, not the shock statistic -- and a
+# gate that fails on "38k tokens" is a false positive that gets it switched off.
+BARE_HOOK_RE = re.compile(r"\b38[,.]?0{3}\b|\b38\s*k\b", re.IGNORECASE)
+BILL_CONTEXT_RE = re.compile(
+    r"bill|bedrock|invoice|charge|overspen|\bcost|帳單|費用|美元|dollar", re.IGNORECASE
+)
 
 TEXT_SUFFIXES = {".md", ".html", ".txt"}
 
@@ -110,7 +121,9 @@ def scan_text(text: str) -> list[dict[str, object]]:
                     "fable5's stable-prefix ratio is not a cache-hit rate",
                 }
             )
-        if BORROWED_HOOK_RE.search(para):
+        if BORROWED_HOOK_RE.search(para) or (
+            BARE_HOOK_RE.search(para) and BILL_CONTEXT_RE.search(para)
+        ):
             violations.append(
                 {
                     "kind": "borrowed_hook",

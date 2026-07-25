@@ -57,3 +57,29 @@ def test_main_returns_zero_on_the_clean_repo(capsys):
 def test_main_returns_one_when_a_violation_is_present(tmp_path):
     (tmp_path / "bad.md").write_text("fable5 gives you a great cache hit rate.", encoding="utf-8")
     assert hg.main(["--root", str(tmp_path)]) == 1
+
+
+def test_flags_fable5_with_punctuation_separators():
+    """"Fable-5" / "Fable_5" must not slip the gate the way a bare \\s* let them."""
+    for name in ("Fable-5", "Fable_5", "fable  5"):
+        v = hg.scan_text(f"{name} reaches a 99% cache hit rate.")
+        assert any(f["kind"] == "fable5_called_hit_rate" for f in v), name
+
+
+def test_does_not_flag_38k_as_a_plain_token_count():
+    """"38k tokens" is an ordinary count, not the borrowed $38,000 bill hook."""
+    for text in ("a 38k token prompt", "we processed 38,000 requests", "the 38k-line file"):
+        assert hg.scan_text(text) == [], text
+
+
+def test_flags_the_uncurrencied_38k_only_with_a_billing_word():
+    """Without a currency sign the figure needs a billing word to be the hook."""
+    assert any(f["kind"] == "borrowed_hook" for f in hg.scan_text("a 38k monthly bill"))
+    assert any(f["kind"] == "borrowed_hook" for f in hg.scan_text("38,000 in Bedrock charges"))
+
+
+def test_main_returns_two_on_a_non_directory_root(tmp_path, capsys):
+    """A --root that is not a directory is a bad invocation (exit 2)."""
+    missing = tmp_path / "does-not-exist"
+    assert hg.main(["--root", str(missing)]) == 2
+    assert "not a directory" in capsys.readouterr().err
