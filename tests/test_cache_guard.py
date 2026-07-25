@@ -116,6 +116,30 @@ def test_diff_no_regression_when_prefix_stays_stable():
     assert not report.regressed
 
 
+def test_diff_does_not_flag_a_longer_variable_tail_as_a_regression():
+    """The cacheable prefix is byte-identical; only the varying tail grew. The
+    length-normalised ratio drops (bigger denominator) but nothing that touches the
+    cache changed. Keying regression off the ratio here fails CI with a
+    contradictory 'shrank by ~0 tokens, $0.00' -- so it must key off the prefix."""
+    before = ["P" * 300, "P" * 300]
+    after = ["P" * 300 + "x" * 100, "P" * 300 + "y" * 100]
+    report = cache_guard.diff_payloads(before, after)
+    assert report.after_ratio < report.before_ratio  # the ratio genuinely dropped
+    assert not report.regressed  # ...but the stable prefix did not shrink
+    assert report.churned_tokens_est == 0
+    assert report.cost_delta_per_1k(3.0) == 0.0
+
+
+def test_prompt_text_rejects_a_payload_that_is_neither_string_nor_object():
+    for bad in (42, ["a", "list"], None, 3.14):
+        try:
+            cache_guard.prompt_text(bad)
+        except ValueError as exc:
+            assert "string or an object" in str(exc)
+        else:  # pragma: no cover - the assertion below reports the miss
+            raise AssertionError(f"prompt_text({bad!r}) should have raised ValueError")
+
+
 # --- CLI + the shipped example fixtures stay truthful ------------------------
 
 

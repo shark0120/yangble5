@@ -258,10 +258,14 @@ class DiffReport:
 def diff_payloads(before: Sequence[Any], after: Sequence[Any]) -> DiffReport:
     """Compare the byte-stable cacheable prefix of two payload sets.
 
-    ``ratio`` = shared-prefix length / shortest prompt length within a set. A
-    drop means the *after* set caches less of its prefix than the *before* set
-    did -- the signature of a PR that made the prefix less stable. The churned
-    token estimate is the shrink in stable prefix, in estimated tokens.
+    ``ratio`` = shared-prefix length / shortest prompt length within a set, shown
+    for context. A regression is defined by the byte-stable prefix actually
+    SHRINKING (``churn_chars > 0``), not by a ratio drop: the ratio's denominator
+    is each set's shortest prompt, so a longer variable tail in the *after* set
+    lowers ``after_ratio`` even when the cacheable prefix is byte-for-byte
+    unchanged. Keying the regression off the ratio would then fail CI with a
+    contradictory "shrank by ~0 tokens, $0.00" message; keying it off the prefix
+    shrink reports exactly what changed the cache and nothing else.
     """
     b_texts = [prompt_text(p) for p in before]
     a_texts = [prompt_text(p) for p in after]
@@ -280,7 +284,7 @@ def diff_payloads(before: Sequence[Any], after: Sequence[Any]) -> DiffReport:
         before_ratio=round(b_ratio, 4),
         after_ratio=round(a_ratio, 4),
         churned_tokens_est=est_tokens(churn_chars),
-        regressed=a_ratio < b_ratio,
+        regressed=churn_chars > 0,
     )
 
 
