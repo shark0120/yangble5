@@ -1089,6 +1089,21 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
       <p class="copy-status" id="copyStatusRepro" role="status" aria-live="polite"></p>
     </div>
 
+    <div class="repro">
+      <p class="repro-label">或者，不必相信這張表——離線自己重算，不需要 API key、不打任何上游</p>
+      <div class="mini-cmd">
+        <pre id="replayCmd">python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl</pre>
+        <button type="button" class="copybtn" data-copy-target="replayCmd"
+                data-copy-status="copyStatusReplay" data-label="複製">複製</button>
+      </div>
+      <p class="copy-status" id="copyStatusReplay" role="status" aria-live="polite"></p>
+      <p class="lede">
+        這條指令把上面那次跑的每一輪原始 usage，從<strong>隨程式碼一起提交</strong>的紀錄檔，
+        用跟線上量測<strong>同一套函式</strong>重新算一遍，印出同樣的數字。
+        改動那個檔案裡任何一個數字，它會因為對不上而報錯——而不是安靜地印出被竄改過的結果。
+      </p>
+    </div>
+
     <div class="tablewrap" tabindex="0" role="region" aria-label="逐輪原始量測數據，可左右捲動">
       <table class="raw">
         <caption>
