@@ -569,7 +569,7 @@ async def parse_json_body(
         return _validation_error_response(exc)
 
 
-def _clean_label(raw: str | None) -> str | None | JSONResponse:
+def _clean_label(raw: str | None) -> str | JSONResponse | None:
     """Normalise a user-chosen nickname, or the 400 that refuses it.
 
     A label is the one field on this service whose whole purpose is to be

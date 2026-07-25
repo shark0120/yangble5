@@ -240,7 +240,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     def config(self) -> ShimConfig:
         return self.server.config  # type: ignore[attr-defined]
 
-    def _read_body(self) -> bytes | None | bool:
+    def _read_body(self) -> bytes | bool | None:
         """Return the body, ``None`` when there is none, or ``False`` on refusal.
 
         Framing is security-critical here. The shim must buffer the body to
