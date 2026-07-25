@@ -1002,6 +1002,24 @@ class Storage:
                 raise InviteError("invite code is invalid, expired, revoked or already used")
         return code_hash
 
+    def refund_invite(self, code_hash: str) -> None:
+        """Give back one use previously claimed by consume_invite.
+
+        Registration consumes an invite BEFORE issue_key, which can still fail on
+        the per-IP key cap or the one-key-per-email rule. Without a refund each
+        such failure permanently burns a use, so a shared multi-use invite can be
+        drained to exhaustion without a single key being minted. Floored at 0 (and
+        a no-op if the row is gone) so a stray double refund cannot go negative or
+        manufacture uses. Takes the code_hash consume_invite returns, not the raw
+        code, so the plaintext invite is not handled a second time.
+        """
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE invites SET used_count = used_count - 1"
+                " WHERE code_hash = ? AND used_count > 0",
+                (code_hash,),
+            )
+
     def revoke_invite(self, code: str) -> bool:
         with self._lock:
             cur = self._conn.execute(

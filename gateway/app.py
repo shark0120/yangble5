@@ -1597,6 +1597,15 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         status = exc.status_code
+        # The admin surface is hidden behind guard()'s 404 INSIDE each handler. A
+        # wrong-method (405) or unregistered-subpath (404) request to /admin never
+        # reaches a handler -- Starlette raises at the routing layer first -- so
+        # without this it would name the path and copy an `Allow` header, confirming
+        # to an unauthenticated scanner that the admin surface exists. Collapse every
+        # routing-level /admin miss to the SAME hiding 404, no headers carried through.
+        admin_path = request.url.path == "/admin" or request.url.path.startswith("/admin/")
+        if status in (404, 405) and admin_path:
+            return _error(404, "not_found", "Not found.")
         kind = _status_error_type(status)
         detail = exc.detail if isinstance(exc.detail, str) and exc.detail else None
         extra: dict[str, Any] = {}
@@ -1909,11 +1918,16 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "remaining_pct": svc.remaining_pct,
                 "reset_at": pool.reset_at,
                 "reset_window": pool.window,
-                # Exactly the expression POST /auth/register uses. It is
-                # deliberately NOT `accepting_requests`: a dry pool today is the
-                # moment BYOK matters most, and attaching a credential needs a
-                # key to attach it to.
-                "registration_open": settings.registration_open and svc.registration_allowed,
+                # The gate POST /auth/register applies BEFORE any invite check:
+                # registration is not closed and the pool allows it. Deliberately
+                # NOT `settings.registration_open` (which is mode=='open'), or this
+                # would read False on an invite-mode instance that is in fact still
+                # issuing keys for a valid invite. Deliberately NOT
+                # `accepting_requests` either: a dry pool today is the moment BYOK
+                # matters most, and attaching a credential needs a key to attach to.
+                "registration_open": (
+                    settings.registration_mode != "closed" and svc.registration_allowed
+                ),
                 "accepting_requests": svc.accepting,
                 "pool_ceiling_configured": pool.capped,
                 "reserve_engaged": svc.reserve_engaged,
@@ -2360,6 +2374,7 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 retry_after_seconds=_seconds_until_utc_midnight(),
             )
 
+        consumed_invite_hash: str | None = None
         if settings.registration_mode == "invite":
             if not payload.invite_code:
                 return _error(
@@ -2367,7 +2382,9 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     "This instance is invite-only. Supply 'invite_code'.",
                 )
             try:
-                await run_in_threadpool(state.storage.consume_invite, payload.invite_code)
+                consumed_invite_hash = await run_in_threadpool(
+                    state.storage.consume_invite, payload.invite_code
+                )
             except InviteError:
                 state.auth_backoff.record_failure(ip_hash)
                 _log(logging.WARNING, "register.invite_rejected", ip_hash=ip_hash[:12])
@@ -2403,6 +2420,11 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 )
             )
         except RegistrationCapError as capped:
+            # The invite (if any) was consumed before this point but no key was
+            # issued, so give the use back -- otherwise a failed issuance drains a
+            # shared invite one use at a time.
+            if consumed_invite_hash is not None:
+                await run_in_threadpool(state.storage.refund_invite, consumed_invite_hash)
             _log(logging.INFO, "register.ip_key_cap", ip_hash=ip_hash[:12])
             return _error(
                 429, "registration_throttled",
@@ -2414,6 +2436,8 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 retry_after_seconds=_seconds_until_utc_midnight(),
             )
         except EmailInUseError:
+            if consumed_invite_hash is not None:
+                await run_in_threadpool(state.storage.refund_invite, consumed_invite_hash)
             return _error(
                 409, "already_registered",
                 _needs_operator(

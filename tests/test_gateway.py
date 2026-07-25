@@ -627,6 +627,42 @@ def test_expired_invite_is_rejected(build):
     assert gw.register(email="a@b.com", invite_code="expired-code").status_code == 403
 
 
+def test_a_failed_issuance_refunds_the_invite_use(build):
+    """consume_invite burns a use BEFORE issue_key, which can still fail on the
+    one-key-per-email rule. Without a refund a shared multi-use invite drains one
+    use per failed attempt; the refund gives it back so a real invitee still gets in."""
+    gw = build(REGISTRATION_MODE="invite")
+    created = gw.client.post(
+        "/admin/invites", headers={"Authorization": f"Bearer {ADMIN_KEY}"}, json={"max_uses": 2}
+    )
+    code = created.json()["invite_code"]
+
+    assert gw.register(email="a@b.com", invite_code=code).status_code == 201       # use 1
+    # Same email again: issue_key raises EmailInUseError AFTER the invite was
+    # consumed. Burning the use here would leave only one for the two-use code.
+    assert gw.register(email="a@b.com", invite_code=code).status_code == 409
+    # The refund kept the second use, so a genuine second invitee still registers.
+    assert gw.register(email="b@b.com", invite_code=code).status_code == 201       # use 2
+
+
+def test_pool_status_registration_open_tracks_invite_mode(build):
+    """registration_open must reflect whether register will issue a key -- not
+    settings.registration_open (mode=='open'). In invite mode with a healthy pool
+    register still mints keys for a valid invite, so the field must read True."""
+    gw = build(REGISTRATION_MODE="invite")
+    assert gw.client.get("/pool/status").json()["registration_open"] is True
+    created = gw.client.post(
+        "/admin/invites", headers={"Authorization": f"Bearer {ADMIN_KEY}"}, json={"max_uses": 1}
+    )
+    code = created.json()["invite_code"]
+    assert gw.register(email="a@b.com", invite_code=code).status_code == 201
+
+
+def test_pool_status_registration_open_is_false_when_closed(build):
+    gw = build(REGISTRATION_MODE="closed")
+    assert gw.client.get("/pool/status").json()["registration_open"] is False
+
+
 def test_closed_mode_refuses_everyone(build):
     gw = build(REGISTRATION_MODE="closed")
     assert gw.register().status_code == 403
@@ -761,6 +797,29 @@ def test_admin_surface_is_hidden_without_the_admin_key(gw):
     user = gw.new_key()
     as_user = gw.client.get("/admin/keys", headers={"Authorization": f"Bearer {user}"})
     assert as_user.status_code == 404
+
+
+def test_admin_surface_stays_hidden_on_a_wrong_method(gw):
+    """A wrong HTTP method never reaches the guard() 404: Starlette raises 405 at
+    the routing layer, which would name the path and copy an Allow header --
+    confirming the admin surface exists. Every /admin routing miss (wrong method
+    or unregistered subpath) must be the SAME hiding 404 with no Allow header."""
+    probes = [
+        ("post", "/admin/keys"),                    # GET-only route, wrong method
+        ("post", "/admin/stats"),
+        ("get", "/admin/invites"),                  # POST-only route, wrong method
+        ("get", "/admin/keys/anything/operator"),   # POST-only, wrong method
+        ("delete", "/admin/keys"),
+        ("get", "/admin/nonexistent"),              # unregistered subpath
+    ]
+    for method, path in probes:
+        r = getattr(gw.client, method)(path)
+        assert r.status_code == 404, f"{method.upper()} {path}: got {r.status_code}"
+        assert "Allow" not in r.headers, f"{method.upper()} {path} leaked Allow"
+        blob = json.dumps(r.json()).lower()
+        assert "admin" not in blob and "allowed" not in blob, (
+            f"{method.upper()} {path} named the surface: {blob}"
+        )
 
 
 def test_admin_key_with_non_ascii_does_not_crash_the_endpoint(build):
