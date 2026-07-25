@@ -50,11 +50,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +230,49 @@ def summarize(rounds: Sequence[dict[str, Any]], target: float = DEFAULT_TARGET) 
     }
 
 
+def _url_host(url: str) -> str:
+    """The host[:port] of a URL and nothing else -- never a path or a credential."""
+    return urllib.parse.urlsplit(url).netloc or url
+
+
+def capture_environment(
+    *,
+    model: str,
+    base_url: str,
+    prefix_tokens: int,
+    rounds: int,
+    now_utc: str | None = None,
+) -> dict[str, Any]:
+    """A coarse, PII-free fingerprint of WHERE and HOW a live run was produced.
+
+    The project's whole claim is that its headline is reproducible; a hit rate is
+    only meaningful next to the machine, interpreter and parameters it ran under —
+    "99.53%" on one box, one run, against one shared upstream is a different fact
+    from a fleet average. Recording this makes a live result self-documenting, so a
+    reader sees the conditions rather than inferring them. Deliberately coarse: the
+    OS/arch string and interpreter version, never a hostname, username, path or
+    key. ``now_utc`` is injectable so the caller — and the tests — control the clock.
+    """
+    return {
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "captured_utc": now_utc or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "model": model,
+        "base_url_host": _url_host(base_url),
+        "prefix_tokens": int(prefix_tokens),
+        "rounds": int(rounds),
+    }
+
+
+def _format_environment(env: dict[str, Any]) -> str:
+    """One human-readable line summarising a captured environment fingerprint."""
+    return (
+        f"  environment: {env['platform']} · python {env['python']} · "
+        f"{env['captured_utc']} · model={env['model']} · host={env['base_url_host']} · "
+        f"prefix~{int(env['prefix_tokens']):,} tok · rounds={env['rounds']}"
+    )
+
+
 # --------------------------------------------------------------------------
 # Replay. Recompute a past run's headline from its committed raw per-round
 # usage, with NO network and NO API key. This is what lets a stranger check the
@@ -291,6 +337,13 @@ def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., No
     )
     for note in result["notes"]:
         log(f"  NOTE: {note}")
+    # Surface the environment the fixture was captured in, so a reproduction is
+    # self-documenting: the same reader who recomputes the number also sees the one
+    # machine, one run, one shared upstream it came from -- not a fleet average.
+    for label in ("upstream", "model_alias", "captured_utc", "released_evidence_set"):
+        value = meta.get(label)
+        if value:
+            log(f"  {label.replace('_', ' ')}: {value}")
     for qualifier in meta.get("qualifiers", []):
         log(f"  qualifier: {qualifier}")
 
@@ -543,6 +596,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     result = summarize(rounds, args.target)
     cold = result["cold_round"]
+    environment = capture_environment(
+        model=args.model,
+        base_url=base_url,
+        prefix_tokens=args.prefix_tokens,
+        rounds=args.rounds,
+    )
 
     log("-" * 68)
     if cold:
@@ -560,9 +619,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     for note in result["notes"]:
         log(f"  NOTE: {note}")
+    log(_format_environment(environment))
 
     if args.json:
         payload = dict(result)
+        payload["environment"] = environment
         payload["model"] = args.model
         payload["base_url"] = base_url
         payload["rounds"] = rounds

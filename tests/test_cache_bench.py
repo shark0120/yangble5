@@ -500,3 +500,71 @@ def test_main_returns_2_when_the_proxy_is_unreachable(monkeypatch, capsys):
     monkeypatch.setattr(cache_bench, "post_message", boom)
     assert cache_bench.main(["--rounds", "2"]) == 2
     assert "FAILED" in capsys.readouterr().out
+
+
+# ---------------------------------------------------- environment fingerprint ---
+
+
+def test_capture_environment_is_pii_free_and_uses_the_injected_clock():
+    """A live result is only meaningful next to the machine it ran on, so the run
+    records a coarse fingerprint -- but never a path, query, credential or host
+    beyond the coarse OS/arch and interpreter."""
+    env = cache_bench.capture_environment(
+        model="yangble5",
+        base_url="http://127.0.0.1:8318/v1/messages?token=super-secret",
+        prefix_tokens=600_000,
+        rounds=4,
+        now_utc="2026-07-21T00:00:00Z",
+    )
+    assert set(env) == {
+        "platform", "python", "captured_utc", "model",
+        "base_url_host", "prefix_tokens", "rounds",
+    }
+    assert env["captured_utc"] == "2026-07-21T00:00:00Z"  # injected clock -> deterministic
+    assert env["base_url_host"] == "127.0.0.1:8318"       # host[:port] only
+    assert env["model"] == "yangble5"
+    assert env["prefix_tokens"] == 600_000 and env["rounds"] == 4
+    blob = json.dumps(env)
+    assert "super-secret" not in blob and "messages" not in blob and "?" not in blob
+
+
+def _fake_post_two_rounds(*args, **kwargs):
+    # Argument order: (base_url, api_key, model, system, history, session, ...).
+    history = args[4] if len(args) > 4 else kwargs["history"]
+    n = sum(1 for m in history if m.get("role") == "user")
+    cread = 0 if n == 1 else 990  # round 1 cold, later rounds warm
+    return {
+        "usage": {"input_tokens": 1000, "cache_read_input_tokens": cread},
+        "content": [{"type": "text", "text": f"OK-{n}"}],
+    }
+
+
+def test_live_json_output_records_the_environment(monkeypatch, capsys):
+    """A live run's --json must carry the self-documenting environment fingerprint;
+    the human summary (stderr in --json mode) must name it too."""
+    monkeypatch.setenv(cache_bench.API_KEY_ENV, "test-key-not-a-real-secret")
+    monkeypatch.setenv(cache_bench.BASE_URL_ENV, "http://127.0.0.1:8318")
+    monkeypatch.setattr(cache_bench, "post_message", _fake_post_two_rounds)
+
+    code = cache_bench.main(["--json", "--rounds", "2", "--interval", "0"])
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    env = payload["environment"]
+    assert env["base_url_host"] == "127.0.0.1:8318"
+    assert env["rounds"] == 2
+    assert env["model"] == payload["model"]
+    assert set(env) >= {"platform", "python", "captured_utc", "base_url_host"}
+    # The human summary (stderr under --json) carries a one-line environment view.
+    assert "environment:" in captured.err
+
+
+def test_replay_surfaces_the_fixtures_environment_context(monkeypatch, capsys):
+    """The replay's human output must name the conditions a number came from, so a
+    reproduction is self-documenting rather than a bare percentage."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    assert cache_bench.main(["--replay", str(_EVIDENCE)]) == 0
+    out = capsys.readouterr().out
+    assert "CLIProxyAPI" in out                     # the upstream it ran against
+    assert "single machine, single run" in out      # the qualifier
+    assert "n=1" in out                              # the released-evidence-set note

@@ -475,6 +475,14 @@ cache_bench: model=yangble5 prefix~600000 tok rounds=4 session='cache-bench-fixe
   eligible hit rate (rounds 2..4, token-weighted): 99.53%  target 99% -> PASS
 ```
 
+A passing run also prints an `environment:` line — the platform, Python version, UTC timestamp,
+model, upstream host and run parameters — and includes the same fingerprint in `--json` output. A
+hit rate is only meaningful next to the machine and one run it came from, so a result records its
+own conditions rather than leaving you to infer them. `--replay` surfaces the same context from the
+evidence file's metadata (upstream, model, capture date, the single-run qualifiers) so a recomputed
+number is never a bare percentage. The fingerprint is deliberately coarse: OS/arch and interpreter,
+never a hostname, path or key.
+
 Exit codes: `0` at or above `--target`, `1` below it, `2` if the measurement never happened
 (transport/HTTP/decode failure). If every round reports `cached=0`, the tool says so explicitly
 and tells you to raise `--prefix-tokens`. Some upstreams do not expose cache accounting on this
