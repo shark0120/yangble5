@@ -145,7 +145,7 @@ the operator-facing subset is in [`deploy/.env.example`](../deploy/.env.example)
 | Control | Setting | Default | Why it exists |
 |---|---|---|---|
 | Per-key daily tokens | `DAILY_TOKEN_BUDGET` | `2000000` | Bounds one runaway agent loop. Legacy alias: `USER_DAILY_TOKENS`. |
-| Per-key daily dollars | `DAILY_COST_USD_BUDGET` | `2.0` | The same bound expressed in money. |
+| Per-key daily dollars | `DAILY_COST_USD_BUDGET` | `0` (unlimited) | The same bound expressed in money. Off in code by default; `.env.example` ships `2.0`, so the token cap above is the one that defaults on from a bare environment. |
 | Keys per IP / IPs per key | `MAX_KEYS_PER_IP`, `MAX_IPS_PER_KEY` | see `.env.example` | Bounds farming and key sharing. |
 | Registrations per IP per day | `REGISTER_MAX_PER_IP_PER_DAY` | see `.env.example` | Bounds signup floods. |
 
@@ -244,8 +244,9 @@ reference compose stack.
 - [ ] If any ceiling is expressed in dollars, `PRICE_TABLE_JSON` or `PRICE_TABLE_FILE` holds
       *your provider's* prices. If `/admin/stats` still says `prices_are_placeholder: true`,
       your USD cap is capping a guess.
-- [ ] `DAILY_TOKEN_BUDGET` and/or `DAILY_COST_USD_BUDGET` are set (they default to 2,000,000
-      tokens / $2.00 per key per day). `RATE_LIMIT_RPM` and `RATE_LIMIT_CONCURRENCY` are set,
+- [ ] `DAILY_TOKEN_BUDGET` and/or `DAILY_COST_USD_BUDGET` are set (the token cap defaults to
+      2,000,000 per key per day; the dollar cap defaults to `0` = unlimited in code, though
+      `.env.example` ships `2.0`). `RATE_LIMIT_RPM` and `RATE_LIMIT_CONCURRENCY` are set,
       and you have divided them by your uvicorn worker count.
 - [ ] `REGISTRATION_MODE` is `invite` (the default) or `closed` for launch. Opening it is a
       decision, not a default. If you set the legacy `REGISTRATION_OPEN` boolean instead, know
