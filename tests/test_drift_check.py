@@ -19,6 +19,8 @@ wait for it or purge it, and nothing about a redeploy does either.
 from __future__ import annotations
 
 import pathlib
+import re
+import subprocess
 import sys
 
 import pytest
@@ -62,6 +64,154 @@ def test_every_published_path_exists_in_site():
 
 def test_the_site_directory_is_this_repository():
     assert dc.SITE == ROOT / "site"
+
+
+# ── the published set is COMPLETE ──────────────────────────────────────────
+#
+# The test above checks one direction only: everything named is real. Nothing
+# checked the other one, and the other one is where the damage is. The publish
+# command copies site/ wholesale, so a file added to that directory is SERVED
+# whether or not anyone adds it to PUBLISHED -- and a file that is served but
+# not in PUBLISHED is a live URL that drift_check never requests. It cannot be
+# reported as missing, because nothing knows to look for it. That is not a hole
+# somebody eventually notices; it is a hole that is invisible by construction.
+#
+# So every tracked file in site/ has to land in exactly one of three buckets:
+#
+#   PUBLISHED                              served, and the bytes are checked
+#   UNCHECKED_BECAUSE_THE_EDGE_REWRITES_IT served, bytes deliberately not checked
+#   NOT_DEPLOYED                           must never reach the webroot at all
+#
+# The arithmetic is the point. Any new file forces a decision into one of the
+# three, and there is no fourth answer available -- including the answer nobody
+# means to give, which is silence.
+
+
+def _tracked_site_files() -> list[str]:
+    """Paths under site/ as the repository ships them, relative to site/.
+
+    `git ls-files` rather than `rglob`, because the question is what this
+    repository publishes, not what happens to be in one checkout. An untracked
+    scratch file in site/ would be a real deploy hazard -- `cp -a` takes it too
+    -- but failing the suite on somebody's local file is the kind of noise that
+    gets a test deleted, and the hazard belongs to a live probe, not to this.
+    """
+    listing = subprocess.run(
+        # S607: `git` off PATH. There is no portable absolute path for it and
+        # this runs on ubuntu and on windows. Fixed argv, shell=False.
+        ["git", "ls-files", "-z", "site"],  # noqa: S607
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    return [p[len("site/") :] for p in listing.decode().split("\0") if p]
+
+
+@pytest.fixture(scope="module")
+def tracked() -> list[str]:
+    try:
+        files = _tracked_site_files()
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+        pytest.skip(f"git unusable here: {exc}")
+    # A green that came from an empty listing would certify nothing.
+    assert len(files) > 10, files
+    return files
+
+
+def test_the_published_set_accounts_for_the_whole_tree(tracked):
+    """Every file the repository ships under site/ is in exactly one bucket."""
+    buckets = (
+        set(dc.PUBLISHED)
+        | set(dc.UNCHECKED_BECAUSE_THE_EDGE_REWRITES_IT)
+        | set(dc.NOT_DEPLOYED)
+    )
+    unaccounted = sorted(set(tracked) - buckets)
+    assert unaccounted == [], (
+        f"{unaccounted} would be copied to the webroot by the publish command "
+        f"and never asked about again. Add each to PUBLISHED, or to "
+        f"NOT_DEPLOYED with the reason it must not be served."
+    )
+
+
+def test_no_bucket_names_a_file_that_is_gone(tracked):
+    """A name left behind after the file moves is cover for the next file that
+    lands on it -- and in NOT_DEPLOYED it is worse, because the runbook keeps
+    deleting a path that no longer exists while the real file goes out."""
+    known = set(tracked)
+    stale = sorted(
+        name
+        for name in set(dc.UNCHECKED_BECAUSE_THE_EDGE_REWRITES_IT) | set(dc.NOT_DEPLOYED)
+        if name not in known
+    )
+    assert stale == [], stale
+
+
+def test_the_buckets_do_not_overlap():
+    pub, edge, hidden = (
+        set(dc.PUBLISHED),
+        set(dc.UNCHECKED_BECAUSE_THE_EDGE_REWRITES_IT),
+        set(dc.NOT_DEPLOYED),
+    )
+    assert pub & edge == set()
+    assert pub & hidden == set(), "a file cannot be both checked and unpublished"
+    assert edge & hidden == set()
+
+
+def test_every_not_deployed_file_says_why():
+    """`NOT_DEPLOYED` is the one bucket whose entries delete production files.
+    An entry without a reason is an instruction to `rm` something for reasons
+    nobody can reconstruct, which is how a wrong entry survives review."""
+    for name, why in dc.NOT_DEPLOYED.items():
+        assert len(why) > 80, f"{name}: {why!r}"
+
+
+_SPELLED = {
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
+
+
+def test_the_robots_note_counts_the_files_it_would_take_down():
+    """The note explaining why robots.txt is excluded argues from a count: a
+    permanently red gate would be switched off, taking the other N files with
+    it. The argument is only as good as N, and N was written when the list was
+    shorter -- it said fourteen while PUBLISHED held eighteen, having missed
+    the four skill files added when the skill was renamed."""
+    source = pathlib.Path(dc.__file__).read_text(encoding="utf-8")
+    spelled = re.search(r"take the other (\w+) files", source)
+    assert spelled, "the note stopped naming a count; update or drop this test"
+    assert _SPELLED[spelled.group(1)] == len(dc.PUBLISHED), (
+        f"the note says {spelled.group(1)} but PUBLISHED holds {len(dc.PUBLISHED)}"
+    )
+
+
+# ── the runbook and the buckets agree ──────────────────────────────────────
+
+RUNBOOKS = ("deploy/GO_LIVE.md", "deploy/README.md")
+
+
+@pytest.mark.parametrize("runbook", RUNBOOKS)
+def test_the_publish_runbook_removes_every_not_deployed_file(runbook):
+    """`cp -a site/.` copies the whole directory, so NOT_DEPLOYED is only a
+    decision until the runbook acts on it. Both publish procedures have to
+    delete every such file by name, in the same block that does the copy -- a
+    removal three sections later is one an operator skips."""
+    text = (ROOT / runbook).read_text(encoding="utf-8")
+    blocks = [b for b in re.findall(r"```sh\n(.*?)```", text, re.S) if "cp -a site/." in b]
+    assert len(blocks) == 1, f"{runbook}: expected one publish block, found {len(blocks)}"
+    for name in dc.NOT_DEPLOYED:
+        assert name in blocks[0], (
+            f"{runbook} copies site/ wholesale and never removes {name}, which "
+            f"tools/drift_check.py says must not be served"
+        )
 
 
 # ── compare(): the byte comparison, with the edge's allowed rewrites ────────

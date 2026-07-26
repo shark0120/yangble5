@@ -91,13 +91,34 @@ PUBLISHED = (
 # a byte comparison would fail on every run. Adding it here would make this tool
 # permanently red over a dashboard setting nobody can change from a checkout,
 # and a gate that is always red is a gate that gets switched off -- which would
-# take the other fourteen files down with it.
+# take the other eighteen files down with it.
 #
 # It is covered instead by `deploy/smoke_test.sh` check 12b, which compares the
 # served DIRECTIVE lines against site/robots.txt and WARNS, naming exactly what
 # was injected. If the managed robots.txt is ever turned off, move it up into
 # PUBLISHED and delete this note.
 UNCHECKED_BECAUSE_THE_EDGE_REWRITES_IT = ("robots.txt",)
+
+# Files that live under site/ and must NOT reach the webroot at all. This is the
+# third and last bucket, and the three together are required to account for every
+# tracked file in site/ -- see test_the_published_set_accounts_for_the_whole_tree.
+#
+# The reason that test exists rather than a note asking people to remember: this
+# list is what stops a file from being SERVED WITHOUT BEING CHECKED. A new file
+# under site/ is deployed by the publish command whether or not anyone adds it to
+# PUBLISHED, so an omission here is not a gap in coverage that someone notices --
+# it is a live URL that no gate in this repository has an opinion about.
+NOT_DEPLOYED: dict[str, str] = {
+    "README.md": (
+        "the long-form documentation for the site, kept beside what it "
+        "describes and read on GitHub. site/robots.txt says in as many words "
+        "that there is no /README.md and that the URL has always answered 404, "
+        "so publishing it would make a crawler policy that is committed to this "
+        "repository into a lie. The publish command in deploy/GO_LIVE.md copies "
+        "site/ wholesale, which is why that runbook has to remove this file by "
+        "name -- and why a test checks that it still does."
+    ),
+}
 
 # Transformations the edge is ALLOWED to apply, applied to the repo copy before
 # comparing. Each entry needs a reason, because every entry is a hole: anything

@@ -890,15 +890,15 @@ SITEMAP_EXCLUDED: dict[str, str] = {
         "into results pages for no benefit."
     ),
     "README.md": (
-        "NOT INDEXED BECAUSE NOTHING SHOWS IT IS DEPLOYED. site/robots.txt "
-        "advertises /README.md, but the webroot copy list in "
-        "deploy/nginx/yangble5.com.conf.example PART 3d does not include it "
-        "and neither does PUBLISHED in tools/drift_check.py, so a <loc> for it "
-        "would most likely advertise a 404 — the exact failure this index "
-        "checks for in the other direction. Add it to the deploy file list and "
-        "to drift_check, confirm with `curl -sSI "
-        "https://yangble5.com/README.md`, then delete this entry and give it a "
-        "<url>."
+        "NOT INDEXED BECAUSE IT IS DELIBERATELY NOT DEPLOYED. This entry used "
+        "to hedge — it said robots.txt advertised /README.md and that a <loc> "
+        "would 'most likely' hit a 404, and it told the reader to resolve the "
+        "doubt by publishing the file. Both halves were wrong. site/robots.txt "
+        "now states plainly that there is no /README.md and that the URL has "
+        "always answered 404, and the decision is recorded once, in "
+        "NOT_DEPLOYED in tools/drift_check.py, where a test holds it against "
+        "the publish runbook. Indexing this path would advertise a 404 on "
+        "purpose; changing that is a decision to make there, not here."
     ),
 }
 

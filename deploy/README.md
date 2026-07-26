@@ -89,6 +89,7 @@ curl -sS http://127.0.0.1:8081/health
 
 # static site: zero risk, do it first and confirm it before touching nginx
 cp -a site/. /www/wwwroot/yangble5.com/
+rm -f /www/wwwroot/yangble5.com/README.md   # NOT_DEPLOYED in tools/drift_check.py
 
 # then the nginx block — AAPANEL.md if a panel owns the vhost
 nginx -t && nginx -s reload

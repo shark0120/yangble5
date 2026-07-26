@@ -112,8 +112,17 @@ it first means the risky steps happen on a vhost you have just seen working.
 ```sh
 cp -a /www/wwwroot/yangble5.com /root/yangble5-backup/webroot.$(date +%s)
 cp -a site/. /www/wwwroot/yangble5.com/
+rm -f /www/wwwroot/yangble5.com/README.md     # NOT_DEPLOYED — see below
 chown -R www:www /www/wwwroot/yangble5.com    # aaPanel's nginx user
 ```
+
+`cp -a site/.` copies the directory wholesale, and `site/README.md` is the one
+file in it that must not be served: `site/robots.txt` tells crawlers in as many
+words that there is no `/README.md` and that the URL has always answered 404.
+Skipping the `rm` publishes 90 KB of documentation at a URL this repository
+promises is empty. The file is named in `NOT_DEPLOYED` in `tools/drift_check.py`
+with its reason, and a test asserts that every name in that mapping still
+appears in this code block — so the two cannot drift apart in silence.
 
 **Verify — from your laptop, not the VPS:**
 
