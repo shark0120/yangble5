@@ -151,11 +151,16 @@ Divide `cache_read / input_tokens` blindly and you get either the right answer o
 100%, depending on who answered. The harness normalises:
 
 ```python
-def prompt_denominator(input_tokens, cache_read_tokens):
+def prompt_denominator(input_tokens, cache_read_tokens, cache_creation_tokens=0):
     return input_tokens if input_tokens >= cache_read_tokens \
-           else input_tokens + cache_read_tokens
+           else input_tokens + cache_read_tokens + cache_creation_tokens
 ```
 
+The Anthropic branch adds `cache_creation_tokens` because that convention reports three **disjoint**
+counts (uncached remainder, cache read, cache write); dropping the write term would hide tokens this
+round paid full cache-write price for and inflate the hit rate — the exact inflation this tool exists
+to catch. The Gemini run on 2026-07-21 reported no creation count (it takes the `input`-dominates
+branch), so the term is inert there; it matters only on a provider that splits the prompt three ways.
 Identical under both conventions, and incapable of reporting more than 100%. If you port this to
 a third provider, check which convention it uses before trusting the output - and tell us, so we
 can note it here.
