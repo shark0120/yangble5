@@ -151,6 +151,16 @@ with the **known, enumerated** transformations applied and fails on anything els
 failure away as "just the CDN" without reading which transformation it could not account for; that
 is the whole signal.
 
+That list of four is checked, not maintained by hope. `tests/test_contributing_gates.py` reads
+every `tools/*.py` invocation out of `ci.yml`, drops the `--help` probes that only prove a script
+starts, and fails if the result differs from what this section names - in either direction, and
+including the count in the sentence above. It exists because this section said **two** while CI
+ran four, and the instructive part is that the sentence was *correct when it was written*: two
+gates was the truth until `honesty_gate.py` and then `name_guard.py` landed, and neither commit
+had any reason to open this file. Adding a gate is one `run:` line; the prose went stale 35
+commits before anyone noticed. If you add a gate and that test goes red, the red *is* the
+reminder - add it here.
+
 If you touched a shell or PowerShell script, the `offline-self-checks` job is worth reproducing
 too. It parses every `*.sh` with `bash -n` and every `*.ps1` with the PowerShell parser, then runs
 the paths a user reaches *before* anything is installed - the ones nothing else exercises:
