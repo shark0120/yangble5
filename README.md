@@ -86,7 +86,8 @@ pytest                      # offline test suite - no network, no credentials
 
 # Recompute the 99.53% headline yourself, offline, with no API key. This reads
 # the run's committed raw per-round usage and runs the SAME math the live
-# benchmark does; edit any number in the file and it fails the tamper check.
+# benchmark does; edit any figure the headline is built from -- a warm round's
+# cached or prompt tokens, or the cold-round prompt -- and it fails the tamper check.
 python tools/cache_bench.py --replay evidence/run-749k-20260721.jsonl
 
 python tools/cache_bench.py --help

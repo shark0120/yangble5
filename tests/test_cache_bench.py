@@ -431,6 +431,23 @@ def test_replay_detects_a_tampered_number(tmp_path, monkeypatch):
     assert code == 1  # recomputed rate no longer matches the recorded headline
 
 
+def test_replay_detects_a_tampered_cold_round_prompt(tmp_path, monkeypatch):
+    """The cold round is excluded from the headline rate, so editing its prompt
+    size must still trip the tamper check -- otherwise the README's "edit any
+    figure the headline is built from" claim would be false for the cold write."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    text = _EVIDENCE.read_text(encoding="utf-8")
+    # Edit ONLY the cold round's raw usage, not the expected_headline that records
+    # it -- otherwise both move together and nothing is detected. 748918 feeds no
+    # warm sum, so only the explicit cold_round_prompt check can catch this edit.
+    doctored = text.replace('"input_tokens": 748918', '"input_tokens": 748900')
+    assert doctored != text, "fixture must carry the cold-round usage to tamper with"
+    bad = tmp_path / "tampered-cold.jsonl"
+    bad.write_text(doctored, encoding="utf-8")
+    code = cache_bench.main(["--replay", str(bad)])
+    assert code == 1  # cold_round_prompt no longer matches the recorded headline
+
+
 def test_replay_fixture_carries_no_account_identity():
     """The evidence file must never leak an email / account label."""
     text = _EVIDENCE.read_text(encoding="utf-8")

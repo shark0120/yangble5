@@ -352,10 +352,15 @@ def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., No
     # loudly rather than quietly publishing a doctored figure.
     reproduced = True
     expected = meta.get("expected_headline") or {}
+    cold_round = result.get("cold_round") or {}
     checks = (
         ("warm_token_weighted_hit_rate", result["eligible_hit_rate"]),
         ("cached_tokens", result["cached_tokens"]),
         ("prompt_tokens", result["prompt_tokens"]),
+        # The cold round is excluded from the headline rate, so its prompt size is
+        # not covered by the three sums above; check it explicitly so editing the
+        # cold-write figure (748,918 here) also trips the tamper check.
+        ("cold_round_prompt", cold_round.get("prompt_total")),
     )
     for key, got in checks:
         want = expected.get(key)
