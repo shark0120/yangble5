@@ -782,9 +782,11 @@ HISTORICAL_BROKEN = re.compile(
 )
 ```
 
-**3. Measurements are recomputed, not listed.** A hit rate is accepted because the arithmetic
-produces it, at the precision the page printed. Nothing rounds to 99.54, so 99.54 cannot pass — it
-is not a string missing from a list, it is a number the record does not contain.
+**3. Measurements are loaded from evidence, then recomputed rather than listed.**
+`tools/sitecheck.py` reads `evidence/run-749k-20260721.jsonl`; it does not carry a second
+hand-written transcript of the four rounds. A hit rate is accepted because the arithmetic over
+that record produces it, at the precision the page printed. Nothing rounds to 99.54, so 99.54
+cannot pass — it is not a string missing from a list, it is a number the record does not contain.
 
 ```python
 # ── percentages, recomputed rather than allow-listed ────────────────────────
@@ -821,7 +823,7 @@ self-test: the guard must fail on a bogus figure
     PASS  must-fail  bogus derived warm cached total
               -> unaccounted figure: 2236291  (as written: 2,236,291)
     PASS  must-fail  bogus round-trip ms
-              -> unaccounted figure: 21411  (as written: 21,411)
+              -> unaccounted figure: 21294  (as written: 21,294)
     PASS  must-fail  bogus prefix shorthand
               -> unaccounted figure: 750K  (as written: 750K)
     PASS  must-fail  bogus context claim
@@ -964,10 +966,10 @@ figure       as written     page                   ruled in by
 74.6         74.6           index                  all four rounds hit rate = 2236290/2995762 = 74.6485%
 749K         749K           index                  prefix shorthand for 748,918 tokens
 10554        10,554         index                  warm uncached tail = warm prompt - warm cached
-10753        10,753         index                  round 2 round-trip ms
-21410        21,410         index                  round 1 round-trip ms
-22381        22,381         index                  round 4 round-trip ms
-23457        23,457         index                  round 3 round-trip ms
+10693        10,693         index                  round 2 round-trip ms
+21293        21,293         index                  round 1 round-trip ms
+22337        22,337         index                  round 4 round-trip ms
+23405        23,405         index                  round 3 round-trip ms
 65536        65536          verify                 CLAUDE_CODE_MAX_OUTPUT_TOKENS default
 99.53        99.53          index                  round 2 hit rate = 745438/748933 = 99.5333%
 3.14.3       3.14.3         index                  Python 3.14.3 — the interpreter the run was made on
@@ -990,9 +992,10 @@ figure       as written     page                   ruled in by
 44 distinct figures in scope.
 ```
 
-Nothing on the pages needed correcting: all 43 are in the authoritative record, derived from it by
-arithmetic the checker redoes, or allow-listed with a reason. The permitted measurements are
-exactly the four rounds in `PROMPT` / `CACHED` / `ROUND_MS` at the top of `tools/sitecheck.py`.
+All 43 are in the authoritative record, derived from it by arithmetic the checker redoes, or
+allow-listed with a reason. The permitted measurements are exactly the four rounds that
+`tools/sitecheck.py` loads into `PROMPT` / `CACHED` / `ROUND_MS` from
+`evidence/run-749k-20260721.jsonl`; the checker contains no second transcription.
 **Two of the three warm rounds were slower than the cold round, so no latency-improvement claim is
 permitted and none is made** — the results table labels rounds 3 and 4 「比冷輪慢」 and the note
 under it calls that column anecdote, not conclusion.

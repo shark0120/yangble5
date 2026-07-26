@@ -926,7 +926,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             這是在描述它解決的<b>問題類別</b>，<b>不是效能宣稱</b>——實測延遲並沒有變好，見下方。</li>
           <li><b>沒有即時網路搜尋。</b>經過這個代理的任何東西都不會真的上網查。2026-07-21 實測：問「現在是哪一年」，
             Gemini 上游答 <b>2024</b>、Grok 上游答 <b>2025</b>。拿到的全部是訓練截止日之前的記憶。需要即時資訊請用別的工具。</li>
-          <li><b>延遲沒有變好，我們不會假裝有。</b>四輪裡有<b>兩輪暖輪比冷輪還慢</b>（23,457 ms、22,381 ms vs 冷輪 21,410 ms），而且我們從來沒有量過 time-to-first-token。快取能穩定省的是<b>成本</b>，不是<b>時間</b>。</li>
+          <li><b>延遲沒有變好，我們不會假裝有。</b>四輪裡有<b>兩輪暖輪比冷輪還慢</b>（23,405 ms、22,337 ms vs 冷輪 21,293 ms），而且我們從來沒有量過 time-to-first-token。快取能穩定省的是<b>成本</b>，不是<b>時間</b>。</li>
           <li><b>99.53% 是暖輪數字。</b>每個 session 的第一個請求都是冷寫入、命中率 <b>0.00%</b>，而且每個 session 都會付一次。前綴越大命中率越高（這個方向我們觀察到了，但幅度不在這次公開的證據集裡）。單機、單次執行，沒有重複實驗、沒有誤差棒。</li>
           <li><b>共用池的量真的很小，而且先搶先贏。</b>營運者用自己的帳號出錢，目前只有<b>一個</b>健康的上游帳號。用完就是用完，不會有無限額度，我們也不會承諾有。上限到了頁面會直接叫你去綁自己的帳號。</li>
           <li><b>核心引擎不是我們寫的。</b>
@@ -1126,7 +1126,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             <td class="n">0</td>
             <td class="n">0.00%</td>
             <td class="n">748,918</td>
-            <td class="n">21,410 ms</td>
+            <td class="n">21,293 ms</td>
           </tr>
           <tr>
             <th scope="row">2</th>
@@ -1134,7 +1134,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             <td class="n">745,438</td>
             <td class="n hit">99.53%</td>
             <td class="n">3,495</td>
-            <td class="n">10,753 ms</td>
+            <td class="n">10,693 ms</td>
           </tr>
           <tr>
             <th scope="row">3</th>
@@ -1142,7 +1142,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             <td class="n">745,430</td>
             <td class="n hit">99.53%</td>
             <td class="n">3,518</td>
-            <td class="n">23,457 ms <span class="slower">比冷輪慢</span></td>
+            <td class="n">23,405 ms <span class="slower">比冷輪慢</span></td>
           </tr>
           <tr>
             <th scope="row">4</th>
@@ -1150,7 +1150,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
             <td class="n">745,422</td>
             <td class="n hit">99.53%</td>
             <td class="n">3,541</td>
-            <td class="n">22,381 ms <span class="slower">比冷輪慢</span></td>
+            <td class="n">22,337 ms <span class="slower">比冷輪慢</span></td>
           </tr>
         </tbody>
         <tfoot>

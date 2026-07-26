@@ -16,6 +16,7 @@ is NOT.  A guard that has only ever been observed to pass is not a guard.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -29,6 +30,22 @@ from tools import sitecheck
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "sitecheck.py"
 SITE_README = ROOT / "site" / "README.md"
+
+LATENCY_SURFACES = {
+    ROOT / "README.md": (0, 1, 2, 3),
+    ROOT / "docs" / "FINDINGS.md": (0, 1, 2, 3),
+    ROOT / "docs" / "BENCHMARK.md": (0, 1, 2, 3),
+    ROOT / "docs" / "diagrams" / "architecture.md": (0, 1, 2),
+    ROOT / "docs" / "diagrams" / "cache-lifecycle.md": (0, 1, 2, 3),
+    ROOT / "docs" / "launch" / "hn.md": (0, 1, 2, 3),
+    ROOT / "docs" / "launch" / "reddit.md": (0, 1, 2, 3),
+    ROOT / "docs" / "launch" / "ptt-threads.md": (0, 1, 2, 3),
+    ROOT / "deploy" / "cloudflare.md": (0, 1, 2, 3),
+    ROOT / "deploy" / "nginx" / "yangble5.com.conf.example": (0, 1, 2, 3),
+    ROOT / "site" / "index.html": (0, 1, 2, 3),
+    SITE_README: (0, 1, 2, 3),
+}
+SUPERSEDED_LATENCY_TRANSCRIPTION = (21_410, 10_753, 23_457, 22_381)
 
 
 # ── the checker's own self-test, case by case ───────────────────────────────
@@ -52,6 +69,50 @@ def test_authoritative_figure_is_accepted(name, payload):
     """The guard must not be red for the record it is supposed to certify."""
     problems = sitecheck.check_page("<t>", sitecheck._page(payload), set())
     assert problems == [], f"{name}: {payload!r} was wrongly flagged: {problems!r}"
+
+
+def test_measurements_are_loaded_from_the_committed_evidence_record():
+    """There must be no second hand-written transcript in the guard."""
+    rows = [
+        json.loads(line)
+        for line in sitecheck.MEASUREMENT_RECORD.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    rounds = [row for row in rows if "round" in row]
+
+    assert [row["round"] for row in rounds] == [1, 2, 3, 4]
+    assert [row["usage"]["input_tokens"] for row in rounds] == sitecheck.PROMPT
+    assert [row["usage"]["cache_read_input_tokens"] for row in rounds] == sitecheck.CACHED
+    assert [row["latency_ms"] for row in rounds] == sitecheck.ROUND_MS
+
+
+def test_the_superseded_latency_transcription_is_rejected():
+    """21,410 ms was published before the JSONL existed and disagrees with it."""
+    problems = sitecheck.check_page("<t>", sitecheck._page("21,410 ms"), set())
+    assert any("21410" in problem for problem in problems), problems
+
+
+def test_measurement_loader_refuses_a_vacuously_small_record(tmp_path):
+    record = tmp_path / "record.jsonl"
+    record.write_text('{"_meta": {"run": "empty"}}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly rounds 1, 2, 3, 4"):
+        sitecheck.load_measurement_record(record)
+
+
+@pytest.mark.parametrize("path,indexes", LATENCY_SURFACES.items(), ids=lambda value: str(value))
+def test_every_latency_surface_tracks_the_evidence_record(path, indexes):
+    """A reader-facing table cannot silently keep the pre-JSONL transcript."""
+    text = path.read_text(encoding="utf-8")
+    for index in indexes:
+        expected = f"{sitecheck.ROUND_MS[index]:,}"
+        assert expected in text, f"{path.relative_to(ROOT)} is missing evidence latency {expected}"
+    for stale in SUPERSEDED_LATENCY_TRANSCRIPTION:
+        stale_forms = {str(stale), f"{stale:,}"}
+        assert not any(form in text for form in stale_forms), (
+            f"{path.relative_to(ROOT)} still contains superseded latency {stale:,}; "
+            f"the released evidence says {sitecheck.ROUND_MS!r}"
+        )
 
 
 def test_selftest_passes_as_a_whole():

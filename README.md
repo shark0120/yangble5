@@ -262,10 +262,10 @@ These are the per-request records the engine emitted for the 748K run, as captur
 
 | Round | Prompt tokens | `cache_read` | Hit | Uncached tail | Round-trip |
 |---:|---:|---:|---:|---:|---:|
-| 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,410 ms |
-| 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,753 ms |
-| 3 | 748,948 | 745,430 | 99.53% | 3,518 | 23,457 ms |
-| 4 | 748,963 | 745,422 | 99.53% | 3,541 | 22,381 ms |
+| 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,293 ms |
+| 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,693 ms |
+| 3 | 748,948 | 745,430 | 99.53% | 3,518 | 23,405 ms |
+| 4 | 748,963 | 745,422 | 99.53% | 3,541 | 22,337 ms |
 
 Warm token-weighted hit rate = `(745,438 + 745,430 + 745,422) / (748,933 + 748,948 + 748,963)`
 = `2,236,290 / 2,246,844` = **0.9953**.
@@ -469,10 +469,10 @@ Expected shape of a passing run:
 
 ```
 cache_bench: model=yangble5 prefix~600000 tok rounds=4 session='cache-bench-fixed-session'
-  round 1: prompt=748918 cached=0      ratio=0.00%  lat=21410ms
-  round 2: prompt=748933 cached=745438 ratio=99.53% lat=10753ms
-  round 3: prompt=748948 cached=745430 ratio=99.53% lat=23457ms
-  round 4: prompt=748963 cached=745422 ratio=99.53% lat=22381ms
+  round 1: prompt=748918 cached=0      ratio=0.00%  lat=21293ms
+  round 2: prompt=748933 cached=745438 ratio=99.53% lat=10693ms
+  round 3: prompt=748948 cached=745430 ratio=99.53% lat=23405ms
+  round 4: prompt=748963 cached=745422 ratio=99.53% lat=22337ms
   eligible hit rate (rounds 2..4, token-weighted): 99.53%  target 99% -> PASS
 ```
 

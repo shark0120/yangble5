@@ -33,7 +33,7 @@ sequenceDiagram
     EN->>UP: forwarded, credential pinned by session affinity for 12h
     UP->>CA: nothing to read. write the whole 748,918-token prefix.
     UP-->>EN: usage: input_tokens 748,918, cache_read_input_tokens 0
-    EN-->>BN: round 1: cached 0, ratio 0.00 percent, 21,410 ms
+    EN-->>BN: round 1: cached 0, ratio 0.00 percent, 21,293 ms
 
     Note over BN,CA: ROUNDS 2..4 - WARM. Prefix is byte-identical;<br/>only the conversation tail grew, by exactly 15 tokens per round.
 
@@ -41,17 +41,17 @@ sequenceDiagram
     EN->>UP: same account, same model. one cache entry, hit.
     CA-->>UP: 745,438 tokens served from cache
     UP-->>EN: cache_read 745,438, uncached tail 3,495
-    EN-->>BN: round 2: 99.53 percent, 10,753 ms
+    EN-->>BN: round 2: 99.53 percent, 10,693 ms
 
     BN->>EN: round 3, 748,948 tokens, same session id
     CA-->>UP: 745,430 tokens served from cache
     UP-->>EN: cache_read 745,430, uncached tail 3,518
-    EN-->>BN: round 3: 99.53 percent, 23,457 ms
+    EN-->>BN: round 3: 99.53 percent, 23,405 ms
 
     BN->>EN: round 4, 748,963 tokens, same session id
     CA-->>UP: 745,422 tokens served from cache
     UP-->>EN: cache_read 745,422, uncached tail 3,541
-    EN-->>BN: round 4: 99.53 percent, 22,381 ms
+    EN-->>BN: round 4: 99.53 percent, 22,337 ms
 
     Note over BN,CA: warm token-weighted = 2,236,290 / 2,246,844 = 99.53 percent<br/>fold the cold round back in and the same run reports 74.6 percent
 ```
@@ -65,10 +65,10 @@ emitted, captured by `tools/cache_stats_sidecar.py`.
 
 | Round | Prompt tokens | `cache_read` | Hit | Uncached tail | Latency |
 |---:|---:|---:|---:|---:|---:|
-| 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,410 ms |
-| 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,753 ms |
-| 3 | 748,948 | 745,430 | 99.53% | 3,518 | 23,457 ms |
-| 4 | 748,963 | 745,422 | 99.53% | 3,541 | 22,381 ms |
+| 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,293 ms |
+| 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,693 ms |
+| 3 | 748,948 | 745,430 | 99.53% | 3,518 | 23,405 ms |
+| 4 | 748,963 | 745,422 | 99.53% | 3,541 | 22,337 ms |
 
 ```
 warm token-weighted hit rate
@@ -174,8 +174,8 @@ quietly have cost us the entire 99.53% result.
   conversation per task, you pay a cold write every time and the warm figure is close to
   irrelevant to you. Prompt caching is a long-session optimisation.
 * **Latency is an anecdote, not a benchmark.** Round 2 was roughly 2x faster than cold
-  (10,753 ms vs 21,410 ms). Rounds 3 and 4 were **slower than the cold round** (23,457 ms and
-  22,381 ms) while reading 99.53% of their prompt from cache. Single run, shared upstream, no
+  (10,693 ms vs 21,293 ms). Rounds 3 and 4 were **slower than the cold round** (23,405 ms and
+  22,337 ms) while reading 99.53% of their prompt from cache. Single run, shared upstream, no
   control over provider-side load. Caching reduces cost predictably; on this evidence it does not
   reduce wall-clock time predictably.
 * **One machine, one run, one afternoon.** No repetitions, no confidence intervals, no

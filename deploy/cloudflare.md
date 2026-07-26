@@ -117,7 +117,7 @@ misunderstood:
 > time-to-first-token.** `tools/cache_bench.py` sends `stream: false`, so every
 > latency figure in this repository is a **complete non-streaming round trip**,
 > request sent to last byte received. On the 748,918-token prompt those round
-> trips were **21,410 ms cold** and **10,753 / 23,457 / 22,381 ms** on the three
+> trips were **21,293 ms cold** and **10,693 / 23,405 / 22,337 ms** on the three
 > warm rounds — one machine, one run, a local engine with no Cloudflare hop.
 > Read against row 3 of the table, the slowest of those (23.5s) still sits well
 > inside 100s, so a same-shaped request would probably not 524. But rows 1 and 2

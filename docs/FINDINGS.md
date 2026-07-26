@@ -219,10 +219,10 @@ into `stats.json`. Nothing here is averaged, smoothed or reordered:
 
 | Round | Prompt tokens | `cache_read` | Hit | Uncached tail | Round-trip (non-streaming) |
 |---:|---:|---:|---:|---:|---:|
-| 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,410 ms |
-| 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,753 ms |
-| 3 | 748,948 | 745,430 | 99.53% | 3,518 | 23,457 ms |
-| 4 | 748,963 | 745,422 | 99.53% | 3,541 | 22,381 ms |
+| 1 (cold) | 748,918 | 0 | 0.00% | 748,918 | 21,293 ms |
+| 2 | 748,933 | 745,438 | 99.53% | 3,495 | 10,693 ms |
+| 3 | 748,948 | 745,430 | 99.53% | 3,518 | 23,405 ms |
+| 4 | 748,963 | 745,422 | 99.53% | 3,541 | 22,337 ms |
 
 Warm token-weighted hit rate:
 
@@ -274,8 +274,8 @@ universal number** - it is what this upstream's cache granularity does at a ~749
 the tool at your prefix size; that is why it ships.
 
 **Latency did not improve predictably, and we are not going to pretend otherwise.** Round 2 was
-roughly 2x faster than the cold round (10,753 ms vs 21,410 ms). Rounds 3 and 4 were *slower than
-the cold round* (23,457 ms and 22,381 ms) while reading 99.53% of their prompt from cache -
+roughly 2x faster than the cold round (10,693 ms vs 21,293 ms). Rounds 3 and 4 were *slower than
+the cold round* (23,405 ms and 22,337 ms) while reading 99.53% of their prompt from cache -
 **two of the three warm rounds were slower than cold.** No latency-improvement claim is
 supportable from this run. Every figure in that column is also a **complete non-streaming round
 trip**, not time-to-first-token: the harness sends `stream: false`, and TTFT was never measured

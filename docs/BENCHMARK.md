@@ -265,8 +265,8 @@ Every one of these can move the number, and none of them were controlled for:
 * **Latency was not improved, and TTFT was never measured.** The harness sends `stream: false`,
   so every millisecond it reports is a **complete non-streaming round trip** - request sent to
   last byte received. It is not time-to-first-token, and nothing in this repository measured
-  TTFT. In the released run, warm round 2 was faster than the cold round (10,753 ms vs
-  21,410 ms) but warm rounds 3 and 4 were **slower** (23,457 ms and 22,381 ms) while reading
+  TTFT. In the released run, warm round 2 was faster than the cold round (10,693 ms vs
+  21,293 ms) but warm rounds 3 and 4 were **slower** (23,405 ms and 22,337 ms) while reading
   99.53% of their prompt from cache. Two of three warm rounds were slower than cold. No
   latency-improvement claim is supportable from this data, and any argument that depends on
   first-token timing (proxy or CDN idle-timeout budgets, for instance) is unsupported here.

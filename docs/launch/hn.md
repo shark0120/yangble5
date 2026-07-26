@@ -75,10 +75,10 @@ sessions.
 prompt-cache hit rate on warm rounds** (rounds 2–4 of a 4-round session) at a **748,918-token**
 prompt, which was ingested with no truncation. Raw per-round numbers, not averaged:
 
-    round 1 (cold): prompt 748,918  cached       0   0.00%  21,410 ms
-    round 2:        prompt 748,933  cached 745,438  99.53%  10,753 ms
-    round 3:        prompt 748,948  cached 745,430  99.53%  23,457 ms
-    round 4:        prompt 748,963  cached 745,422  99.53%  22,381 ms
+    round 1 (cold): prompt 748,918  cached       0   0.00%  21,293 ms
+    round 2:        prompt 748,933  cached 745,438  99.53%  10,693 ms
+    round 3:        prompt 748,948  cached 745,430  99.53%  23,405 ms
+    round 4:        prompt 748,963  cached 745,422  99.53%  22,337 ms
 
 *Now the parts that will get me correctly beaten up, stated before you have to ask:*
 

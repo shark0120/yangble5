@@ -93,6 +93,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import json
 import pathlib
 import re
 import sys
@@ -100,6 +101,7 @@ from html.parser import HTMLParser
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
+MEASUREMENT_RECORD = ROOT / "evidence" / "run-749k-20260721.jsonl"
 
 # ── which files the guard looks at (see "The coverage invariant" above) ─────
 PAGE_SUFFIXES = (".html", ".htm")
@@ -224,12 +226,67 @@ VOID = {
 DIGITS = "0123456789"
 
 # ── the authoritative measurement record (the ONLY permitted measurements) ──
-# 2026-07-21, one Windows 11 machine, one run.  Nothing else may be published
-# as a measurement; everything derived from it is RECOMPUTED below rather than
-# transcribed, so a typo in a derived total is a finding, not a rounding.
-PROMPT = [748918, 748933, 748948, 748963]  # rounds 1-4
-CACHED = [0, 745438, 745430, 745422]  # rounds 1-4
-ROUND_MS = [21410, 10753, 23457, 22381]  # rounds 1-4
+# 2026-07-21, one Windows 11 machine, one run.  The committed JSONL is the
+# source; this checker does not carry a second transcription that can drift
+# away from it. Everything derived from these rows is RECOMPUTED below, so a
+# typo in a published total is a finding, not a rounding.
+
+
+def load_measurement_record(
+    path: pathlib.Path = MEASUREMENT_RECORD,
+) -> tuple[list[int], list[int], list[int]]:
+    """Return prompt, cached, and latency figures from the released JSONL.
+
+    The guard is deliberately strict about the record's shape. Reading zero,
+    duplicate, or differently numbered rounds must fail loudly rather than
+    shrink the authoritative set and make stale published figures look valid.
+    """
+    by_round: dict[int, dict[str, object]] = {}
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} line {lineno} is not valid JSON: {exc}") from exc
+        if "_meta" in obj:
+            continue
+        if type(obj.get("round")) is not int or not isinstance(obj.get("usage"), dict):
+            raise ValueError(f"{path} line {lineno} needs integer round and object usage")
+        round_number = obj["round"]
+        if round_number in by_round:
+            raise ValueError(f"{path} repeats round {round_number}")
+        by_round[round_number] = obj
+
+    if set(by_round) != {1, 2, 3, 4}:
+        raise ValueError(f"{path} must contain exactly rounds 1, 2, 3, 4; got {sorted(by_round)}")
+
+    prompt: list[int] = []
+    cached: list[int] = []
+    round_ms: list[int] = []
+    for round_number in range(1, 5):
+        row = by_round[round_number]
+        usage = row["usage"]
+        if not isinstance(usage, dict):
+            raise ValueError(f"{path} round {round_number} usage must be an object")
+        fields = {
+            "input_tokens": usage.get("input_tokens"),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+            "latency_ms": row.get("latency_ms"),
+        }
+        for field, value in fields.items():
+            if type(value) is not int or value < 0:
+                raise ValueError(
+                    f"{path} round {round_number} field {field!r} must be a non-negative integer"
+                )
+        prompt.append(fields["input_tokens"])
+        cached.append(fields["cache_read_input_tokens"])
+        round_ms.append(fields["latency_ms"])
+    return prompt, cached, round_ms
+
+
+PROMPT, CACHED, ROUND_MS = load_measurement_record()
 
 _WARM_P, _WARM_C = sum(PROMPT[1:]), sum(CACHED[1:])
 _ALL_P, _ALL_C = sum(PROMPT), sum(CACHED)
@@ -1320,7 +1377,11 @@ MUST_FAIL = [
     ("bogus integer", "12345", "12345"),
     ("bogus prompt total", "748,919", "748919"),
     ("bogus derived warm cached total", "2,236,291", "2236291"),
-    ("bogus round-trip ms", "21,411 ms", "21411"),
+    (
+        "bogus round-trip ms",
+        f"{ROUND_MS[0] + 1:,} ms",
+        str(ROUND_MS[0] + 1),
+    ),
     ("bogus prefix shorthand", "~750K 前綴", "750K"),
     ("bogus context claim", "3M 上下文", "3M"),
     ("malformed thousands separator", "74,8918", "thousands separator"),
@@ -1334,7 +1395,10 @@ MUST_PASS = [
     ("authoritative warm hit rate", "暖輪 99.53% 命中"),
     ("authoritative cold hit rate", "冷輪 0.00%"),
     ("authoritative all-four hit rate", "2,236,290 / 2,995,762 = 74.6%"),
-    ("authoritative prompt/cached/ms", "748,918 / 745,438 / 21,410 ms / 3,495"),
+    (
+        "authoritative prompt/cached/ms",
+        f"{PROMPT[0]:,} / {CACHED[1]:,} / {ROUND_MS[0]:,} ms / {PROMPT[1] - CACHED[1]:,}",
+    ),
     ("prefix shorthand", "~749K 前綴"),
     ("config figures", "1M / 200K / 12h / 65536 / 1000000"),
     ("versions", "Python 3.14.3, CLIProxyAPI 7.1.23, engine 7.2.93"),

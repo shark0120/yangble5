@@ -246,17 +246,17 @@ sequenceDiagram
     CC->>ENG: turn 1, prefix P, metadata.user_id = S
     ENG->>A: session S pinned to Account A for 12h
     A-->>ENG: cold write. input 748,918, cache_read 0, 0.00 percent
-    ENG-->>CC: 21,410 ms
+    ENG-->>CC: 21,293 ms
 
     CC->>ENG: turn 2, same session S
     ENG->>A: same account, same model
     A-->>ENG: input 748,933, cache_read 745,438, 99.53 percent
-    ENG-->>CC: 10,753 ms
+    ENG-->>CC: 10,693 ms
 
     CC->>ENG: turn 3, same session S
     ENG->>A: same account, same model
     A-->>ENG: input 748,948, cache_read 745,430, 99.53 percent
-    ENG-->>CC: 23,457 ms
+    ENG-->>CC: 23,405 ms
 
     Note over CC,A: warm token-weighted, rounds 2..4: 2,236,290 / 2,246,844 = 99.53 percent.<br/>Measured once, on one Windows 11 machine, 2026-07-21.
 ```
@@ -292,7 +292,7 @@ exactly one cache entry to hit; and Gemini's `cachedContentTokenCount` surfaces 
 | 745,438 / 745,430 cache reads (rounds 2, 3) | same | Measured, single run |
 | 0 cache read on round 1, 0.00% | cold write, true by construction | Measured |
 | 99.53% warm, token-weighted | `2,236,290 / 2,246,844` over rounds 2..4 | Measured, **warm rounds only** |
-| 21,410 ms / 10,753 ms / 23,457 ms | round 1 / 2 / 3 wall clock | Measured once. **Not a benchmark** - round 3 was slower than the cold round while reading 99.53% from cache. |
+| 21,293 ms / 10,693 ms / 23,405 ms | round 1 / 2 / 3 wall clock | Measured once. **Not a benchmark** - round 3 was slower than the cold round while reading 99.53% from cache. |
 | ~50% pool ceiling | reasoned from the rotation mechanism | **Reasoned, never measured** |
 | 502 on ~half of pooled requests | observed in our deployment | Observed, specific to a pool member that did not exist on this build |
 | `nextModelPoolOffset`, `modelPoolOffsets` present in the 7.1.23 binary | byte-count over `cli-proxy-api.exe` (43,395,584 bytes) | Verified (source/binary) |
