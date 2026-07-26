@@ -88,6 +88,7 @@ import pathlib
 import re
 
 import pytest
+import yaml
 
 DEFAULT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("YB5_CONTRIBUTING_GATES_ROOT", DEFAULT_ROOT))
@@ -188,6 +189,14 @@ def _strip_yaml_comment(line: str) -> str:
 def _ci_text() -> str:
     lines = CI.read_text(encoding="utf-8").splitlines()
     return "\n".join(_strip_yaml_comment(line) for line in lines)
+
+
+def _workflow() -> dict:
+    workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    assert isinstance(workflow, dict), "ci.yml did not parse as a mapping"
+    jobs = workflow.get("jobs")
+    assert isinstance(jobs, dict) and jobs, "ci.yml has no jobs"
+    return workflow
 
 
 @pytest.fixture(scope="module")
@@ -304,6 +313,56 @@ def test_a_help_probe_is_not_mistaken_for_a_gate(roster):
             "counted it as one. It would now demand a place in a contributor's "
             "pre-push checklist it does not belong in."
         )
+
+
+def test_live_site_drift_is_scheduled_or_manual_not_a_pull_request_gate(section):
+    job = _workflow()["jobs"].get("live-site-drift")
+    assert isinstance(job, dict), "ci.yml has no live-site-drift job"
+    assert job.get("if") == (
+        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+    ), "live-site-drift must remain skipped on push and pull_request"
+
+    for claim in (
+        "does **not** gate a push or pull request",
+        "runs only on the `schedule` or",
+        "user-started `workflow_dispatch` event",
+    ):
+        assert claim in section, f"CONTRIBUTING omits the live-site-drift boundary: {claim}"
+
+
+def test_live_site_drift_retry_exits_with_the_second_attempt_status(section):
+    job = _workflow()["jobs"]["live-site-drift"]
+    steps = job.get("steps")
+    assert isinstance(steps, list) and steps, "live-site-drift has no steps"
+    run_blocks = [
+        step["run"]
+        for step in steps
+        if isinstance(step, dict) and "python tools/drift_check.py" in step.get("run", "")
+    ]
+    assert len(run_blocks) == 1, "expected one live-site-drift run block"
+    run = run_blocks[0]
+
+    calls = [match.start() for match in re.finditer(r"python tools/drift_check\.py", run)]
+    captures = [match.start() for match in re.finditer(r"(?m)^\s*status=\$\?\s*$", run)]
+    retry_guard = run.find('if [ "$status" -ne 0 ]; then')
+    final_exit = run.rfind('exit "$status"')
+    assert len(calls) == 2, (
+        f"live-site-drift must make one attempt plus one retry, found {len(calls)}"
+    )
+    assert len(captures) == 2, (
+        "each live-site-drift attempt must capture its own status; "
+        f"found {len(captures)} captures"
+    )
+    assert calls[0] < captures[0] < retry_guard < calls[1] < captures[1] < final_exit
+    assert run[final_exit:].strip() == 'exit "$status"', (
+        "live-site-drift must finally exit with the last attempt's captured status"
+    )
+
+    for claim in (
+        "one logical check with one",
+        "only the second attempt decides red or green after a retry",
+    ):
+        assert claim in section, f"CONTRIBUTING omits the retry decision rule: {claim}"
 
 
 def test_no_gate_is_invoked_in_a_form_this_parser_cannot_see():

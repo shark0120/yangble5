@@ -38,6 +38,10 @@ Two conventions specific to this repository, because they change how the entries
   rules without its local paths or deployment details.** `docs/autonomy-rules.json` is the
   machine authority for the public table. The private loop pins the same ordered IDs and manifest
   digest, so the public principles and the active maintenance instructions cannot drift silently.
+- **CONTRIBUTING now distinguishes the scheduled live-site check from pull-request gates.**
+  It documents that `drift_check.py` runs only on scheduled or manual workflows and that its two
+  invocations are one retry whose second status decides the step. Tests lock the event predicate,
+  call count and final status flow to that explanation.
 
 ### Added — reusable prompt-cache CI gate
 

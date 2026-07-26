@@ -102,14 +102,15 @@ you push.
 
 ### The gates that are not pytest
 
-`pytest -q` is not the whole pull-request contract. The remaining content checks have two
-different shapes, so this section keeps two rosters instead of pretending every gate is a Python
-file.
+`pytest -q` is not the whole pull-request contract. The other content checks have two different
+shapes, so this section keeps two rosters instead of pretending every gate is a Python file. One
+scheduled check is listed beside the pull-request gates because it uses the same script shape, but
+its event boundary is called out explicitly below.
 
 #### Python-file gates
 
 Four Python-script gates run outside pytest, and all four guard what the project *says* rather
-than what it does. Three are offline. The first:
+than what it does. Three are offline pull-request gates. The first:
 
 ```sh
 python tools/sitecheck.py --self-test   # the checker proves it can still go red
@@ -150,6 +151,18 @@ host or it proves nothing:
 python tools/drift_check.py             # is the site that is SERVED the site in this repo?
 ```
 
+Unlike the three above, `drift_check.py` does **not** gate a push or pull request. Its
+`live-site-drift` job is visibly skipped for those events and runs only on the `schedule` or
+user-started `workflow_dispatch` event. A contributor cannot repair a CDN toggle, stale deploy or
+temporary edge failure from a pull request, so making that external state block the pull request
+would create a red check the contributor cannot act on.
+
+The workflow contains two `drift_check.py` invocations, but they are one logical check with one
+retry, not two gates. A non-zero first attempt waits sixty seconds and starts the second. The
+second attempt's exit status replaces the first and is the status the step finally exits with, so
+only the second attempt decides red or green after a retry. Both outputs remain in the log, and a
+first-fail/second-pass result emits a warning rather than erasing the intermittent difference.
+
 It is not `sha256sum`. An edge legitimately rewrites a page - Cloudflare's e-mail obfuscation once
 rewrote `--email you@example.com` inside a `<pre>` and broke the published install command for
 every visitor while the origin served the correct bytes - so it compares against the repo copy
@@ -157,7 +170,8 @@ with the **known, enumerated** transformations applied and fails on anything els
 failure away as "just the CDN" without reading which transformation it could not account for; that
 is the whole signal.
 
-That Python list of four is checked, not maintained by hope. `tests/test_contributing_gates.py`
+That Python list of four and the scheduled check's event/retry boundary are checked, not maintained
+by hope. `tests/test_contributing_gates.py`
 reads every `tools/*.py` invocation out of `ci.yml`, drops the `--help` probes that only prove a
 script starts, and fails if the result differs from what this section names - in either direction,
 and including the count in the sentence above. It exists because this section said **two** while
