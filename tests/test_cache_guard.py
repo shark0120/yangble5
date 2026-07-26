@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tools import cache_guard
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "cache_guard"
@@ -218,7 +220,27 @@ def test_cli_diff_good_to_bad_reports_regression(capsys):
 
 
 def test_example_fixtures_have_no_credentials():
-    for name in ("good_prompt.jsonl", "bad_prompt.jsonl"):
+    for name in ("good_prompt.jsonl", "bad_prompt.jsonl", "openai_responses.jsonl"):
         text = (EXAMPLES / name).read_text(encoding="utf-8")
         assert "@" not in text
         assert "sk-" not in text
+
+
+def test_example_ci_workflow_is_valid_and_runs_the_guard():
+    """The copy-paste GitHub Actions template must be valid YAML that actually
+    invokes the guard -- on pull requests, with least privilege and pinned
+    actions -- so a user who drops it in gets a working gate, not a broken one."""
+    yaml = pytest.importorskip("yaml")
+    spec = yaml.safe_load((EXAMPLES / "cache-guard.yml").read_text(encoding="utf-8"))
+    # PyYAML parses a bare `on:` key as the boolean True (YAML 1.1); accept either.
+    triggers = spec.get("on")
+    if triggers is None:
+        triggers = spec.get(True)
+    assert triggers is not None and "pull_request" in triggers, "must run on pull requests"
+    assert spec["permissions"] == {"contents": "read"}, "least privilege"
+    steps = spec["jobs"]["cache-guard"]["steps"]
+    uses = [s.get("uses", "") for s in steps]
+    assert any(u.startswith("actions/checkout@v") for u in uses), "pin actions/checkout"
+    assert any(u.startswith("actions/setup-python@v") for u in uses), "pin actions/setup-python"
+    run_cmds = " ".join(s.get("run", "") for s in steps)
+    assert "cache_guard.py scan" in run_cmds, "the gate must actually run the guard"

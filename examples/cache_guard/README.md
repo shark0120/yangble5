@@ -60,12 +60,15 @@ hit. A bare-string `prompt` or Responses `input` is scanned as-is.
 
 ## Use it as a CI gate
 
-Fail the build when a pull request makes a prompt cache-hostile. Point it at
-representative payloads your app would send (dump a couple to a `.jsonl`):
+Fail the build when a pull request makes a prompt cache-hostile. A complete,
+copy-paste workflow is here: [`cache-guard.yml`](cache-guard.yml) — drop it into
+`.github/workflows/` in your repo. It vendors nothing at run time and makes no
+network call: copy the single stdlib-only `cache_guard.py` into your repo, dump a
+couple of representative payloads to `prompts/*.jsonl`, and every pull request is
+checked. The core of it is one step:
 
 ```yaml
-# .github/workflows/cache-guard.yml (illustrative)
-- name: Guard prompt caching
+- name: Guard the prompt cache
   run: python tools/cache_guard.py scan prompts/*.jsonl
 ```
 
