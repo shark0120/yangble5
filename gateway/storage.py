@@ -46,6 +46,7 @@ __all__ = [
     "InviteExistsError",
     "IssuedKey",
     "MachineBinding",
+    "MachineBindingConflict",
     "RegistrationCapError",
     "Storage",
     "StoredByok",
@@ -348,6 +349,15 @@ class EmailInUseError(Exception):
     Same reasoning as RegistrationCapError: checked inside the issuing
     transaction so that two simultaneous registrations for one address cannot
     both observe "no existing key" and both proceed.
+    """
+
+
+class MachineBindingConflict(Exception):
+    """Another transaction already bound this machine.
+
+    Raised only after the binding INSERT itself reports the conflict while
+    ``issue_key`` holds ``BEGIN IMMEDIATE``.  A read before that transaction is
+    only a fast path: two first registrations can both observe no row.
     """
 
 
@@ -660,6 +670,11 @@ class Storage:
         BEGIN IMMEDIATE only one writer holds the database at a time, so the
         count each one reads already includes every key its predecessors wrote.
 
+        The machine binding INSERT is also the atomic existence decision. Two
+        simultaneous first registrations can both miss the caller's earlier
+        read; the first transaction reserves the binding and the second raises
+        ``MachineBindingConflict`` without inserting an unbound key.
+
         0 / False mean "no ceiling", matching the settings that feed them.
         """
         plaintext, key_id, secret = make_key_material()
@@ -667,6 +682,15 @@ class Storage:
         moment = moment or utcnow()
         created = _iso(moment)
         with self._tx() as conn:
+            if machine_hash is not None:
+                binding = conn.execute(
+                    "INSERT INTO machine_bindings(machine_hash, key_id, first_ip_hash,"
+                    " created_at, last_seen_at, reissue_count) VALUES(?, ?, ?, ?, ?, 0)"
+                    " ON CONFLICT(machine_hash) DO NOTHING",
+                    (machine_hash, key_id, registration_ip_hash or "unknown", created, created),
+                )
+                if binding.rowcount == 0:
+                    raise MachineBindingConflict(machine_hash)
             if max_keys_per_ip_per_day > 0 and registration_ip_hash is not None:
                 row = conn.execute(
                     "SELECT COUNT(*) AS n FROM key_registrations WHERE ip_hash = ? AND day = ?",
@@ -714,12 +738,6 @@ class Storage:
                     "INSERT INTO key_registrations(key_id, ip_hash, day, machine_hash, created_at)"
                     " VALUES(?, ?, ?, ?, ?)",
                     (key_id, registration_ip_hash, day_key(moment), machine_hash, created),
-                )
-            if machine_hash is not None:
-                conn.execute(
-                    "INSERT INTO machine_bindings(machine_hash, key_id, first_ip_hash,"
-                    " created_at, last_seen_at, reissue_count) VALUES(?, ?, ?, ?, ?, 0)",
-                    (machine_hash, key_id, registration_ip_hash or "unknown", created, created),
                 )
         return IssuedKey(plaintext=plaintext, key_id=key_id, user_id=user_id, created_at=created)
 
@@ -1191,6 +1209,24 @@ class Storage:
             )
         return True, current + 1
 
+    def refund_register_attempt(self, ip_hash: str, day: str | None = None) -> None:
+        """Give back an attempt that became an idempotent machine reissue.
+
+        The HTTP layer claims a new-registration attempt before issuing a key.
+        If a concurrent transaction bound the same machine after the earlier
+        fast-path read, that request was not a new registration after all.
+
+        Floored at zero; crossing UTC midnight can leave yesterday's irrelevant
+        row charged, but cannot reduce today's count below zero.
+        """
+        day = day or day_key()
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE register_attempts SET count = count - 1"
+                " WHERE ip_hash = ? AND day = ? AND count > 0",
+                (ip_hash, day),
+            )
+
     # A machine hash, not an IP hash, sharing the register_attempts table under a
     # namespace prefix. Deliberate, and named here rather than smuggled in at the
     # call site: the column is an opaque string, the (key, day) semantics and the
@@ -1248,10 +1284,4 @@ class Storage:
         charge it failed to reverse is on yesterday's row, and yesterday's row is
         never read again. The ceiling the caller faces is restored either way.
         """
-        day = day or day_key()
-        with self._tx() as conn:
-            conn.execute(
-                "UPDATE register_attempts SET count = count - 1"
-                " WHERE ip_hash = ? AND day = ? AND count > 0",
-                (self._REISSUE_NS + machine_hash, day),
-            )
+        self.refund_register_attempt(self._REISSUE_NS + machine_hash, day)

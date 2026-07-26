@@ -76,6 +76,7 @@ from .storage import (
     EmailInUseError,
     InviteError,
     InviteExistsError,
+    MachineBindingConflict,
     RegistrationCapError,
     Storage,
     day_key,
@@ -1777,6 +1778,38 @@ def _package_version() -> str:
     return __version__
 
 
+async def _claim_and_reissue_for_machine(
+    state: GatewayState, binding: Any, ip_hash: str, label: str | None = None
+) -> JSONResponse:
+    """Apply the per-machine rotation ceiling, then perform one reissue."""
+    claimed, used = await run_in_threadpool(
+        state.storage.claim_machine_reissue,
+        binding.machine_hash,
+        MAX_REISSUES_PER_MACHINE_PER_DAY,
+    )
+    if not claimed:
+        _log(
+            logging.WARNING,
+            "register.reissue_capped",
+            key_id=binding.key_id,
+            ip_hash=ip_hash[:12],
+            used=used,
+        )
+        return _error(
+            429, "rate_limit_error",
+            _needs_operator(
+                state.settings,
+                "This machine has re-registered too many times today. If "
+                "you did not do that, someone else has a copy of this "
+                "machine's id and only the operator can revoke the key. "
+                "The limit clears at 00:00 UTC.",
+            ),
+            retry_after_seconds=_seconds_until_utc_midnight(),
+            support_contact=state.settings.support_contact or None,
+        )
+    return await _reissue_for_machine(state, binding, ip_hash, label)
+
+
 async def _reissue_for_machine(
     state: GatewayState, binding: Any, ip_hash: str, label: str | None = None
 ) -> JSONResponse:
@@ -2366,32 +2399,7 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 # that is a key-rotation tug-of-war either side can run forever.
                 # Bounded per machine, honest recovery still works and replay
                 # stops after a handful of attempts.
-                claimed, used = await run_in_threadpool(
-                    state.storage.claim_machine_reissue,
-                    machine_hash,
-                    MAX_REISSUES_PER_MACHINE_PER_DAY,
-                )
-                if not claimed:
-                    _log(
-                        logging.WARNING,
-                        "register.reissue_capped",
-                        key_id=binding.key_id,
-                        ip_hash=ip_hash[:12],
-                        used=used,
-                    )
-                    return _error(
-                        429, "rate_limit_error",
-                        _needs_operator(
-                            settings,
-                            "This machine has re-registered too many times today. If "
-                            "you did not do that, someone else has a copy of this "
-                            "machine's id and only the operator can revoke the key. "
-                            "The limit clears at 00:00 UTC.",
-                        ),
-                        retry_after_seconds=_seconds_until_utc_midnight(),
-                        support_contact=settings.support_contact or None,
-                    )
-                return await _reissue_for_machine(state, binding, ip_hash, label)
+                return await _claim_and_reissue_for_machine(state, binding, ip_hash, label)
 
         # ONE expression, shared with /pool/status's `registration_open`, so the
         # widget and the endpoint can never disagree about whether a key will be
@@ -2532,6 +2540,26 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     enforce_unique_email=not settings.allow_multiple_keys_per_email,
                 )
             )
+        except MachineBindingConflict:
+            # Both requests passed the read-only binding fast path, but the
+            # transaction says the other one won. This request created no key:
+            # undo claims made for a NEW registration, then use the same bounded
+            # reissue path a later installer retry would have taken.
+            if consumed_invite_hash is not None:
+                await run_in_threadpool(state.storage.refund_invite, consumed_invite_hash)
+            await run_in_threadpool(state.storage.refund_register_attempt, ip_hash)
+            binding = await run_in_threadpool(
+                state.storage.get_machine_binding, machine_hash
+            )
+            if binding is None:  # pragma: no cover - the INSERT just conflicted
+                raise
+            _log(
+                logging.INFO,
+                "register.machine_race_reissue",
+                key_id=binding.key_id,
+                ip_hash=ip_hash[:12],
+            )
+            return await _claim_and_reissue_for_machine(state, binding, ip_hash, label)
         except RegistrationCapError as capped:
             # The invite (if any) was consumed before this point but no key was
             # issued, so give the use back -- otherwise a failed issuance drains a
@@ -2563,14 +2591,9 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
             )
         except Exception:
             # ANY other post-consume failure must also give the use back, not just
-            # the two anticipated above. The live case is a concurrent same-machine
-            # registration losing the machine_bindings primary-key race: the
-            # binding pre-check (get_machine_binding, above) runs outside issue_key's
-            # transaction, so two callers can both read None, both consume a use, and
-            # the second's INSERT raises sqlite3.IntegrityError -- neither of the
-            # excepts above. Without this refund that valid use is burned with no key
-            # issued (and the generic 500 would even claim nothing was spent). Refund,
-            # then re-raise so the unhandled handler still turns it into a 500.
+            # the classified cases above. A disk, schema or unexpected SQLite
+            # failure after invite consumption still issued no key. Refund, then
+            # re-raise so the unhandled handler turns the real fault into a 500.
             if consumed_invite_hash is not None:
                 await run_in_threadpool(state.storage.refund_invite, consumed_invite_hash)
             raise

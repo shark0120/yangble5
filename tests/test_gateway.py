@@ -718,11 +718,9 @@ def test_a_failed_issuance_refunds_the_invite_use(build):
 
 def test_an_unexpected_issuance_failure_still_refunds_the_invite(build, monkeypatch):
     """The two ANTICIPATED post-consume failures (IP cap, email-in-use) refund the
-    invite; every OTHER failure must too. The live case: a concurrent same-machine
-    registration loses the machine_bindings primary-key race and issue_key raises
-    sqlite3.IntegrityError -- neither RegistrationCapError nor EmailInUseError. Before
-    the catch-all refund, that use was burned with no key issued. Simulate the
-    collision and prove BOTH uses of a 2-use invite survive the failed attempt."""
+    invite; every OTHER failure must too. A same-machine binding race now has a
+    named, idempotent recovery path, but an unclassified SQLite failure still
+    issued no key. Prove BOTH uses of a 2-use invite survive that failed attempt."""
     gw = build(REGISTRATION_MODE="invite")
     created = gw.client.post(
         "/admin/invites", headers={"Authorization": f"Bearer {ADMIN_KEY}"}, json={"max_uses": 2}
@@ -2663,6 +2661,70 @@ def _burst(fn, count: int) -> list:
         thread.join(timeout=60)
     assert len(results) == count, "a worker thread did not finish"
     return results
+
+
+def test_same_machine_first_registration_race_reissues_cleanly(build, monkeypatch):
+    """Two first requests may both miss the read-only binding fast path.
+
+    The barrier makes that interleaving deterministic. Exactly one transaction
+    creates a key; the loser gets the documented 200 reissue, gives back its
+    invite and new-registration attempt, and keeps the same key id.
+    """
+    gw = build(
+        REGISTRATION_MODE="invite",
+        REGISTER_MAX_PER_IP_PER_DAY=0,
+        MAX_KEYS_PER_IP=0,
+        AUTH_RPM_PER_IP=0,
+    )
+    created_invite = gw.client.post(
+        "/admin/invites",
+        headers={"Authorization": f"Bearer {ADMIN_KEY}"},
+        json={"max_uses": 2},
+    )
+    code = created_invite.json()["invite_code"]
+
+    real_get_binding = gw.storage.get_machine_binding
+    both_missing = threading.Barrier(2)
+    counter_lock = threading.Lock()
+    missing_reads = 0
+
+    def align_the_two_missing_reads(machine_hash):
+        nonlocal missing_reads
+        binding = real_get_binding(machine_hash)
+        should_wait = False
+        if binding is None:
+            with counter_lock:
+                if missing_reads < 2:
+                    missing_reads += 1
+                    should_wait = True
+        if should_wait:
+            both_missing.wait(timeout=10)
+        return binding
+
+    monkeypatch.setattr(gw.storage, "get_machine_binding", align_the_two_missing_reads)
+    responses = _burst(
+        lambda _i: gw.register_machine(MACHINE_A, invite_code=code),
+        2,
+    )
+
+    assert sorted(response.status_code for response in responses) == [200, 201]
+    assert len({response.json()["key_id"] for response in responses}) == 1
+    assert sorted(response.json()["reused"] for response in responses) == [False, True]
+    assert len(gw.storage.list_keys()) == 1
+    binding = real_get_binding(gw.storage.hash_machine_id(MACHINE_A))
+    assert binding is not None
+    assert binding.reissue_count == 1
+    assert gw.storage.register_attempts_today(gw.storage.hash_ip("testclient")) == 1
+
+    created = next(response for response in responses if response.status_code == 201)
+    reissued = next(response for response in responses if response.status_code == 200)
+    assert gw.call(reissued.json()["api_key"]).status_code == 200
+    assert gw.call(created.json()["api_key"]).status_code == 401
+
+    # The losing request refunded its invite use. A different machine can spend
+    # the invite's actual second use instead of being told it was exhausted.
+    assert gw.register_machine(MACHINE_B, invite_code=code).status_code == 201
+    assert len(gw.storage.list_keys()) == 2
 
 
 def test_daily_registration_attempt_cap_holds_under_a_burst(build):

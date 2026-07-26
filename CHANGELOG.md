@@ -190,6 +190,11 @@ is discoverable and unambiguous through HTTP alone.
 
 ### Fixed
 
+- **Concurrent first registrations from one machine no longer leak a SQLite collision as
+  `500`.** The machine binding is now reserved with `ON CONFLICT DO NOTHING` inside the key
+  transaction. A losing request refunds its new-registration and invite claims, then follows the
+  same bounded `200` reissue path as a normal installer retry; it cannot mint a second allowance.
+
 - **Unknown but well-formed key IDs no longer skip password hashing.** The gateway now verifies
   them against a fixed in-memory dummy credential, using the configured KDF in the worker pool,
   before returning the same generic `401`. This removes the cheaper missing-row branch that could
