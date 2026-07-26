@@ -652,10 +652,14 @@ bad afternoon.
 yangble5/
 ├─ tools/                        standard-library only; copy a single file onto a box and run it
 │  ├─ cache_bench.py             live prompt-cache benchmark; the authoritative 99% gate
+│  ├─ cache_guard.py             offline linter: fails CI if a timestamp/uuid/date creeps into a
+│  │                             cacheable prefix and silently breaks caching. No network, no key
 │  ├─ cache_stats_sidecar.py     sole consumer of the consume-on-read usage queue -> stats.json
 │  ├─ claude_shim.py             system-role fix for engine < 7.2.93
 │  ├─ sitecheck.py               static gate: every figure published under site/ must trace to
 │  │                             the measurement record. Self-tests before it certifies anything
+│  ├─ honesty_gate.py            static gate: fails CI on an over-claim (a fable5/hit-rate mix-up,
+│  │                             a borrowed shock number) so the repo cannot quietly oversell
 │  └─ drift_check.py             is the site that is SERVED the site that is in this repo?
 │                                compares against the repo copy with known edge transforms applied
 ├─ byok/                         bring your own key: one script that writes a correct engine
