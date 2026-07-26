@@ -9,7 +9,11 @@ import pytest
 
 from tools import cache_guard
 
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "cache_guard"
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES = ROOT / "examples" / "cache_guard"
+ACTION = ROOT / "action.yml"
+ACTION_RUNNER = ROOT / ".github" / "actions" / "cache-guard" / "run.sh"
+CI = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 # --- prompt_text extraction -------------------------------------------------
@@ -191,6 +195,15 @@ def test_prompt_text_rejects_a_payload_that_is_neither_string_nor_object():
             raise AssertionError(f"prompt_text({bad!r}) should have raised ValueError")
 
 
+def test_cli_bad_payload_is_input_error_exit_two(tmp_path, capsys):
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text('{"system": "valid"}\n{"system": broken}\n', encoding="utf-8")
+    assert cache_guard.main(["scan", str(malformed)]) == 2
+    error = capsys.readouterr().err
+    assert str(malformed) in error
+    assert "line 2" in error
+
+
 # --- CLI + the shipped example fixtures stay truthful ------------------------
 
 
@@ -219,6 +232,41 @@ def test_cli_diff_good_to_bad_reports_regression(capsys):
     assert payload["after_ratio"] < payload["before_ratio"]
 
 
+def test_cli_diff_cost_output_carries_its_assumptions(capsys):
+    code = cache_guard.main(
+        [
+            "diff",
+            "--before",
+            str(EXAMPLES / "good_prompt.jsonl"),
+            "--after",
+            str(EXAMPLES / "bad_prompt.jsonl"),
+        ]
+    )
+    assert code == 1
+    output = capsys.readouterr().out
+    assert "estimated tokens per request" in output
+    assert "per 1,000 requests" in output
+    assert "EXAMPLE price -- pass --price-per-mtok" in output
+    assert "not a measured bill" in output
+
+
+@pytest.mark.parametrize("price", ["0", "-1", "nan", "inf", "-inf"])
+def test_cli_rejects_a_nonpositive_or_nonfinite_price(price):
+    with pytest.raises(SystemExit) as exc:
+        cache_guard.main(
+            [
+                "diff",
+                "--before",
+                str(EXAMPLES / "good_prompt.jsonl"),
+                "--after",
+                str(EXAMPLES / "bad_prompt.jsonl"),
+                "--price-per-mtok",
+                price,
+            ]
+        )
+    assert exc.value.code == 2
+
+
 def test_example_fixtures_have_no_credentials():
     for name in ("good_prompt.jsonl", "bad_prompt.jsonl", "openai_responses.jsonl"):
         text = (EXAMPLES / name).read_text(encoding="utf-8")
@@ -226,10 +274,36 @@ def test_example_fixtures_have_no_credentials():
         assert "sk-" not in text
 
 
-def test_example_ci_workflow_is_valid_and_runs_the_guard():
-    """The copy-paste GitHub Actions template must be valid YAML that actually
-    invokes the guard -- on pull requests, with least privilege and pinned
-    actions -- so a user who drops it in gets a working gate, not a broken one."""
+def test_root_action_runs_both_scan_and_qualified_diff():
+    """The advertised `uses:` target must reach the real guard in both modes."""
+    yaml = pytest.importorskip("yaml")
+    spec = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+    assert spec["runs"]["using"] == "composite"
+    assert set(spec["inputs"]) >= {
+        "prompt-file",
+        "base-ref",
+        "baseline-file",
+        "strict",
+        "price-per-mtok",
+    }
+    steps = spec["runs"]["steps"]
+    assert any(step.get("uses", "").startswith("actions/setup-python@v") for step in steps)
+    command = "\n".join(step.get("run", "") for step in steps)
+    assert ".github/actions/cache-guard/run.sh" in command
+    assert "${{ inputs." not in command, "workflow input must reach the shell through env, not code"
+
+    runner = ACTION_RUNNER.read_text(encoding="utf-8")
+    assert 'scan_args=(scan)' in runner
+    assert 'diff \\' in runner
+    assert "rev-parse --verify --quiet --end-of-options" in runner
+    assert not any(line.strip().startswith("set -e") for line in runner.splitlines()), (
+        "a red scan must not prevent the qualified diff from printing"
+    )
+    assert "not a measured bill" in (ROOT / "tools" / "cache_guard.py").read_text(encoding="utf-8")
+
+
+def test_example_ci_workflow_is_valid_and_uses_the_root_action():
+    """The copy-paste workflow compares the PR base with least privilege."""
     yaml = pytest.importorskip("yaml")
     spec = yaml.safe_load((EXAMPLES / "cache-guard.yml").read_text(encoding="utf-8"))
     # PyYAML parses a bare `on:` key as the boolean True (YAML 1.1); accept either.
@@ -239,8 +313,23 @@ def test_example_ci_workflow_is_valid_and_runs_the_guard():
     assert triggers is not None and "pull_request" in triggers, "must run on pull requests"
     assert spec["permissions"] == {"contents": "read"}, "least privilege"
     steps = spec["jobs"]["cache-guard"]["steps"]
-    uses = [s.get("uses", "") for s in steps]
-    assert any(u.startswith("actions/checkout@v") for u in uses), "pin actions/checkout"
-    assert any(u.startswith("actions/setup-python@v") for u in uses), "pin actions/setup-python"
-    run_cmds = " ".join(s.get("run", "") for s in steps)
-    assert "cache_guard.py scan" in run_cmds, "the gate must actually run the guard"
+    checkout = next(s for s in steps if s.get("uses", "").startswith("actions/checkout@v"))
+    assert checkout["with"]["fetch-depth"] == 0, "base-ref must exist in the local checkout"
+    action = next(s for s in steps if s.get("uses") == "shark0120/yangble5@main")
+    assert action["with"]["prompt-file"] == "prompts/cache-fixture.jsonl"
+    assert "pull_request.base.sha" in action["with"]["base-ref"]
+
+
+def test_ci_executes_the_action_and_requires_its_negative_control_to_fail():
+    """A parsed action is not a working action; GitHub CI must execute the boundary."""
+    yaml = pytest.importorskip("yaml")
+    spec = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    job = spec["jobs"]["cache-guard-action"]
+    action_steps = [step for step in job["steps"] if step.get("uses") == "./"]
+    assert len(action_steps) == 2
+    bad = next(step for step in action_steps if step.get("id") == "cache_breaking")
+    assert bad["continue-on-error"] is True
+    assert bad["with"]["prompt-file"].endswith("bad_prompt.jsonl")
+    assertion = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "steps.cache_breaking.outcome" in assertion
+    assert '"failure"' in assertion

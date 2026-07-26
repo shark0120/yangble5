@@ -1,0 +1,47 @@
+name: "yangble5 cache guard"
+description: "Fail a pull request when volatile bytes or prefix churn make an LLM prompt cache-hostile."
+author: "yangble5 contributors"
+
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  prompt-file:
+    description: "Repo-relative JSON or JSONL file containing representative current request payloads."
+    required: false
+    default: "prompts/cache-fixture.jsonl"
+  base-ref:
+    description: "Optional base commit/ref; compare the same prompt-file from this tree with the current file."
+    required: false
+    default: ""
+  baseline-file:
+    description: "Optional local baseline JSON/JSONL file. Mutually exclusive with base-ref."
+    required: false
+    default: ""
+  strict:
+    description: "Also fail on medium-confidence date/current-time markers (true or false)."
+    required: false
+    default: "false"
+  price-per-mtok:
+    description: "Your input-token price per million. Default is an explicitly labelled example, not a quote."
+    required: false
+    default: "3"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Scan and compare the cacheable prefix
+      shell: bash
+      env:
+        INPUT_PROMPT_FILE: ${{ inputs.prompt-file }}
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+        INPUT_BASELINE_FILE: ${{ inputs.baseline-file }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_PRICE_PER_MTOK: ${{ inputs.price-per-mtok }}
+      run: bash "$GITHUB_ACTION_PATH/.github/actions/cache-guard/run.sh"

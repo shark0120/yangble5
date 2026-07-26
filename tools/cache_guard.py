@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,10 @@ from typing import Any
 # the last one, which is the fresh turn that is allowed to vary.
 DEFAULT_PRICE_PER_MTOK = 3.0  # EXAMPLE ONLY -- see note printed beside any cost.
 CHARS_PER_TOKEN_EST = 4  # Coarse text estimate; labelled as an estimate on use.
+
+
+class InputError(ValueError):
+    """A caller-supplied payload cannot be read or interpreted."""
 
 
 @dataclass(frozen=True)
@@ -137,7 +143,7 @@ def prompt_text(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     if not isinstance(payload, dict):
-        raise ValueError("payload must be a string or an object")
+        raise InputError("payload must be a string or an object")
     if isinstance(payload.get("prompt"), str):
         return payload["prompt"]
     parts: list[str] = []
@@ -327,13 +333,23 @@ def load_payloads(path: Path) -> list[Any]:
             try:
                 out.append(json.loads(raw))
             except json.JSONDecodeError as exc:
-                raise SystemExit(f"error: {path} line {lineno}: {exc}") from exc
+                raise InputError(f"{path} line {lineno}: {exc}") from exc
         return out
     try:
         obj = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"error: {path}: {exc}") from exc
+        raise InputError(f"{path}: {exc}") from exc
     return obj if isinstance(obj, list) else [obj]
+
+
+def _positive_finite_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("must be finite and greater than zero")
+    return number
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
@@ -341,7 +357,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     for path in args.paths:
         payloads.extend(load_payloads(Path(path)))
     if not payloads:
-        raise SystemExit("error: no payloads to scan")
+        raise InputError("no payloads to scan")
     report = scan_payloads(payloads, strict=args.strict)
 
     if args.json:
@@ -384,7 +400,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     before = load_payloads(Path(args.before))
     after = load_payloads(Path(args.after))
     if not before or not after:
-        raise SystemExit("error: both --before and --after need at least one payload")
+        raise InputError("both --before and --after need at least one payload")
     report = diff_payloads(before, after)
     delta = report.cost_delta_per_1k(args.price_per_mtok)
     price_note = f"at ${args.price_per_mtok:g}/Mtok" + (
@@ -455,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--after", required=True, help="payload file for the change under test")
     diff.add_argument(
         "--price-per-mtok",
-        type=float,
+        type=_positive_finite_float,
         default=DEFAULT_PRICE_PER_MTOK,
         help="input token price per million, for the cost estimate",
     )
@@ -466,7 +482,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (InputError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

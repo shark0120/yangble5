@@ -119,6 +119,36 @@ jobs:
           fi
           exit "$status"
 
+  cache-guard-action:
+    name: reusable cache guard proves it can fail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stable fixture passes the reusable action
+        uses: ./
+        with:
+          prompt-file: examples/cache_guard/good_prompt.jsonl
+          baseline-file: examples/cache_guard/good_prompt.jsonl
+
+      - name: Negative control - volatile prefix must fail the reusable action
+        id: cache_breaking
+        continue-on-error: true
+        uses: ./
+        with:
+          prompt-file: examples/cache_guard/bad_prompt.jsonl
+          baseline-file: examples/cache_guard/good_prompt.jsonl
+
+      - name: Require the negative control to be red
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.cache_breaking.outcome }}" != "failure" ]]; then
+            echo "::error::cache_guard action accepted the deliberately cache-hostile fixture"
+            exit 1
+          fi
+          echo "ok    reusable action rejected the deliberately cache-hostile fixture"
+
   tools-are-stdlib-only:
     # Deliberately a separate job with NOTHING installed. Running this in the
     # matrix job above would prove nothing, because fastapi and httpx are already

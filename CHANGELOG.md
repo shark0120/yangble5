@@ -17,6 +17,20 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Added — reusable prompt-cache CI gate
+
+- **`action.yml` turns `tools/cache_guard.py` into a reusable GitHub Action.** A consumer commits
+  representative JSON/JSONL request payloads and points the action at the pull request's base
+  commit. It scans the current cacheable prefix for volatile bytes, then compares the base and
+  current fixtures; a timestamp, UUID or shorter byte-stable prefix fails the step. The diff still
+  runs after a scan finding so the review log includes its estimated extra uncached tokens and
+  cost, with the caller-supplied (or explicitly labelled example) price and the coarse token
+  conversion beside it. This is a fixture-byte estimate, not measured provider billing.
+- **CI runs the action in both directions.** The stable example must pass; the deliberately
+  cache-hostile example runs with `continue-on-error`, and a following step fails the job unless
+  the action's actual outcome was `failure`. A negative control that cannot turn the product red
+  turns the repository red instead.
+
 ### Changed — the bundled skill is renamed
 
 - **The skill published at `/fable5/` is withdrawn and republished at `/skill/`.** The old name

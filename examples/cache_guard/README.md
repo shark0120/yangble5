@@ -60,12 +60,38 @@ hit. A bare-string `prompt` or Responses `input` is scanned as-is.
 
 ## Use it as a CI gate
 
-Fail the build when a pull request makes a prompt cache-hostile. A complete,
+Fail the build when a pull request makes a prompt cache-hostile. A complete
 copy-paste workflow is here: [`cache-guard.yml`](cache-guard.yml) — drop it into
-`.github/workflows/` in your repo. It vendors nothing at run time and makes no
-network call: copy the single stdlib-only `cache_guard.py` into your repo, dump a
-couple of representative payloads to `prompts/*.jsonl`, and every pull request is
-checked. The core of it is one step:
+`.github/workflows/` in your repo, commit a representative request fixture at
+`prompts/cache-fixture.jsonl`, and every pull request is checked by the root
+[`action.yml`](../../action.yml):
+
+```yaml
+- name: Guard the prompt cache
+  uses: shark0120/yangble5@main
+  with:
+    prompt-file: prompts/cache-fixture.jsonl
+    base-ref: ${{ github.event.pull_request.base.sha }}
+```
+
+The fixture should contain at least two requests whose cacheable prefix should
+stay byte-identical and whose last, fresh turn differs. The action first scans
+the current fixture for timestamps, UUIDs and related volatility. It then reads
+the same file from the pull request's base commit and runs a before/after diff.
+If the scan is already red, the diff still runs: reviewers see both the
+offending bytes and the estimated extra uncached tokens/cost before the step
+fails.
+
+`main` is shown because this action was added after the existing release tag.
+Review it, then pin the `uses:` line to the full commit SHA you approved. The
+action's default input-token price is explicitly labelled as an **example** in
+its output; set `price-per-mtok` to your own price for a relevant estimate. The
+result is still a byte-diff estimate, not a measured provider bill. The scanner
+itself is offline and needs no API key; GitHub still downloads the action and
+Python setup in the normal way.
+
+If vendoring is your policy, copy the single stdlib-only `cache_guard.py` into
+your repo and keep the original one-step form:
 
 ```yaml
 - name: Guard the prompt cache

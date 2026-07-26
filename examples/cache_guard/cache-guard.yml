@@ -1,25 +1,18 @@
 # cache-guard.yml — fail a pull request that makes a prompt cache-hostile.
 #
-# COPY THIS into .github/workflows/ in your OWN repository. Two things to provide:
+# COPY THIS into .github/workflows/ in your repository, then commit one
+# representative JSON/JSONL request fixture at prompts/cache-fixture.jsonl.
+# Use two or more payloads whose cached prefix should be byte-identical and
+# whose final user turn differs. Supported shapes: Anthropic Messages, OpenAI
+# chat.completions, and OpenAI Responses.
 #
-#   1. tools/cache_guard.py — vendor the single, standard-library-only file from
-#      github.com/shark0120/yangble5 (MIT). No pip install and no network call at
-#      run time; pin the copy you reviewed rather than fetching it each build.
-#   2. prompts/*.jsonl — one JSON request body per line, in the shape your app
-#      sends (Anthropic Messages, OpenAI chat.completions, or OpenAI Responses).
-#      Dump a couple of representative payloads from your own code.
-#
-# It flags a timestamp, UUID, request-id or rendered date that has crept into the
-# cacheable prefix — the change that silently stops your prompt cache from ever
-# hitting and raises your bill with no error anywhere. See the README next to this
-# file for what it does and does not claim.
+# `main` makes the new action usable before its next release tag exists. Review
+# the action, then pin this `uses:` line to the full commit SHA you approved.
 
 name: cache-guard
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -29,11 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          # base-ref below must exist locally so the action can read the old
+          # version of the same fixture without contacting any provider.
+          fetch-depth: 0
+
       - name: Guard the prompt cache
-        # `scan` needs no API key and makes no network call. A volatile match in
-        # the cacheable prefix exits 1 — with the offending string and its position
-        # — and fails the build. Swap the glob for wherever you keep your payloads.
-        run: python tools/cache_guard.py scan prompts/*.jsonl
+        uses: shark0120/yangble5@main
+        with:
+          prompt-file: prompts/cache-fixture.jsonl
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          # Optional: replace the action's explicitly labelled example price
+          # with your own input-token price per million.
+          # price-per-mtok: "YOUR_PRICE"

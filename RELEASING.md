@@ -27,6 +27,7 @@ What CI covers, by job id, so the checklist below can refer to them by name:
 | Job | What a green tick means |
 |---|---|
 | `test` | pytest + `ruff check .` + `ruff format --check tools byok`, on Ubuntu and Windows, on every Python in the matrix |
+| `cache-guard-action` | the reusable action passes a stable prompt fixture and its negative control rejects a deliberately volatile, shrunken prefix |
 | `tools-are-stdlib-only` | nothing in `tools/` or `byok/` imports a third-party package, proved on a bare interpreter |
 | `offline-self-checks` | every `.sh` and `.ps1` parses; `--help` and `--dry-run` paths still work and still write nothing; `pyproject.toml` agrees with the test matrix |
 | `installer-digests` | every `site/*.sh`/`*.ps1` has a `.sha256` and each digest matches its file **in the tree** |

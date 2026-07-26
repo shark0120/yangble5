@@ -112,6 +112,34 @@ below moved ~3M prompt tokens; do not start there. Exit codes: `0` pass, `1` bel
 
 ---
 
+## Put `cache_guard` on every pull request
+
+Commit one JSON/JSONL fixture containing representative request bodies, then copy
+[`examples/cache_guard/cache-guard.yml`](examples/cache_guard/cache-guard.yml) into your
+`.github/workflows/` directory. Its substantive step is:
+
+```yaml
+- name: Guard the prompt cache
+  uses: shark0120/yangble5@main
+  with:
+    prompt-file: prompts/cache-fixture.jsonl
+    base-ref: ${{ github.event.pull_request.base.sha }}
+```
+
+The root [`action.yml`](action.yml) scans the current cacheable prefix for volatile bytes, reads
+the same fixture from the pull request's base commit, and compares before with after. A timestamp,
+UUID or shrunken byte-stable prefix makes the step red. The diff still runs after a scan finding,
+so the log includes the estimated extra uncached tokens and cost with the price, request volume
+and coarse token conversion stated beside it. That is an estimate from fixture bytes, **not** an
+upstream measurement or a provider bill.
+
+The action needs no API key and makes no provider request. The example uses `@main` because the
+action postdates the existing release tag; after review, pin it to the full commit SHA you
+approved. See the [worked good/broken fixtures](examples/cache_guard/README.md), including the
+one deliberately rejected by this repository's own CI.
+
+---
+
 ## You can install it by asking your coding agent
 
 [`https://yangble5.com`](https://yangble5.com) publishes an install sequence written to be pasted
@@ -650,6 +678,7 @@ bad afternoon.
 
 ```
 yangble5/
+├─ action.yml                    reusable GitHub Action: scan + base/current prefix diff
 ├─ tools/                        standard-library only; copy a single file onto a box and run it
 │  ├─ cache_bench.py             live prompt-cache benchmark; the authoritative 99% gate
 │  ├─ cache_guard.py             offline linter: fails CI if a timestamp/uuid/date creeps into a
