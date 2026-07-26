@@ -17,6 +17,19 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Added — machine-enforced documentation locks
+
+- **A publication-ready [doc-lock methods draft](docs/launch/doc-locks.md) extracts the pattern
+  behind five mechanisms already enforced in this repository.** It covers parsing one authority,
+  comparing implementation and documentation in both directions, locking numeric prose and proving
+  that a parser examined something. Each receipt links to its real source and test, states its
+  blind spot, and is itself locked to those implementation anchors. The article remains a draft;
+  publishing or announcing it is a user action.
+- **CI step inventory closes the known-shape parser's blind spot.**
+  `tests/test_ci_step_inventory.py` pins every workflow job's total and named step counts without
+  pinning step wording. A new job or step now fails with an instruction to classify a real gate in
+  CONTRIBUTING or explain and inventory a setup/reporting step.
+
 ### Added — reusable prompt-cache CI gate
 
 - **`action.yml` turns `tools/cache_guard.py` into a reusable GitHub Action.** A consumer commits
