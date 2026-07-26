@@ -20,7 +20,7 @@ Two conventions specific to this repository, because they change how the entries
 ### Added — machine-enforced documentation locks
 
 - **A publication-ready [doc-lock methods draft](docs/launch/doc-locks.md) extracts the pattern
-  behind five mechanisms already enforced in this repository.** It covers parsing one authority,
+  behind six mechanisms already enforced in this repository.** It covers parsing one authority,
   comparing implementation and documentation in both directions, locking numeric prose and proving
   that a parser examined something. Each receipt links to its real source and test, states its
   blind spot, and is itself locked to those implementation anchors. The article remains a draft;
@@ -29,6 +29,10 @@ Two conventions specific to this repository, because they change how the entries
   `tests/test_ci_step_inventory.py` pins every workflow job's total and named step counts without
   pinning step wording. A new job or step now fails with an instruction to classify a real gate in
   CONTRIBUTING or explain and inventory a setup/reporting step.
+- **Every normative answer in `docs/AGENT_INTERVIEW.md` now carries one executable verification
+  command.** Machine-readable answer markers and `tests/test_agent_interview_answers.py` lock the
+  headings, commands and real pytest selections in both directions. The commands verify the
+  implementation premise below the advice; they deliberately do not freeze editorial wording.
 
 ### Added — reusable prompt-cache CI gate
 

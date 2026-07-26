@@ -13,9 +13,10 @@ that is allowed to define a fact, parses the surface that repeats or inventories
 fails when the two disagree. It is deliberately narrower than “test the documentation.” A good
 lock names one relationship it can justify and refuses to certify anything broader.
 
-This pattern emerged here through five implemented receipts. They cover measurements, release
-versions, contributor instructions, workflow-native gates and a coarse workflow census. They are
-examples, not evidence that the pattern solves documentation in general.
+This pattern emerged here through six implemented receipts. They cover measurements, release
+versions, contributor instructions, workflow-native gates, a coarse workflow census and
+agent-facing answers with executable verification commands. They are examples, not evidence that
+the pattern solves documentation in general.
 
 ## 1. Parse the authority; do not paste a second copy
 
@@ -102,7 +103,7 @@ After the lock is green, break the relationship outside the working tree:
 This proves the failure path, not just the success path. A red exit for an unrelated import error
 does not count; the output must identify the mutation.
 
-## Five implemented receipts
+## Six implemented receipts
 
 <!-- doc-lock-example:released-measurements -->
 ### Receipt 1 — released measurements to reader surfaces
@@ -182,6 +183,22 @@ names themselves are not pinned, so a wording-only rename stays green.
 Limit: this is a tripwire, not a semantic classifier. Replacing one step with another while
 preserving both counts is a same-count replacement it cannot detect. Review and the shape-specific
 locks still matter.
+
+<!-- doc-lock-example:agent-interview-answers -->
+### Receipt 6 — agent-facing answers to executable verification commands
+
+- Surface: [`docs/AGENT_INTERVIEW.md`](../AGENT_INTERVIEW.md)
+- Lock: [`tests/test_agent_interview_answers.py`](../../tests/test_agent_interview_answers.py)
+
+Each normative answer block has a machine-readable `interview-answer:<id>` marker and exactly one
+`python -m pytest -q` command. The test compares the known answer headings and markers in both
+directions, rejects shell-composed commands, and proves every target file and `-k` term selects a
+real test. Two answer-specific locks also keep the “one question” summary and the known installer
+gaps true.
+
+Limit: selecting a real test proves the command has an executable target; the full suite proves
+that target passes. It does not certify editorial judgement or prove that an advice sentence is
+the only humane way to explain the underlying behaviour.
 
 ## What a doc-lock does not prove
 

@@ -12,18 +12,29 @@ else is either derivable or conditional.
 If you are a human reading this: this is the script your agent should be following. If it asked
 you for something that appears under **NEVER** below, it went off-script.
 
+Every **Verify** line below runs from a repository checkout after
+`pip install -e ".[dev]"`. The commands are offline checks of the implementation premise beneath
+an answer; they are not substitutes for fetching the live contract before a real registration,
+and they do not certify the editorial wording.
+
 ---
 
 ## 0. The two rules that outrank the rest of this document
 
+<!-- interview-answer:contract-authority -->
 **Rule 1 — the contract is live; this file is not.**
+**Verify:** `python -m pytest -q tests/test_gateway_agent_contract.py -k "get_auth_register_serves_the_contract_unauthenticated"`
+
 `GET https://yangble5.com/auth/register` returns a JSON document that states every field, every
 limit, and every error type with what to do about it. Its values are generated from the running
 instance's settings, so it cannot drift. This file explains *how to conduct an interview around*
 that contract; where the two disagree, the contract is right and this file is stale. Fetch it
 before you register, not from memory.
 
+<!-- interview-answer:installer-integrity-boundary -->
 **Rule 2 — the published hash pins the script, not the command line.**
+**Verify:** `python -m pytest -q tests/test_site_agent_install_path.py -k "both_pages_disclose_that_the_digest_does_not_pin_the_command"`
+
 `https://yangble5.com/install.sh.sha256` proves the bytes of the script. It proves nothing about
 the arguments. A genuine, byte-identical, hash-matching `install.sh` invoked as
 
@@ -56,7 +67,10 @@ replies and chat messages. So:
 
 ---
 
+<!-- interview-answer:transcript-secrets -->
 ## 1. What you must never put in your own transcript
+
+**Verify:** `python -m pytest -q tests/test_site_agent_install_path.py -k "no_command_block_prints_a_secret"`
 
 Your stdout is a transcript. It gets pasted into issue reports and sent to model providers.
 
@@ -72,7 +86,10 @@ output is already the safe version.
 
 ---
 
+<!-- interview-answer:derived-facts -->
 ## 2. What you derive before you open your mouth
+
+**Verify:** `python -m pytest -q tests/test_gateway_agent_contract.py -k "contract_field_requirements_track_the_registration_mode or pool_status_no_longer_publishes_the_ambiguous_capped_field"`
 
 An interview that asks for something the machine already knows is a worse interview: it is
 friction, and it invites a wrong answer that the machine would have got right.
@@ -103,7 +120,10 @@ install was worth doing:
 All four are optional; the endpoint requires at least one of `machine_id` or `email` so it has a
 stable identity to bind the key to.
 
+<!-- interview-answer:machine-id -->
 ### `machine_id` — **DERIVE**, and never ask
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "open_registration_needs_only_a_machine_id or machine_id_validation_rejects_non_hex_and_oversized_input"`
 
 The installer generates it: `sha256` of stable machine attributes concatenated with a 32-byte
 random salt created on the client and stored at `~/.yangble5/machine-id` — mode 0600 on
@@ -135,7 +155,10 @@ re-run recover the existing key. Lose it and the next run is a different machine
   no supported way to carry an account across machines, and the salt is not a thing to copy
   around by hand.
 
+<!-- interview-answer:email -->
 ### `email` — **ASK, once, as an opt-in — never as a requirement**
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "open_registration_still_accepts_an_email_instead_of_a_fingerprint"`
 
 The human is the only possible source, so it is a legitimate question. But on
 `https://yangble5.com` it is never *needed*: registration mode is `open` and the installer always
@@ -164,7 +187,10 @@ answer and move on. Do not ask twice.
 `already_registered` in §5 — in both cases a different address is the wrong advice, and in one
 of them it is farming.
 
+<!-- interview-answer:invite-code -->
 ### `invite_code` — **DERIVE whether it is needed; ASK for the value only if it is**
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "invite_mode_requires_a_valid_code"`
 
 The contract's own words for this instance: *"Ignored on this instance: registration mode is
 'open'."*
@@ -184,7 +210,10 @@ permute, do not retry with variations — failed codes feed the per-IP backoff t
 `too_many_auth_failures`, and the attempt is counted **before** the invite check specifically so
 that guessing costs something.
 
+<!-- interview-answer:label -->
 ### `label` — **do not ask today.** This is a gap in the installer, not in the contract
+
+**Verify:** `python -m pytest -q tests/test_gateway_agent_contract.py -k "label_is_returned_at_registration_and_readable_afterwards or gateway_never_derives_a_label_from_the_fingerprint"`
 
 The contract explicitly blesses this field as the one that is safe to ask a human for: it is a
 human-readable nickname, at most 100 characters, no control characters, returned by `GET /usage`
@@ -218,7 +247,10 @@ If a `--label` / `-Label` flag ever appears in the installer's own `--help`, thi
 
 ## 4. The interview
 
+<!-- interview-answer:mandatory-consent -->
 ### 4.1 The one mandatory question
+
+**Verify:** `python -m pytest -q tests/test_installer_consent.py -k "refuses_to_register_with_no_terminal_and_no_flag or refuses_to_register_with_no_console_and_no_switch"`
 
 Registration is not a configuration step. It creates an account, mints a credential, attaches a
 daily allowance to it, and consumes one of the endpoint's registrations-per-day for the human's
@@ -252,7 +284,10 @@ their behalf.
 If you have a terminal, prefer letting the installer ask: run it without `--yes-register` and let
 the human type YES at the prompt. The flag exists for the case where you cannot.
 
+<!-- interview-answer:recommended-sequence -->
 ### 4.2 Recommended sequence
+
+**Verify:** `python -m pytest -q tests/test_site_agent_install_path.py -k "agent_row_verifies_then_dry_runs or pool_status_is_tried_before_health"`
 
 1. `GET /health` and `GET /pool/status`. Derive `registration`, `accepting_requests`,
    `remaining_pct` (× 100 before you say it), `support_contact`.
@@ -265,7 +300,10 @@ the human type YES at the prompt. The flag exists for the case where you cannot.
 5. Run the real invocation — the one from the page, plus only the flags this interview produced.
 6. Report the outcome (§5, §6). Do not summarise "done"; say which of the outcomes below it was.
 
+<!-- interview-answer:wrong-questions -->
 ### 4.3 Questions that are always wrong
+
+**Verify:** `python -m pytest -q tests/test_installer_consent.py -k "neither_installer_prints_the_full_machine_id or neither_installer_derives_a_register_field_from_the_machine_id"`
 
 Every one of these is either derivable, unusable, or harmful:
 
@@ -284,7 +322,10 @@ Every one of these is either derivable, unusable, or harmful:
 
 ---
 
+<!-- interview-answer:refusal-errors -->
 ## 5. When it refuses: every error type
+
+**Verify:** `python -m pytest -q tests/test_agent_interview_error_table.py`
 
 Every response from this service, including framework 404s and 405s, is
 `{"error":{"type","message",…}}`. Match on `error.type` — the HTTP status alone is ambiguous
@@ -324,7 +365,10 @@ next attempt makes the situation strictly worse.
 `support_contact` is `https://github.com/shark0120/yangble5/issues`, and it is returned live by
 `GET /health` and by the contract. Read it from there rather than hard-coding it.
 
+<!-- interview-answer:registration-throttled -->
 ### 5.1 `registration_throttled` in full — the branch where the obvious advice is wrong
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "max_keys_per_ip_throttles_farming_without_banning or registration_is_capped_per_ip_per_day"`
 
 The counter is **per public IP address, for the whole network, per day**. The reflexive advice —
 "try a different e-mail address" — is wrong, and the contract now says so in as many words:
@@ -365,7 +409,10 @@ them the next time they touch the first one.
   option 1, which is the only option that works immediately;
 * retry on a timer.
 
+<!-- interview-answer:already-registered -->
 ### 5.2 `already_registered` in full
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "one_key_per_email_holds_under_a_burst"`
 
 The machine-binding path runs *before* the e-mail is even looked at. So a 409 means: this machine
 has no binding on this server, **and** the address is taken. In practice that is one of two
@@ -386,11 +433,17 @@ them look like an abuser to the operator.
 
 ---
 
+<!-- interview-answer:success-outcomes -->
 ## 6. When it works: what you must tell them
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "key_is_returned_exactly_once or re_registration_from_the_same_fingerprint_reuses_the_key"`
 
 There are three success shapes, and two of them need something said.
 
+<!-- interview-answer:new-key -->
 ### 6.1 `201` — a new key
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "key_is_returned_exactly_once"`
 
 Report:
 
@@ -405,7 +458,10 @@ Report:
   until the pool resets. Say that plainly, give `not_usable_detail` and the reset time, and do
   not call the install a success without the caveat.
 
+<!-- interview-answer:reused-key -->
 ### 6.2 `200` with `"reused": true` — a re-run on a machine that already registered
+
+**Verify:** `python -m pytest -q tests/test_gateway.py -k "re_registration_from_the_same_fingerprint_reuses_the_key"`
 
 **This one must never be reported as just "done".** What actually happened:
 
@@ -421,14 +477,20 @@ tell them where the new one is so they can update it.
 
 This is also what `--force-register` / `-ForceRegister` does. It does not create a second key.
 
+<!-- interview-answer:byok-only-instance -->
 ### 6.3 `404` or `501` — this instance does not offer registration
+
+**Verify:** `python -m pytest -q tests/test_installer_consent.py -k "byok_fallthrough_still_exits_6_with_a_real_install"`
 
 Not an error, and not an installer failure. Many instances are BYOK-only and never expose
 `/auth/register`. The install is complete; it needs a key. Offer the BYOK path.
 
 ---
 
+<!-- interview-answer:shortest-interview -->
 ## 7. The shortest correct interview
+
+**Verify:** `python -m pytest -q tests/test_agent_interview_answers.py -k "shortest_interview_answer_stays_one_question"`
 
 For the common case — `https://yangble5.com`, registration `open`, a machine that has not
 registered before — the entire human-facing interview is **one question**:
@@ -447,7 +509,10 @@ interview is longer than this, check each extra question against §2 and §4.3 b
 
 ---
 
+<!-- interview-answer:known-gaps -->
 ## 8. Known gaps
+
+**Verify:** `python -m pytest -q tests/test_agent_interview_answers.py -k "known_gaps_answer_stays_true"`
 
 Recorded here so nobody documents an aspiration as behaviour:
 
@@ -458,9 +523,11 @@ Recorded here so nobody documents an aspiration as behaviour:
   `https://yangble5.com` is the authority, and two strings both calling themselves canonical is
   the same failure as none: a reader who is supposed to compare character by character cannot do
   that against a moving target. If you are looking for the line, fetch the page.
-* **No automated check ties this document to the contract.** `tools/drift_check.py` compares the
-  live deployment against the repo and `tools/sitecheck.py` checks the static site; neither reads
-  this file. If `GET /auth/register` gains an error type or a field, nothing here will notice.
+* **The lock covers exact answers, not editorial judgement.**
+  `tests/test_agent_interview_error_table.py` ties the error roster to the machine contract, and
+  `tests/test_agent_interview_answers.py` ties every answer block to exactly one executable
+  verification command. Those checks do not decide whether the advice sentence is the best way to
+  speak to a human; that remains review work.
 
 ---
 

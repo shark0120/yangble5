@@ -88,6 +88,20 @@ EXAMPLES = {
             ),
         },
     },
+    "agent-interview-answers": {
+        "paths": (
+            "docs/AGENT_INTERVIEW.md",
+            "tests/test_agent_interview_answers.py",
+        ),
+        "proofs": {
+            "tests/test_agent_interview_answers.py": (
+                "ANSWER_HEADINGS =",
+                "test_every_normative_answer_heading_has_one_marker_and_one_command",
+                "test_every_answer_command_selects_real_tests_without_shell_indirection",
+                "test_shortest_interview_answer_stays_one_question",
+            ),
+        },
+    },
 }
 
 REQUIRED_STAGE_HEADINGS = (
@@ -122,9 +136,9 @@ def test_article_states_every_stage_of_the_method():
     assert positions == sorted(positions), "doc-lock stages are out of order"
 
 
-def test_article_has_exactly_five_machine_readable_receipts():
+def test_article_has_exactly_six_machine_readable_receipts():
     markers = re.findall(r"<!-- doc-lock-example:([a-z0-9-]+) -->", _article())
-    assert len(markers) == 5, "the prose says five implemented receipts"
+    assert len(markers) == 6, "the prose says six implemented receipts"
     assert len(markers) == len(set(markers)), "a receipt marker is duplicated"
     assert set(markers) == set(EXAMPLES)
 
@@ -152,6 +166,7 @@ def test_article_discloses_the_known_limits_instead_of_selling_a_universal_check
         "not a repository-wide detector",
         "not imagine a wholly new one",
         "same-count replacement it cannot detect",
+        "does not certify editorial judgement",
         "proves correspondence, not semantic truth",
     ):
         assert limitation in text
