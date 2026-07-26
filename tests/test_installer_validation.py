@@ -590,21 +590,47 @@ def test_ps_rejects_hostile_model_names(model):
 
 
 @needs_powershell
+def test_ps_rejects_payload_hidden_on_a_second_line():
+    """The PowerShell analogue of the grep line-by-line bypass. The newline cases
+    live in INVALID_MODELS/INVALID_URLS but every other PS test filters '\\n' out
+    (the sh harness reason does not apply here), so without this the validators'
+    newline handling goes entirely unchecked on Windows. install.ps1 anchors with
+    \\A...\\z (absolute end), NOT $ or \\Z -- so even a lone TRAILING newline, which
+    \\Z would wave through, must be rejected."""
+    assert ps_predicate("Test-Yb5ModelName", "yangble5\nid > pwned") is False
+    assert ps_predicate("Test-Yb5ApiUrl", "https://ok.com\nhttps://evil.com") is False
+    assert ps_predicate("Test-Yb5ModelName", "yangble5\n") is False  # \z, not \Z
+
+
+@needs_powershell
 def test_ps_sanitiser_matches_the_posix_one():
+    """Every property the POSIX sanitiser guarantees, asserted against the PS one --
+    including the two the terminal-escape cases don't exercise: bare control-byte
+    deletion and non-ASCII deletion. Those are the sanitiser's core (an escape byte
+    is just one control byte), and dropping the '[^\\x20-\\x7E]' pass from install.ps1
+    would leave the ANSI/OSC cases green while smuggling control bytes and
+    look-alike Unicode straight through."""
     out = run_ps(
         ["Get-SafeRemoteText"],
         "$e=[char]27; $b=[char]7;"
         "Get-SafeRemoteText -Value \"$e[31mred$e[0m\";"
         "Get-SafeRemoteText -Value \"a${e}]0;pwned${b}b\";"
         "Get-SafeRemoteText -Value \"one`r`ntwo\";"
+        # bare control bytes (BEL, BS, DEL, SOH) are DELETED, not spaced -> abcde
+        "Get-SafeRemoteText -Value ('a'+[char]7+'b'+[char]8+'c'+[char]127+'d'+[char]1+'e');"
+        # non-ASCII bytes are deleted whole (no mojibake): 'cafe naive' with the
+        # accented e (233) and i (239) removed -> 'caf nave', same as sh_sanitize.
+        "Get-SafeRemoteText -Value ('caf'+[char]233+' na'+[char]239+'ve');"
         "Get-SafeRemoteText -Value ('A' * 500) -MaxChars 200",
     )
     lines = [ln for ln in out.splitlines() if ln != ""]
     assert lines[0] == "red"
     assert lines[1] == "ab"
     assert lines[2] == "one two"
-    assert lines[3].startswith("A" * 200)
-    assert lines[3].endswith("[truncated]")
+    assert lines[3] == "abcde"      # bare control bytes gone
+    assert lines[4] == "caf nave"   # non-ASCII gone, matches sh_sanitize('cafe naive')
+    assert lines[5].startswith("A" * 200)
+    assert lines[5].endswith("[truncated]")
 
 
 @needs_powershell

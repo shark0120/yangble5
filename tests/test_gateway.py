@@ -1357,10 +1357,29 @@ def test_soft_throttle_expires_on_its_own(build):
 
 
 def test_soft_throttle_fires_before_the_hard_abuse_suspension(build):
-    """MAX_IPS_PER_KEY (5) is below ABUSE_DISTINCT_IP_THRESHOLD (8) by default,
-    so a wandering user is slowed down long before anything is suspended."""
-    gw = build()
-    assert gw.settings.max_ips_per_key < gw.settings.abuse_distinct_ip_threshold
+    """Drive the fanout, don't just assert the config. The soft throttle gate
+    (distinct > max_ips) is evaluated before the suspension gate (distinct >=
+    threshold) in the SAME code path, and -- because being throttled stops the
+    next new IP from ever being observed -- the only way a fanout can reach
+    suspension is if the crossing request also engaged the throttle. So a key
+    suspended by fanout must ALSO carry a live binding-throttle mark. A regression
+    that suspended without throttling first (or reordered the gates) leaves the
+    throttle mark unset and fails here."""
+    gw = build(MAX_IPS_PER_KEY=2, ABUSE_DISTINCT_IP_THRESHOLD=3, ABUSE_AUTO_SUSPEND=True,
+               TRUST_PROXY_HEADERS=True, RATE_LIMIT_RPM=100)
+    key = gw.new_key()
+    key_id = parse_key(key)[0]
+
+    for i in range(3):  # 3rd distinct IP crosses both max_ips (2) and threshold (3)
+        gw.client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {key}", "x-forwarded-for": f"203.0.113.{i}"},
+            json={"model": "yangble5"},
+        )
+
+    binding_throttle = gw.app.state.gateway.binding_throttle
+    assert binding_throttle.remaining(key_id) > 0, "soft throttle must have fired"
+    assert gw.storage.get_key(key_id).status == "suspended", "hard suspension must have landed"
 
 
 # ---------------------------------------------------------------------------
@@ -1926,12 +1945,21 @@ def test_daily_pool_cap_alone_satisfies_the_open_mode_ceiling_requirement(tmp_pa
 
 
 def test_billable_flag_defaults_to_true_for_direct_writes(build):
-    """A caller that forgets the flag must be counted, not excused."""
+    """A caller that forgets the flag must be counted, not excused. This must call
+    record_usage directly with billable OMITTED -- the charge() harness always
+    forwards billable=, so it exercises charge's default, never record_usage's.
+    Flip storage.record_usage's default to False and this test fails."""
     gw = build()
     key = gw.new_key()
-    gw.charge(parse_key(key)[0], tokens=500, cost=1.0)
+    key_id = parse_key(key)[0]
+    gw.storage.record_usage(
+        key_id=key_id, endpoint="/v1/messages", model="m", status=200,
+        input_tokens=500, cached_input_tokens=0, cache_write_tokens=0,
+        output_tokens=0, total_tokens=500, cost_usd=1.0, latency_ms=1,
+        streamed=False,  # billable omitted on purpose -- exercise the default
+    )
     assert gw.storage.global_usage_for_month().total_tokens == 500
-    assert gw.storage.usage_for_day(parse_key(key)[0], billable_only=True).total_tokens == 500
+    assert gw.storage.usage_for_day(key_id, billable_only=True).total_tokens == 500
 
 
 # ---------------------------------------------------------------------------

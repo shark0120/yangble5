@@ -168,10 +168,17 @@ def test_editing_an_inline_script_turns_the_csp_check_red():
 
 
 def test_csp_uses_a_parser_not_a_regex():
-    """A literal '<script' inside a string must not be hashed."""
-    page = "<html><style>/* mentions script */</style><script>1</script></html>"
-    assert sitecheck.csp_hashes(page) == sitecheck.csp_hashes(
-        "<html><script>1</script></html>")
+    """A literal '<script>...</script>' hidden inside an HTML comment is not a real
+    script element: a parser ignores it (comment data), a naive regex would extract
+    and hash its body. So the adversarial page must hash to exactly the same set as
+    the plain page with only the real inline script. A regex-based implementation
+    hashes the decoy too and fails this."""
+    adversarial = (
+        "<html><!-- <script>document.evil('HASH_ME_IF_YOU_REGEX')</script> -->"
+        "<script>1</script></html>"
+    )
+    plain = "<html><script>1</script></html>"
+    assert sitecheck.csp_hashes(adversarial) == sitecheck.csp_hashes(plain)
 
 
 # ── the real pages ─────────────────────────────────────────────────────────
@@ -1099,11 +1106,28 @@ def test_the_checker_never_asks_the_machine_what_day_it_is():
     )
 
 
-def test_utc_today_is_actually_utc():
-    """The helper itself, in case someone 'simplifies' it back."""
-    import datetime as _dt
+def test_utc_today_is_actually_utc(monkeypatch):
+    """The helper itself, in case someone 'simplifies' it back to date.today().
 
-    assert sitecheck._utc_today() == _dt.datetime.now(_dt.timezone.utc).date()
+    On a UTC runner date.today() already equals the UTC date, so comparing the
+    helper to the live clock passes even after a revert to LOCAL time -- vacuous
+    exactly where CI runs. Freeze sitecheck's clock at an instant where UTC and a
+    +08:00 wall clock fall on DIFFERENT days and require the UTC day: a
+    date.today()-based helper returns the local day and fails, on any host."""
+    import datetime as _dt
+    import types
+
+    # 2026-07-23 23:30 UTC is already the 24th on a +08:00 wall clock.
+    frozen_utc = _dt.datetime(2026, 7, 23, 23, 30, tzinfo=_dt.timezone.utc)
+    fake = types.SimpleNamespace(
+        datetime=types.SimpleNamespace(
+            now=lambda tz=None: frozen_utc.astimezone(tz) if tz else frozen_utc
+        ),
+        date=types.SimpleNamespace(today=lambda: _dt.date(2026, 7, 24)),  # local wall day
+        timezone=_dt.timezone,
+    )
+    monkeypatch.setattr(sitecheck, "datetime", fake)
+    assert sitecheck._utc_today() == _dt.date(2026, 7, 23)  # the UTC day, not the local 24th
 
 
 def test_the_shipped_sitemap_is_clean_on_a_utc_runner():
