@@ -110,6 +110,7 @@ The landing page needs no gateway, no container and no config change. Shipping
 it first means the risky steps happen on a vhost you have just seen working.
 
 ```sh
+python tools/drift_check.py --local-tree-only
 cp -a /www/wwwroot/yangble5.com /root/yangble5-backup/webroot.$(date +%s)
 cp -a site/. /www/wwwroot/yangble5.com/
 rm -f /www/wwwroot/yangble5.com/README.md     # NOT_DEPLOYED — see below
@@ -123,6 +124,11 @@ Skipping the `rm` publishes 90 KB of documentation at a URL this repository
 promises is empty. The file is named in `NOT_DEPLOYED` in `tools/drift_check.py`
 with its reason, and a test asserts that every name in that mapping still
 appears in this code block — so the two cannot drift apart in silence.
+
+The local-tree check runs before the backup or copy and makes untracked and ignored files under
+`site/` an abort condition. Those files are invisible to `git ls-files` but visible to `cp -a`;
+the only exemption is `.pytest_cache`, which is local test state rather than a deploy payload. This
+mode does not touch the public URL, so it cannot seed the negative cache described below.
 
 **Verify — from your laptop, not the VPS:**
 

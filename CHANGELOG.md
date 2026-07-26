@@ -46,6 +46,9 @@ Two conventions specific to this repository, because they change how the entries
   `tools/retired_check.py` derives the roster from deleted `site/` paths without carrying retired
   names in current source, requires full history, and checks both slash forms. A 404 is re-probed
   with a fresh cache-buster; 403 and network/server failures remain inconclusive.
+- **Static-site deployment now rejects untracked and ignored payloads before copying `site/`.**
+  `python tools/drift_check.py --local-tree-only` inspects the disk tree that `cp -a` will use,
+  exempts only `.pytest_cache`, and makes no public request before publication.
 
 ### Added — reusable prompt-cache CI gate
 

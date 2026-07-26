@@ -88,12 +88,16 @@ docker compose up -d            # publishes 127.0.0.1:8081 and nothing else
 curl -sS http://127.0.0.1:8081/health
 
 # static site: zero risk, do it first and confirm it before touching nginx
+python tools/drift_check.py --local-tree-only
 cp -a site/. /www/wwwroot/yangble5.com/
 rm -f /www/wwwroot/yangble5.com/README.md   # NOT_DEPLOYED in tools/drift_check.py
 
 # then the nginx block — AAPANEL.md if a panel owns the vhost
 nginx -t && nginx -s reload
 ```
+
+The local-tree check aborts on untracked or ignored files under `site/` before `cp -a` can publish
+them. It exempts only `.pytest_cache` and makes no network request.
 
 `GATEWAY_PORT` is the one value that must agree in three places: `.env`, the
 `ports:` line in `docker-compose.behind-proxy.yml` (which defaults to `8081`),

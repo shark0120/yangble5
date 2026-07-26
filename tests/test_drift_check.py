@@ -214,6 +214,46 @@ def test_the_publish_runbook_removes_every_not_deployed_file(runbook):
         )
 
 
+@pytest.mark.parametrize("runbook", RUNBOOKS)
+def test_the_publish_runbook_checks_disk_payloads_before_copying(runbook):
+    text = (ROOT / runbook).read_text(encoding="utf-8")
+    blocks = [b for b in re.findall(r"```sh\n(.*?)```", text, re.S) if "cp -a site/." in b]
+    assert len(blocks) == 1, f"{runbook}: expected one publish block, found {len(blocks)}"
+    command = "python tools/drift_check.py --local-tree-only"
+    assert command in blocks[0], f"{runbook} does not reject untracked site/ payloads"
+    assert blocks[0].index(command) < blocks[0].index("cp -a site/.")
+
+
+def test_ignored_and_untracked_site_payloads_are_found_but_pytest_cache_is_safe(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)  # noqa: S607
+    site = tmp_path / "site"
+    site.mkdir()
+    (tmp_path / ".gitignore").write_text(
+        "site/*.tmp\nsite/.pytest_cache/\n", encoding="utf-8"
+    )
+    (site / "draft.orig").write_text("draft\n", encoding="utf-8")
+    (site / "hidden.tmp").write_text("hidden\n", encoding="utf-8")
+    cache = site / ".pytest_cache"
+    cache.mkdir()
+    (cache / "state").write_text("safe local cache\n", encoding="utf-8")
+
+    problems = dc.site_worktree_problems(tmp_path)
+    assert any("site/draft.orig" in problem for problem in problems), problems
+    assert any("site/hidden.tmp" in problem for problem in problems), problems
+    assert all(".pytest_cache" not in problem for problem in problems), problems
+
+
+def test_local_tree_only_never_touches_the_network(monkeypatch, capsys):
+    monkeypatch.setattr(dc, "site_worktree_problems", lambda: [])
+    monkeypatch.setattr(
+        dc,
+        "fetch",
+        lambda *_args, **_kwargs: pytest.fail("local-tree-only touched the network"),
+    )
+    assert dc.main(["--local-tree-only"]) == 0
+    assert "site/ worktree: OK" in capsys.readouterr().out
+
+
 # ── compare(): the byte comparison, with the edge's allowed rewrites ────────
 
 

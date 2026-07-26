@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import subprocess
 import sys
 import time
 import urllib.error
@@ -194,11 +195,52 @@ def fetch(url: str, timeout: float) -> tuple[bytes | None, str]:
 # The nonce must differ between runs: a fixed buster would itself get a cached
 # 404 on the first pre-publication run and be useless from then on.
 CACHE_BUSTER_PARAM = "drift-check-cache-bypass"
+SAFE_LOCAL_SITE_PREFIXES = (".pytest_cache/",)
 
 
 def _nonce() -> str:
     """A value the edge has not cached. Injectable so tests stay deterministic."""
     return str(int(time.time()))
+
+
+def site_worktree_problems(root: pathlib.Path = ROOT) -> list[str]:
+    """Untracked or ignored site payloads that ``cp -a site/.`` would publish."""
+    command = [
+        "git",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+        "site/",
+    ]
+    completed = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+        command,
+        cwd=root,
+        capture_output=True,
+        timeout=60,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        return [f"git status could not inspect site/: {detail or 'unknown error'}"]
+
+    problems = []
+    for raw in completed.stdout.split(b"\0"):
+        if len(raw) < 4 or raw[2:3] != b" ":
+            continue
+        status = raw[:2].decode("ascii", errors="replace")
+        if status not in ("??", "!!"):
+            continue
+        path = raw[3:].decode("utf-8", errors="surrogateescape").replace("\\", "/")
+        relative = path.removeprefix("site/")
+        if any(
+            relative == prefix.rstrip("/") or relative.startswith(prefix)
+            for prefix in SAFE_LOCAL_SITE_PREFIXES
+        ):
+            continue
+        problems.append(f"{status} {path}")
+    return problems
 
 
 def compare(name: str, got: bytes, local: Path) -> str | None:
@@ -251,7 +293,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", default=DEFAULT_BASE, help=f"default {DEFAULT_BASE}")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--quiet", action="store_true", help="only report problems")
+    parser.add_argument(
+        "--local-tree-only",
+        action="store_true",
+        help="check deployable site/ worktree hygiene without touching the network",
+    )
     args = parser.parse_args(argv)
+
+    worktree_problems = site_worktree_problems()
+    if worktree_problems:
+        print(
+            "\nsite/ contains untracked or ignored payloads that cp -a would publish:\n",
+            file=sys.stderr,
+        )
+        for problem in worktree_problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print(
+            "\nRemove or commit them before deployment. .pytest_cache is the only "
+            "ignored local artifact exempted.",
+            file=sys.stderr,
+        )
+        return 1
+    if args.local_tree_only:
+        if not args.quiet:
+            print("site/ worktree: OK — no untracked or ignored deploy payloads")
+        return 0
 
     base = args.base.rstrip("/")
     problems: list[str] = []
