@@ -2156,8 +2156,11 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                     ),
                     # No too_many_auth_failures here on purpose: registration is
                     # no longer gated on the authentication backoff (that throttle
-                    # is for failed logins on /v1). The only 429 this endpoint
-                    # raises is rate_limit_error, documented above.
+                    # is for failed logins on /v1). Do not restate how many 429s
+                    # this endpoint has -- there are two today, rate_limit_error
+                    # and registration_throttled, and the previous wording said
+                    # "the only 429" while the second one sat four entries above
+                    # it in this very dict. The dict is the count.
                     "internal_error": (
                         "The service failed, not your request. Nothing was created. "
                         "Retry once; if it repeats, the operator has to look. Do not "
