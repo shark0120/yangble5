@@ -13,10 +13,10 @@ that is allowed to define a fact, parses the surface that repeats or inventories
 fails when the two disagree. It is deliberately narrower than “test the documentation.” A good
 lock names one relationship it can justify and refuses to certify anything broader.
 
-This pattern emerged here through six implemented receipts. They cover measurements, release
-versions, contributor instructions, workflow-native gates, a coarse workflow census and
-agent-facing answers with executable verification commands. They are examples, not evidence that
-the pattern solves documentation in general.
+This pattern emerged here through seven implemented receipts. They cover measurements, release
+versions, contributor instructions, workflow-native gates, a coarse workflow census, agent-facing
+answers with executable verification commands and an autonomy contract shared with a private state
+record. They are examples, not evidence that the pattern solves documentation in general.
 
 ## 1. Parse the authority; do not paste a second copy
 
@@ -103,7 +103,7 @@ After the lock is green, break the relationship outside the working tree:
 This proves the failure path, not just the success path. A red exit for an unrelated import error
 does not count; the output must identify the mutation.
 
-## Six implemented receipts
+## Seven implemented receipts
 
 <!-- doc-lock-example:released-measurements -->
 ### Receipt 1 — released measurements to reader surfaces
@@ -199,6 +199,23 @@ gaps true.
 Limit: selecting a real test proves the command has an executable target; the full suite proves
 that target passes. It does not certify editorial judgement or prove that an advice sentence is
 the only humane way to explain the underlying behaviour.
+
+<!-- doc-lock-example:autonomy-protocol -->
+### Receipt 7 — public autonomy rules to a private state record
+
+- Authority: [`docs/autonomy-rules.json`](../autonomy-rules.json)
+- Surface: [`docs/launch/autonomous-maintenance-protocol.md`](autonomous-maintenance-protocol.md)
+- Lock: [`tests/test_autonomy_protocol.py`](../../tests/test_autonomy_protocol.py)
+
+The public table is parsed and compared exactly with the ordered manifest. A private state record
+pins the same IDs plus a SHA-256 of canonical JSON, so it can detect changed principles without
+copying them into another narrative. The local test exercises that external boundary when the
+state record is available; CI still locks the public table and runs parser negative controls in a
+standalone clone.
+
+Limit: this proves the two declared surfaces share one contract. It does not prove that every
+operational detail belongs in the generic rules, or make a private state file available to public
+CI.
 
 ## What a doc-lock does not prove
 

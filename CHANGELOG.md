@@ -20,7 +20,7 @@ Two conventions specific to this repository, because they change how the entries
 ### Added — machine-enforced documentation locks
 
 - **A publication-ready [doc-lock methods draft](docs/launch/doc-locks.md) extracts the pattern
-  behind six mechanisms already enforced in this repository.** It covers parsing one authority,
+  behind seven mechanisms already enforced in this repository.** It covers parsing one authority,
   comparing implementation and documentation in both directions, locking numeric prose and proving
   that a parser examined something. Each receipt links to its real source and test, states its
   blind spot, and is itself locked to those implementation anchors. The article remains a draft;
@@ -33,6 +33,11 @@ Two conventions specific to this repository, because they change how the entries
   command.** Machine-readable answer markers and `tests/test_agent_interview_answers.py` lock the
   headings, commands and real pytest selections in both directions. The commands verify the
   implementation premise below the advice; they deliberately do not freeze editorial wording.
+- **A user-publication-only [autonomous maintenance protocol
+  draft](docs/launch/autonomous-maintenance-protocol.md) extracts the repository's operating
+  rules without its local paths or deployment details.** `docs/autonomy-rules.json` is the
+  machine authority for the public table. The private loop pins the same ordered IDs and manifest
+  digest, so the public principles and the active maintenance instructions cannot drift silently.
 
 ### Added — reusable prompt-cache CI gate
 

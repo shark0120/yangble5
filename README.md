@@ -727,6 +727,7 @@ yangble5/
    ├─ COMPARISON.md              vs LiteLLM / OpenRouter / direct API, including where we lose
    ├─ OPERATING_A_PUBLIC_SERVICE.md   spend caps, provider terms, pre-launch checklist
    ├─ AGENT_INTERVIEW.md         what an install agent may ask the human, and what it may not
+   ├─ autonomy-rules.json        machine authority for the public maintenance protocol
    ├─ UPGRADING_ENGINE.md        moving to a newer CLIProxyAPI, and dropping the shim
    ├─ REPO_METADATA.md           description, topics, social-preview copy
    ├─ evidence/

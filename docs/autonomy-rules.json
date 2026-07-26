@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "state-before-action",
+      "principle": "Begin from one explicit state record that owns priority, completion and prior evidence."
+    },
+    {
+      "id": "ci-first",
+      "principle": "Inspect the latest default-branch CI before taking planned work; a real red result takes priority."
+    },
+    {
+      "id": "one-complete-slice",
+      "principle": "Finish one bounded item with implementation, tests and documentation instead of leaving several partial edits."
+    },
+    {
+      "id": "mutation-before-claim",
+      "principle": "Break the guarded behavior in a disposable copy and require the expected assertion to fail."
+    },
+    {
+      "id": "exact-gates",
+      "principle": "Run the repository's exact gate commands and scopes; a similar local command is not equivalent."
+    },
+    {
+      "id": "isolated-reviewable-tree",
+      "principle": "Keep parallel or adversarial work off the commit tree, review every diff hunk and verify the clone-visible tree."
+    },
+    {
+      "id": "fetch-before-push",
+      "principle": "Fetch before pushing, prove the remote default branch is an ancestor and never force-push through divergence."
+    },
+    {
+      "id": "scoped-reversible-deploy",
+      "principle": "Write to production only inside the authorized scope, with backup, atomic replacement and origin plus public verification."
+    },
+    {
+      "id": "evidence-before-numbers",
+      "principle": "Trace quantitative claims to evidence, carry their conditions and never edit the record to rescue the story."
+    },
+    {
+      "id": "secrets-stay-out",
+      "principle": "Do not read, print, commit or move credentials unless the user explicitly authorizes that exact secret operation."
+    },
+    {
+      "id": "user-owns-publication",
+      "principle": "Prepare release, issue and announcement drafts, but leave every public submission or publication action to the user."
+    },
+    {
+      "id": "receipt-before-next",
+      "principle": "Record the commit, verification and external status in the state record before starting the next item."
+    }
+  ]
+}

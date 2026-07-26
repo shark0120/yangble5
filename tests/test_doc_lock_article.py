@@ -102,6 +102,21 @@ EXAMPLES = {
             ),
         },
     },
+    "autonomy-protocol": {
+        "paths": (
+            "docs/autonomy-rules.json",
+            "docs/launch/autonomous-maintenance-protocol.md",
+            "tests/test_autonomy_protocol.py",
+        ),
+        "proofs": {
+            "tests/test_autonomy_protocol.py": (
+                "def _manifest_digest(",
+                "test_public_protocol_table_is_exactly_the_manifest",
+                "test_loop_contract_matches_manifest_when_the_loop_is_available",
+                "test_loop_contract_parser_rejects_an_empty_or_duplicate_roster",
+            ),
+        },
+    },
 }
 
 REQUIRED_STAGE_HEADINGS = (
@@ -136,9 +151,9 @@ def test_article_states_every_stage_of_the_method():
     assert positions == sorted(positions), "doc-lock stages are out of order"
 
 
-def test_article_has_exactly_six_machine_readable_receipts():
+def test_article_has_exactly_seven_machine_readable_receipts():
     markers = re.findall(r"<!-- doc-lock-example:([a-z0-9-]+) -->", _article())
-    assert len(markers) == 6, "the prose says six implemented receipts"
+    assert len(markers) == 7, "the prose says seven implemented receipts"
     assert len(markers) == len(set(markers)), "a receipt marker is duplicated"
     assert set(markers) == set(EXAMPLES)
 
