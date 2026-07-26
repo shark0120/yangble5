@@ -336,7 +336,7 @@ See [CHANGELOG.md](CHANGELOG.md#xyz---yyyy-mm-dd) for the full entry.
 |---|---|---|
 | Prompt-cache hit rate, token-weighted, **warm rounds only** | 99.53% | rounds 2-4 of 4; cold round 1 is 0% by construction; ~749K-token prefix; one Windows 11 machine; single run; 2026-07-21; CLIProxyAPI 7.1.23 |
 | Largest prompt ingested without truncation | 748,918 tokens | same run; ingestion only - recall at that size was not tested |
-| Latency, cold -> best warm round | 21.4 s -> 10.8 s | same run; rounds 3 and 4 were *slower* than the cold round; treat as an anecdote |
+| Complete non-streaming round trips, rounds 1-4 | 21,293 / 10,693 / 23,405 / 22,337 ms | same run; rounds 3 and 4 were *slower* than the cold round; anecdotal latency, not a latency claim |
 
 Reproduce with:
 `python tools/cache_bench.py --model <your-alias> --prefix-tokens 600000 --rounds 4`

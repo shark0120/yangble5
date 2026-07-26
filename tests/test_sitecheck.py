@@ -40,6 +40,8 @@ LATENCY_SURFACES = {
     ROOT / "docs" / "launch" / "hn.md": (0, 1, 2, 3),
     ROOT / "docs" / "launch" / "reddit.md": (0, 1, 2, 3),
     ROOT / "docs" / "launch" / "ptt-threads.md": (0, 1, 2, 3),
+    ROOT / "docs" / "launch" / "RELEASE_PACK.md": (0, 1, 2, 3),
+    ROOT / "RELEASING.md": (0, 1, 2, 3),
     ROOT / "deploy" / "cloudflare.md": (0, 1, 2, 3),
     ROOT / "deploy" / "nginx" / "yangble5.com.conf.example": (0, 1, 2, 3),
     ROOT / "site" / "index.html": (0, 1, 2, 3),
