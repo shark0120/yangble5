@@ -125,6 +125,7 @@ def tracked_files(root: Path) -> list[Path]:
         if p.is_file() and not _SKIP_DIRS & set(p.relative_to(root).parts)
     ]
 
+
 def scan_bytes(blob: bytes) -> list[tuple[int, str]]:
     """Line number and line for every occurrence of the retired name.
 
