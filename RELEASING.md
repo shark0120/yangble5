@@ -60,18 +60,26 @@ Pre-1.0 (`0.y.z`), a breaking change bumps MINOR.
 
 ## 2. Version bump locations
 
-There is one source of truth and two places that mirror it. Grep before you tag.
+There is one authoritative source and two deliberate mirrors of the current version. They must
+move in the same release commit; `tests/test_release_version.py` locks them together.
 
 | Location | What to change | How to check |
 |---|---|---|
-| `pyproject.toml` -> `[project] version` | **The** version. Everything else follows. | `grep -n '^version' pyproject.toml` |
+| `pyproject.toml` -> `[project] version` | **The authoritative source.** Everything else follows. | `grep -n '^version' pyproject.toml` |
+| `gateway/__init__.py` -> `__version__` | Runtime mirror. The gateway container copies `gateway/` without installing project metadata, so the process must carry its own version. | `grep -n '^__version__' gateway/__init__.py` |
+| `site/README.md` -> `/api/health` JSON example | Reader-facing mirror of the public gateway response. | `grep -n -A8 'gateway response' site/README.md` |
 | `CHANGELOG.md` | Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it, and update the two link definitions at the bottom. | `grep -n '^## \[' CHANGELOG.md` |
 | `CHANGELOG.md` link refs | `[Unreleased]: .../compare/vX.Y.Z...HEAD` and `[X.Y.Z]: .../releases/tag/vX.Y.Z` | `tail -3 CHANGELOG.md` |
 | Git tag | `vX.Y.Z` - annotated, never lightweight | `git tag -n9 vX.Y.Z` |
 
-Nothing else hard-codes a version. If a future change adds a second copy (a `__version__`, a
-Docker image tag, a badge), add it to this table in the same commit, or the next release will
-ship an inconsistency.
+The unauthenticated `/health` and `/healthz` responses deliberately expose the yangble5 gateway
+version. HTTP routes and response shapes are semver-covered public surface, and the field lets an
+operator establish which gateway build is actually answering. It is the version of this project,
+not the version of the internal engine; the latter remains undisclosed.
+
+If a future change adds another current-version copy (a Docker image tag, a badge, another response
+example), add it to this table and to `tests/test_release_version.py` in the same commit, or the
+next release can ship an inconsistency.
 
 To confirm no stale version strings remain, grep for the version you are **replacing**, not the
 one you are cutting — the new version is supposed to appear:

@@ -1903,8 +1903,10 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
         Unauthenticated, so it deliberately exposes NOTHING an attacker could
         use: no engine URL, no database path, no key counts, no dollar amounts
         (the operator's spend is their business), no version of the internal
-        engine. Only whether this process is up and whether it is still
-        accepting paid work.
+        engine. The yangble5 gateway's own version is public on purpose: this
+        response shape is a semver-covered contract, and the field lets an
+        operator identify which build is answering. The rest says only whether
+        this process is up and whether it is still accepting paid work.
 
         TWO PATHS, ONE PAYLOAD. `/health` is canonical and is what the docs, the
         smoke test and both compose files probe. `/healthz` is the same handler

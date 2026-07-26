@@ -24,6 +24,7 @@ import yaml
 from fastapi.testclient import TestClient
 from starlette.requests import Request as StarletteRequest
 
+from gateway import __version__
 from gateway.app import (
     MAX_REISSUES_PER_MACHINE_PER_DAY,
     client_ip,
@@ -1110,6 +1111,7 @@ def test_health_needs_no_auth_and_exposes_no_secrets(gw):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
+    assert body["version"] == __version__
 
     text = response.text
     for secret in (ENGINE_KEY, ADMIN_KEY, gw.settings.db_path, gw.settings.engine_url):
