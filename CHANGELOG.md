@@ -49,6 +49,10 @@ Two conventions specific to this repository, because they change how the entries
 - **Static-site deployment now rejects untracked and ignored payloads before copying `site/`.**
   `python tools/drift_check.py --local-tree-only` inspects the disk tree that `cp -a` will use,
   exempts only `.pytest_cache`, and makes no public request before publication.
+- **`sitecheck.py` now resolves every HTML `href` that points back into the site.**
+  It strips fragments, maps root URLs to `index.html`, resolves nested relative links and ignores
+  external origins. Representative tests lock each shape so an empty or over-broad parser cannot
+  turn a broken-link scan falsely green.
 
 ### Added — reusable prompt-cache CI gate
 

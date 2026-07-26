@@ -97,6 +97,7 @@ import json
 import pathlib
 import re
 import sys
+import urllib.parse
 from html.parser import HTMLParser
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -743,6 +744,7 @@ class Doc(HTMLParser):
         self.stack, self.errors = [], []
         self.ids, self.dupes = set(), []
         self.refs = []  # (kind, target)
+        self.hrefs = []
         self.external = []
         self.inline_handlers = []
         self.styles = self.scripts = 0
@@ -795,6 +797,8 @@ class Doc(HTMLParser):
                 for tok in a[k].split():
                     self.refs.append((k, tok))
         href = a.get("href", "")
+        if href:
+            self.hrefs.append(href)
         if href.startswith("#") and len(href) > 1:
             self.refs.append(("href", href[1:]))
         # only *subresources* count: a canonical/alternate <link> and ordinary
@@ -829,6 +833,59 @@ class Doc(HTMLParser):
     def handle_data(self, data):
         if self._skip == 0:
             self.text.append(data)
+
+
+SITE_HOST = "yangble5.com"
+
+
+def internal_href_target(
+    source: pathlib.Path,
+    href: str,
+    site: pathlib.Path = SITE,
+) -> str | None:
+    """Return a site-relative target, or None when href is external."""
+    parsed = urllib.parse.urlsplit(href.strip())
+    if parsed.scheme in ("http", "https") or parsed.netloc:
+        if (parsed.hostname or "").lower() != SITE_HOST:
+            return None
+    elif parsed.scheme:
+        return None
+
+    path = urllib.parse.unquote(parsed.path)
+    source_relative = source.relative_to(site)
+    if not path:
+        target = pathlib.PurePosixPath(source_relative.as_posix())
+    elif path.startswith("/"):
+        target = pathlib.PurePosixPath(path.lstrip("/"))
+    else:
+        target = pathlib.PurePosixPath(source_relative.parent.as_posix()) / path
+    if path == "/" or path.endswith("/"):
+        target /= "index.html"
+    if ".." in target.parts:
+        return f"!outside:{target.as_posix()}"
+    return target.as_posix()
+
+
+def internal_link_problems(site: pathlib.Path = SITE) -> list[str]:
+    """Broken local href targets in every HTML page under site/."""
+    problems = []
+    parsed_count = 0
+    for source in sorted(site.rglob("*.html")):
+        doc = Doc()
+        doc.feed(source.read_text(encoding="utf-8"))
+        for href in doc.hrefs:
+            target = internal_href_target(source, href, site)
+            if target is None:
+                continue
+            parsed_count += 1
+            if target.startswith("!outside:") or not (site / target).is_file():
+                problems.append(
+                    f"{source.relative_to(site).as_posix()}: href {href!r} "
+                    f"resolves to missing {target.removeprefix('!outside:')}"
+                )
+    if parsed_count == 0:
+        problems.append("internal-link parser examined zero local hrefs")
+    return problems
 
 
 def check_page(name: str, src: str, used: set[str]) -> list[str]:
@@ -1933,7 +1990,12 @@ def main(argv: list[str]) -> int:
     # Same silence-on-success rule as the text files above, and for the same
     # reason: site/README.md quotes this program's stdout verbatim, so a new
     # "OK" line per index file would make the published documentation stale.
-    if index_problems := sitemap_problems(site) + wellknown_problems(site) + robots_problems(site):
+    if index_problems := (
+        sitemap_problems(site)
+        + wellknown_problems(site)
+        + robots_problems(site)
+        + internal_link_problems(site)
+    ):
         reports.append(("site index", index_problems))
     text_stale = unused_text_allow_problems(used_text)
     if text_stale:

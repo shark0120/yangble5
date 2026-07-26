@@ -855,6 +855,46 @@ def test_the_real_sitemap_is_consistent_with_the_real_site():
     assert sitecheck.wellknown_problems() == []
 
 
+def test_the_real_html_internal_links_resolve_to_shipped_files():
+    assert sitecheck.internal_link_problems() == []
+
+
+def test_representative_href_shapes_resolve_without_false_external_findings():
+    index = sitecheck.SITE / "index.html"
+    verify = sitecheck.SITE / "verify.html"
+    skill = sitecheck.SITE / "skill" / "index.html"
+
+    assert sitecheck.internal_href_target(index, "verify.html#tmp") == "verify.html"
+    assert sitecheck.internal_href_target(verify, "/#agent") == "index.html"
+    assert (
+        sitecheck.internal_href_target(skill, "yangble5-skill-v1.0.0.tar.gz")
+        == "skill/yangble5-skill-v1.0.0.tar.gz"
+    )
+    assert (
+        sitecheck.internal_href_target(
+            skill, "https://github.com/shark0120/yangble5"
+        )
+        is None
+    )
+
+
+def test_a_missing_internal_href_names_its_source_and_resolved_target(site_copy):
+    path = site_copy / "index.html"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'href="verify.html"', 'href="missing-local.html"', 1
+        ),
+        encoding="utf-8",
+    )
+    problems = sitecheck.internal_link_problems(site_copy)
+    assert any(
+        "index.html" in problem
+        and "missing-local.html" in problem
+        and "resolves to missing" in problem
+        for problem in problems
+    ), problems
+
+
 @pytest.mark.parametrize("name", ("AGENTS.md", "llms.txt"))
 def test_the_agent_facing_documents_are_indexed(name):
     text = (sitecheck.SITE / sitecheck.SITEMAP).read_text(encoding="utf-8")
