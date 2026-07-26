@@ -2448,6 +2448,19 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 ),
                 support_contact=settings.support_contact or None,
             )
+        except Exception:
+            # ANY other post-consume failure must also give the use back, not just
+            # the two anticipated above. The live case is a concurrent same-machine
+            # registration losing the machine_bindings primary-key race: the
+            # binding pre-check (get_machine_binding, above) runs outside issue_key's
+            # transaction, so two callers can both read None, both consume a use, and
+            # the second's INSERT raises sqlite3.IntegrityError -- neither of the
+            # excepts above. Without this refund that valid use is burned with no key
+            # issued (and the generic 500 would even claim nothing was spent). Refund,
+            # then re-raise so the unhandled handler still turns it into a 500.
+            if consumed_invite_hash is not None:
+                await run_in_threadpool(state.storage.refund_invite, consumed_invite_hash)
+            raise
         _log(
             logging.INFO,
             "register.issued",

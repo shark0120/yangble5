@@ -645,6 +645,34 @@ def test_a_failed_issuance_refunds_the_invite_use(build):
     assert gw.register(email="b@b.com", invite_code=code).status_code == 201       # use 2
 
 
+def test_an_unexpected_issuance_failure_still_refunds_the_invite(build, monkeypatch):
+    """The two ANTICIPATED post-consume failures (IP cap, email-in-use) refund the
+    invite; every OTHER failure must too. The live case: a concurrent same-machine
+    registration loses the machine_bindings primary-key race and issue_key raises
+    sqlite3.IntegrityError -- neither RegistrationCapError nor EmailInUseError. Before
+    the catch-all refund, that use was burned with no key issued. Simulate the
+    collision and prove BOTH uses of a 2-use invite survive the failed attempt."""
+    gw = build(REGISTRATION_MODE="invite")
+    created = gw.client.post(
+        "/admin/invites", headers={"Authorization": f"Bearer {ADMIN_KEY}"}, json={"max_uses": 2}
+    )
+    code = created.json()["invite_code"]
+
+    def collide(*_a, **_k):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: machine_bindings.machine_hash")
+
+    monkeypatch.setattr(gw.storage, "issue_key", collide)
+    # consume_invite commits the use, then issue_key blows up. The unhandled handler
+    # returns 500 and TestClient re-raises it -- but the refund has already run.
+    with pytest.raises(sqlite3.IntegrityError):
+        gw.register(email="a@b.com", invite_code=code)
+    monkeypatch.undo()  # the race is over; issuance works again
+
+    # Neither use was lost: two genuine invitees both register with the 2-use code.
+    assert gw.register(email="a@b.com", invite_code=code).status_code == 201       # use 1
+    assert gw.register(email="b@b.com", invite_code=code).status_code == 201       # use 2
+
+
 def test_pool_status_registration_open_tracks_invite_mode(build):
     """registration_open must reflect whether register will issue a key -- not
     settings.registration_open (mode=='open'). In invite mode with a healthy pool
