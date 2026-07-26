@@ -92,7 +92,10 @@ def test_an_untouched_copy_is_not_a_difference(tmp_path):
 def test_a_changed_byte_is_reported_with_its_offset(tmp_path):
     local = tmp_path / "page.html"
     local.write_bytes(b"install --email you@example.com")
-    result = dc.compare("page.html", b"install --email evil@attacker.com", local)
+    # The substituted address sits under the reserved `.example` TLD: CI asserts
+    # every committed address is unassignable, and a fixture that names a domain
+    # somebody could actually register is the exact thing it stops.
+    result = dc.compare("page.html", b"install --email evil@attacker.example", local)
     assert result is not None
     assert "page.html" in result
     assert "first at byte 16" in result, result
