@@ -454,7 +454,7 @@ def _assert_count(pattern: re.Pattern[str], expected: int, section: str, label: 
 
 
 def test_the_python_gate_count_matches_the_python_roster(roster, section):
-    """"Four Python-script gates" replaces the sentence that once said two."""
+    """"Five Python-script gates" replaces the sentence that once said two."""
     _assert_count(PYTHON_COUNT, len(roster), section, "Python-script gates")
 
 

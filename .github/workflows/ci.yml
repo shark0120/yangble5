@@ -47,6 +47,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # test_retired_check derives its non-empty roster from deleted paths.
+          # A depth-1 checkout would make the test certify no history.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -239,6 +243,7 @@ jobs:
           python -c "import tools.cache_bench, tools.cache_stats_sidecar, tools.claude_shim"
           python -c "import tools.sitecheck"
           python -c "import tools.drift_check"
+          python -c "import tools.retired_check"
           python -c "import byok.setup"
 
       - name: Every tool runs as a plain script
@@ -254,6 +259,7 @@ jobs:
           python tools/claude_shim.py --help
           python tools/sitecheck.py --help
           python tools/drift_check.py --help
+          python tools/retired_check.py --help
           python byok/setup.py --help
 
   offline-self-checks:
@@ -743,6 +749,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -750,6 +758,11 @@ jobs:
           # operator debugging a red run here will reach for whatever Python is
           # on the box, which is usually the oldest one this project supports.
           python-version: "3.10"
+
+      - name: Retired site paths stay gone
+        env:
+          SITE_BASE: ${{ vars.SITE_BASE || 'https://yangble5.com' }}
+        run: python tools/retired_check.py --base "$SITE_BASE"
 
       - name: Compare the published site against this commit
         env:

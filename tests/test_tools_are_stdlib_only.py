@@ -147,11 +147,21 @@ def test_every_tool_imports_and_answers_help() -> None:
     as a script — precisely the case that produced the two-spelling import in
     ``tools/sitecheck.py`` — is invisible to ``ast`` and shows up only here.
     """
-    for module in ("tools.sitecheck", "tools.drift_check", "byok.setup"):
+    for module in (
+        "tools.sitecheck",
+        "tools.drift_check",
+        "tools.retired_check",
+        "byok.setup",
+    ):
         proc = _run(f"import {module}", ROOT)
         assert proc.returncode == 0, f"import {module} failed:\n{proc.stderr}"
 
-    for script in ("tools/sitecheck.py", "tools/drift_check.py", "byok/setup.py"):
+    for script in (
+        "tools/sitecheck.py",
+        "tools/drift_check.py",
+        "tools/retired_check.py",
+        "byok/setup.py",
+    ):
         proc = subprocess.run(  # noqa: S603 - fixed argv, interpreter is sys.executable
             [sys.executable, str(ROOT / script), "--help"],
             capture_output=True,

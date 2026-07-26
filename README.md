@@ -691,8 +691,9 @@ yangble5/
 │  │                             a borrowed shock number) so the repo cannot quietly oversell
 │  ├─ name_guard.py              static gate: a retired name stays retired -- it reads every
 │  │                             tracked file of any type, and inside published archives
-│  └─ drift_check.py             is the site that is SERVED the site that is in this repo?
-│                                compares against the repo copy with known edge transforms applied
+│  ├─ drift_check.py             is the site that is SERVED the site that is in this repo?
+│  │                             compares against the repo copy with known edge transforms applied
+│  └─ retired_check.py           derives retired site paths from Git history and requires 404
 ├─ evidence/
 │  └─ run-749k-20260721.jsonl    the recorded run the headline figure is computed from;
 │                                replay it through cache_bench.py with no API key

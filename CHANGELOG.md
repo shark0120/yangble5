@@ -42,6 +42,10 @@ Two conventions specific to this repository, because they change how the entries
   It documents that `drift_check.py` runs only on scheduled or manual workflows and that its two
   invocations are one retry whose second status decides the step. Tests lock the event predicate,
   call count and final status flow to that explanation.
+- **Scheduled CI now proves history-retired site directories remain gone.**
+  `tools/retired_check.py` derives the roster from deleted `site/` paths without carrying retired
+  names in current source, requires full history, and checks both slash forms. A 404 is re-probed
+  with a fresh cache-buster; 403 and network/server failures remain inconclusive.
 
 ### Added — reusable prompt-cache CI gate
 

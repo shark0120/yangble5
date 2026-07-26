@@ -38,7 +38,7 @@ EXPECTED_STEP_COUNTS = {
     "installer-digests": (2, 1),
     "published-numbers": (8, 7),
     "no-secrets": (4, 3),
-    "live-site-drift": (3, 1),
+    "live-site-drift": (4, 2),
 }
 
 

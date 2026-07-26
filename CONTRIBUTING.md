@@ -109,7 +109,7 @@ its event boundary is called out explicitly below.
 
 #### Python-file gates
 
-Four Python-script gates run outside pytest, and all four guard what the project *says* rather
+Five Python-script gates run outside pytest, and all five guard what the project *says* rather
 than what it does. Three are offline pull-request gates. The first:
 
 ```sh
@@ -163,6 +163,12 @@ second attempt's exit status replaces the first and is the status the step final
 only the second attempt decides red or green after a retry. Both outputs remain in the log, and a
 first-fail/second-pass result emits a warning rather than erasing the intermittent difference.
 
+The same scheduled job runs `python tools/retired_check.py` against directories derived from
+deleted `site/` paths in the complete Git history. It probes both `/path` and `/path/`; a 404 is
+believed only when a fresh cache-buster also returns 404. A 403 is inconclusive, not proof of
+absence. The pytest matrix and scheduled job checkouts therefore use `fetch-depth: 0`; the tool
+refuses to certify a shallow clone rather than silently deriving an empty roster.
+
 It is not `sha256sum`. An edge legitimately rewrites a page - Cloudflare's e-mail obfuscation once
 rewrote `--email you@example.com` inside a `<pre>` and broke the published install command for
 every visitor while the origin served the correct bytes - so it compares against the repo copy
@@ -170,7 +176,7 @@ with the **known, enumerated** transformations applied and fails on anything els
 failure away as "just the CDN" without reading which transformation it could not account for; that
 is the whole signal.
 
-That Python list of four and the scheduled check's event/retry boundary are checked, not maintained
+That Python list of five and the scheduled checks' event/retry boundaries are checked, not maintained
 by hope. `tests/test_contributing_gates.py`
 reads every `tools/*.py` invocation out of `ci.yml`, drops the `--help` probes that only prove a
 script starts, and fails if the result differs from what this section names - in either direction,
