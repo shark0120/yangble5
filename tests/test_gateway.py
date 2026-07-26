@@ -24,7 +24,12 @@ import yaml
 from fastapi.testclient import TestClient
 from starlette.requests import Request as StarletteRequest
 
-from gateway.app import client_ip, create_app, extract_model
+from gateway.app import (
+    MAX_REISSUES_PER_MACHINE_PER_DAY,
+    client_ip,
+    create_app,
+    extract_model,
+)
 from gateway.config import ConfigError, ModelPrice, Settings
 from gateway.ratelimit import TimedThrottle
 from gateway.storage import Storage, hash_secret, normalize_machine_id, parse_key, verify_secret
@@ -1276,6 +1281,233 @@ def test_reissue_refuses_a_suspended_key_instead_of_laundering_it(build):
     assert "api_key" not in again.json()
     assert gw.storage.get_key(key_id).status == "suspended"
     assert len(gw.storage.list_keys()) == 1
+
+
+def test_being_refused_a_reissue_does_not_spend_the_machines_daily_allowance(build):
+    """A refusal is not a reissue, and must not be metered as one.
+
+    The per-machine cap is claimed BEFORE the handler knows whether it can
+    re-issue, because that claim is what stops someone holding a stolen machine
+    id from rotating the secret in a loop. But a suspended key is refused, and
+    the refusal mints nothing. Charged anyway, the cap counted refusals: the
+    sixth rerun stopped saying "your key is suspended, talk to the operator" and
+    started saying someone else has a copy of this machine's id -- an accusation
+    of theft, produced by the user obediently following the advice in the five
+    answers before it, at a moment when `reissue_count` on the binding is still
+    zero because nothing was ever re-issued.
+
+    Past the cap and still 403 is the whole assertion: an unrefunded claim turns
+    attempt six into a 429.
+    """
+    # The assertion below only discriminates while there is a cap to exceed: at
+    # 0 the claim is unlimited and every attempt would be 403 regardless.
+    assert MAX_REISSUES_PER_MACHINE_PER_DAY >= 1
+    gw = build(REGISTER_MAX_PER_IP_PER_DAY=0, AUTH_RPM_PER_IP=0)
+    first = gw.register_machine(MACHINE_A)
+    key_id = first.json()["key_id"]
+    gw.storage.set_key_status(key_id, "suspended", "testing")
+
+    for attempt in range(MAX_REISSUES_PER_MACHINE_PER_DAY + 2):
+        refused = gw.register_machine(MACHINE_A)
+        assert refused.status_code == 403, f"attempt {attempt + 1}: {refused.text}"
+        assert refused.json()["error"]["type"] == "key_suspended"
+
+    # And the allowance is intact rather than merely unreported: once the
+    # operator lifts the suspension the machine re-registers normally, on the
+    # same day, with no waiting for 00:00 UTC.
+    gw.storage.set_key_status(key_id, "active", None)
+    recovered = gw.register_machine(MACHINE_A)
+    assert recovered.status_code == 200
+    assert recovered.json()["key_id"] == key_id
+
+
+def test_being_refused_on_an_orphaned_binding_does_not_spend_it_either(build):
+    """The other refusal that mints nothing: the bound key row is gone.
+
+    Same reasoning as the suspended case above, and worth its own test because
+    it is a different branch reached by a different operator action -- and
+    because the message it replaces is worse. "Only the operator can clear the
+    binding" is actionable; being told instead that the machine has re-registered
+    too many times sends the user to look for an intruder who does not exist.
+    """
+    assert MAX_REISSUES_PER_MACHINE_PER_DAY >= 1        # see the test above
+    gw = build(REGISTER_MAX_PER_IP_PER_DAY=0, AUTH_RPM_PER_IP=0)
+    key_id = gw.register_machine(MACHINE_A).json()["key_id"]
+    # The operator deleted the key and left the binding behind -- the state the
+    # 409 exists for. There is no storage method for this because nothing in the
+    # gateway does it; only an operator at the database does.
+    conn = sqlite3.connect(gw.settings.db_path)
+    conn.execute("DELETE FROM api_keys WHERE key_id = ?", (key_id,))
+    conn.commit()
+    conn.close()
+
+    for attempt in range(MAX_REISSUES_PER_MACHINE_PER_DAY + 2):
+        refused = gw.register_machine(MACHINE_A)
+        assert refused.status_code == 409, f"attempt {attempt + 1}: {refused.text}"
+        assert refused.json()["error"]["type"] == "binding_orphaned"
+        assert "operator" in refused.json()["error"]["message"].lower()
+
+
+def test_a_reissue_does_not_hand_back_a_fresh_daily_allowance(build):
+    """Re-running the installer must not be a way to buy more quota.
+
+    The whole idempotent path exists so that a rerun yields the SAME key rather
+    than a second one with a second allowance. That guarantee is worth exactly
+    as much as the allowance travelling with the key_id: if `reissue_key_secret`
+    reset the day's usage, "same key_id" would be a distinction without a
+    difference and anyone could refill by re-registering.
+
+    Asserted through the proxy rather than by reading a counter, because the
+    counter is not the promise -- being refused is.
+    """
+    gw = build(DAILY_TOKEN_BUDGET=1000, REGISTER_MAX_PER_IP_PER_DAY=0,
+               AUTH_RPM_PER_IP=0)
+    first = gw.register_machine(MACHINE_A)
+    key_id = first.json()["key_id"]
+    gw.charge(key_id, tokens=1000)                      # burn the day
+    exhausted = gw.call(first.json()["api_key"])
+    assert exhausted.status_code == 429
+    assert exhausted.json()["error"]["type"] == "daily_quota_exhausted"
+
+    again = gw.register_machine(MACHINE_A)
+    assert again.json()["key_id"] == key_id
+    refused = gw.call(again.json()["api_key"])
+    assert refused.status_code == 429
+    assert refused.json()["error"]["type"] == "daily_quota_exhausted"
+
+
+def test_the_reissue_cap_still_stops_a_stolen_machine_id_rotating_forever(build):
+    """The two refunds above must not quietly become "refund always".
+
+    A reissue mints a fresh secret and invalidates the previous one, so anyone
+    holding a copy of this machine id can take the account over -- and the real
+    owner can take it straight back. Unbounded, that is a tug-of-war either side
+    can run indefinitely; the cap is what makes replay run out.
+
+    Nothing tested that the cap fires before this. That was survivable while the
+    counter was write-only, and stopped being survivable the moment a refund
+    path existed next to it: "these two refusals give the claim back" is one
+    edit away from "give the claim back", which reads like tidying up and
+    removes the guard entirely.
+    """
+    gw = build(REGISTER_MAX_PER_IP_PER_DAY=0, AUTH_RPM_PER_IP=0)
+    first = gw.register_machine(MACHINE_A)
+    assert first.status_code == 201                     # a first run claims nothing
+
+    for attempt in range(MAX_REISSUES_PER_MACHINE_PER_DAY):
+        served = gw.register_machine(MACHINE_A)
+        assert served.status_code == 200, f"reissue {attempt + 1}: {served.text}"
+        assert served.json()["key_id"] == first.json()["key_id"]
+
+    capped = gw.register_machine(MACHINE_A)
+    assert capped.status_code == 429
+    assert capped.json()["error"]["type"] == "rate_limit_error"
+    message = capped.json()["error"]["message"]
+    assert "machine's id" in message                    # says what to suspect
+    assert "00:00 UTC" in message                       # and when it clears
+    assert int(capped.headers["Retry-After"]) > 0
+    # Capped, not revoked: the key the machine already holds is untouched.
+    assert gw.storage.get_key(first.json()["key_id"]).status == "active"
+
+
+def test_a_known_machine_re_registers_while_the_operator_cap_is_tripped(build):
+    """The budget cap guards the cost of a NEW key. A rerun has no such cost.
+
+    `reissue_key_secret` keeps the same row, the same key_id and the same daily
+    allowance; it adds nothing to the operator's exposure. Refusing it while
+    capped saved the operator nothing and cost the user the documented recovery
+    route -- and did it at the busiest point in the instance's life, which is
+    exactly when someone is most likely to be re-running the installer.
+    """
+    gw = build(GLOBAL_MONTHLY_USD_BUDGET=5.0, REGISTER_MAX_PER_IP_PER_DAY=0,
+               AUTH_RPM_PER_IP=0)
+    first = gw.register_machine(MACHINE_A)
+    assert first.status_code == 201
+    gw.charge(first.json()["key_id"], cost=5.0)          # burns the month
+
+    again = gw.register_machine(MACHINE_A)
+    assert again.status_code == 200
+    assert again.json()["key_id"] == first.json()["key_id"]
+    assert again.json()["reused"] is True
+    # Honestly labelled on the way out: the key works again, the POOL does not.
+    assert again.json()["usable_now"] is False
+    # And it CANNOT spend while the cap holds. This is the assertion that makes
+    # serving the rerun safe rather than merely kind: the cap is enforced where
+    # the money is actually spent, so moving the registration gate cannot become
+    # a way to buy requests the operator has stopped paying for.
+    assert gw.call(again.json()["api_key"]).status_code == 402
+
+    # The cap still does its job for anything that would mint a key -- with a
+    # fingerprint or without one. Without this half, deleting the gate passes.
+    fresh = gw.register_machine(MACHINE_B)
+    assert fresh.status_code == 503
+    assert fresh.json()["error"]["type"] == "registration_unavailable"
+    assert gw.register(email="new@b.com").status_code == 503
+
+
+def test_a_refunded_refusal_still_leaves_a_trace_an_operator_can_find(build, capsys):
+    """Refunding the claim erases the counter, so the record moves to the log.
+
+    Before the refund, a refused re-registration left one durable mark: the
+    incremented `register_attempts` row. Giving that back is right -- a refusal
+    must not be metered as a re-issue -- but it also means a machine id in
+    someone else's hands can now be polled against a suspended key indefinitely
+    at no cost. The per-IP limiter is not a substitute: it lives in memory, per
+    worker process, and is keyed on an address the caller can change.
+
+    So the refusal has to say so out loud exactly once per attempt. This test is
+    what stops the log line being tidied away by someone who reads it as noise.
+    """
+    gw = build(AUTH_RPM_PER_IP=0, REGISTER_MAX_PER_IP_PER_DAY=0)
+    key_id = gw.register_machine(MACHINE_A).json()["key_id"]
+    gw.storage.set_key_status(key_id, "suspended", "testing")
+    capsys.readouterr()                                   # drop the setup noise
+
+    assert gw.register_machine(MACHINE_A).status_code == 403
+
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{")
+    ]
+    refused = [e for e in events if e.get("event") == "register.reissue_refused"]
+    assert len(refused) == 1
+    assert refused[0]["key_id"] == key_id
+    assert refused[0]["status"] == "suspended"
+    # The address is carried too -- a silent refusal an operator cannot attribute
+    # to anywhere is barely louder than no refusal at all.
+    assert refused[0]["ip_hash"]
+
+
+def test_the_capped_rerun_does_not_contradict_itself_about_when_to_retry(build):
+    """The two halves of one body must name the same moment.
+
+    Serving the rerun (above) is what first exposed `operator_budget_exhausted`
+    on this path, and it arrived saying `retry_after_seconds: 1` next to a
+    `reset_at` on the 1st of next month and a message reading "Budgets reset at
+    00:00 UTC on the 1st". A client trusting the number retries every second for
+    weeks and is refused every time; a client trusting the field gives up. This
+    is the same defect `reserve_verdict` was fixed for, in the one verdict
+    constructor that had been left out -- `global_cap_state` never passed a
+    `retry_after`, so it took the dataclass default of 0 and `_issuance_status`
+    floored it to 1.
+
+    Asserted as agreement rather than as a magic number so the test cannot rot
+    with the calendar. Honest about its one blind spot: run in the final seconds
+    of a month, the true remaining window is itself ~1s and the assertion stops
+    discriminating. The mutation record for this round covers that instead.
+    """
+    gw = build(GLOBAL_MONTHLY_USD_BUDGET=5.0, REGISTER_MAX_PER_IP_PER_DAY=0,
+               AUTH_RPM_PER_IP=0)
+    first = gw.register_machine(MACHINE_A)
+    gw.charge(first.json()["key_id"], cost=5.0)
+
+    body = gw.register_machine(MACHINE_A).json()
+    assert body["not_usable_reason"] == "operator_budget_exhausted"
+
+    reset = datetime.fromisoformat(body["reset_at"])
+    now = datetime.now(reset.tzinfo)
+    assert abs(body["retry_after_seconds"] - (reset - now).total_seconds()) <= 5
 
 
 def test_max_keys_per_ip_throttles_farming_without_banning(build):

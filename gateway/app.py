@@ -1095,6 +1095,17 @@ class GatewayState:
         if not settings.has_global_cap:
             return BudgetVerdict(True)
         cost, tokens = self.spend.current()
+        # RETRY-AFTER MUST FOLLOW THE WINDOW THAT IS ACTUALLY BINDING -- the rule
+        # `reserve_verdict` states at length above, applied to the one verdict
+        # that was still ignoring it. A monthly cap refills on the 1st and on no
+        # other day. Leaving this at the dataclass default of 0 was survivable
+        # only while nobody read it: `_issuance_status` floors it with
+        # max(1, ...) and would serve "retry_after_seconds": 1 in the same object
+        # as "reset_at": "<the 1st>" and a message saying budgets reset then.
+        # /v1 hid the omission by substituting the right value by hand at its own
+        # call site; putting the value on the verdict makes every reader agree by
+        # construction instead of by each one remembering separately.
+        retry = _seconds_until_month_end()
         if settings.global_monthly_usd_budget > 0 and cost >= settings.global_monthly_usd_budget:
             return BudgetVerdict(
                 False,
@@ -1103,6 +1114,7 @@ class GatewayState:
                 "This yangble5 instance has reached its monthly operator spend cap and "
                 "is temporarily read-only. No requests are being sent upstream. "
                 "Budgets reset at 00:00 UTC on the 1st.",
+                retry,
             )
         if (
             settings.global_monthly_token_budget > 0
@@ -1115,6 +1127,7 @@ class GatewayState:
                 "This yangble5 instance has reached its monthly operator token cap and "
                 "is temporarily read-only. No requests are being sent upstream. "
                 "Budgets reset at 00:00 UTC on the 1st.",
+                retry,
             )
         return BudgetVerdict(True)
 
@@ -1746,13 +1759,35 @@ async def _reissue_for_machine(
     stored, and keeping this project's "a stolen database yields no usable key"
     property is worth more than handing back a byte-identical string. The
     response says so plainly rather than letting the user discover it.
+
+    Every exit below that mints nothing refunds the reissue the caller was
+    charged before we got here — the two refusals, and the defensive 500. The
+    claim has to happen first — it is what stops an attacker with a stolen
+    machine id from rotating the secret in a loop — but it is charged for an
+    ATTEMPT, and those answers issue nothing. Left un-refunded, five 403s
+    exhaust the day and the sixth accuses the user of machine-id theft over a
+    suspension they were already being told about, while `reissue_count` sits at
+    zero because no reissue happened. See `Storage.refund_machine_reissue`.
+
+    Refunding gives back the refusal's only durable trace, so the refusals log
+    instead. The per-IP limiter above is not a substitute for either: it records
+    only the requests it ALLOWS, and it is in-memory, per worker process, and
+    keyed on an address the caller can change.
     """
     settings = state.settings
     record = await run_in_threadpool(state.storage.get_key, binding.key_id)
     if record is None:
         # The binding outlived its key. Treat it as unknown rather than
         # resurrecting anything; the operator deleted that key for a reason.
-        _log(logging.WARNING, "register.orphan_binding", key_id=binding.key_id)
+        await run_in_threadpool(
+            state.storage.refund_machine_reissue, binding.machine_hash
+        )
+        _log(
+            logging.WARNING,
+            "register.orphan_binding",
+            key_id=binding.key_id,
+            ip_hash=ip_hash[:12],
+        )
         return _error(
             409, "binding_orphaned",
             _needs_operator(
@@ -1766,6 +1801,23 @@ async def _reissue_for_machine(
     if record.status != "active":
         # Re-registering must never launder a suspended or revoked key back into
         # service — that would make suspension a one-installer-rerun problem.
+        # Refunded for the same reason as above, and with no rotation risk: this
+        # path cannot re-issue anything however many times it is reached.
+        await run_in_threadpool(
+            state.storage.refund_machine_reissue, binding.machine_hash
+        )
+        # The refund removes the only durable trace this refusal used to leave,
+        # so the trace moves to the log. Without it, someone holding a machine id
+        # that is not theirs could poll a suspended key indefinitely at zero cost
+        # and in total silence: the per-IP limiter above is in-memory, per worker
+        # process, and keyed on an address the caller can change.
+        _log(
+            logging.WARNING,
+            "register.reissue_refused",
+            key_id=binding.key_id,
+            ip_hash=ip_hash[:12],
+            status=record.status,
+        )
         return _error(
             403, "key_suspended",
             _needs_operator(
@@ -1792,6 +1844,12 @@ async def _reissue_for_machine(
         )
     )
     if issued is None:  # pragma: no cover - the row was read one statement ago
+        # Unreachable by construction, and it refunds anyway: the rule is "every
+        # exit that mints nothing gives the claim back", and a rule with one
+        # unexplained exception is the kind a later edit quietly widens.
+        await run_in_threadpool(
+            state.storage.refund_machine_reissue, binding.machine_hash
+        )
         return _error(500, "internal_error", "Could not re-issue this key.")
     await run_in_threadpool(state.storage.touch_machine_binding, binding.machine_hash)
     # The old secret is gone, so any cached verification of it must go too.
@@ -2116,8 +2174,10 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                         "will change that; self-host instead."
                     ),
                     "registration_unavailable": (
-                        "Temporarily not issuing keys: the operator's monthly budget "
-                        "cap is reached. Retry after the 'reset_at' on /pool/status."
+                        "Temporarily not issuing NEW keys: the operator's monthly "
+                        "budget cap is reached. A machine that registered before "
+                        "still gets its key back — re-issuing costs the operator "
+                        "nothing. Retry after the 'reset_at' on /pool/status."
                     ),
                     "invite_required": "Registration mode is 'invite' and you sent no code.",
                     "invite_invalid": "The code is unknown, expired, or already used up.",
@@ -2210,17 +2270,6 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 "Self-service registration is disabled on this instance.",
             )
 
-        # ONE expression, shared with /pool/status's `registration_open`, so the
-        # widget and the endpoint can never disagree about whether a key will be
-        # issued. `svc` is also what fills in `usable_now` on the way out.
-        svc = state.service_state()
-        if not svc.registration_allowed:
-            return _error(
-                503, "registration_unavailable",
-                "This instance is at its operator budget cap and is not issuing new "
-                "keys right now.",
-            )
-
         payload = await parse_json_body(
             request,
             RegisterRequest,
@@ -2310,6 +2359,34 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                         support_contact=settings.support_contact or None,
                     )
                 return await _reissue_for_machine(state, binding, ip_hash, label)
+
+        # ONE expression, shared with /pool/status's `registration_open`, so the
+        # widget and the endpoint can never disagree about whether a key will be
+        # issued.
+        #
+        # DELIBERATELY BELOW the re-registration path above. This is the operator
+        # BUDGET cap, and it guards a cost: minting a key adds a second daily
+        # allowance to the instance. A re-run from a machine that already has a
+        # key adds nothing — `reissue_key_secret` keeps the same row, the same
+        # key_id and the same allowance, and creates no new one — so refusing it
+        # here saved the operator nothing and cost the user the documented
+        # recovery route at the exact moment they were most likely to need it.
+        #
+        # The cap is usually hit at the busiest point in the instance's life, and
+        # a user whose key string was lost or superseded is told to re-run the
+        # installer. Above the short-circuit, that instruction answered 503 "not
+        # issuing new keys" — accurate about the cap and wrong about them,
+        # because they were not asking for a new key.
+        #
+        # Costs one machine-id hash before the check, which is a single sha256
+        # (`hash_machine_id`), guarded by its own per-IP limiter further up.
+        svc = state.service_state()
+        if not svc.registration_allowed:
+            return _error(
+                503, "registration_unavailable",
+                "This instance is at its operator budget cap and is not issuing new "
+                "keys right now.",
+            )
 
         # CHEAP EARLY REJECT, not the decision. It saves a JSON parse and a
         # couple of hashes for an address that is already obviously over its
@@ -2493,8 +2570,8 @@ def _register_public_routes(app: FastAPI, state: GatewayState) -> None:
                 # including the operator — which made asking a human for one a
                 # question with no answer anywhere.
                 "label": label,
-                # Re-read rather than reusing the `svc` from the top of the
-                # handler: issuing a key involves a KDF and several awaits, and
+                # Re-read rather than reusing the `svc` read by the budget gate
+                # above: issuing a key involves a KDF and several awaits, and
                 # the pool can be exhausted by another caller in that window.
                 # The status shipped with the key describes the moment the key
                 # is handed over, not the moment the request arrived.
@@ -2765,7 +2842,7 @@ def _make_proxy_handler(state: GatewayState, path: str):
                 _log(logging.WARNING, "request.global_cap", key_id=ctx.key_id, endpoint=path)
                 return _degraded(
                     settings, pool, status=cap.status, reason=cap.kind,
-                    message=cap.message, retry_after=_seconds_until_month_end(),
+                    message=cap.message, retry_after=cap.retry_after,
                 )
 
             daily = state.daily_pool_verdict()

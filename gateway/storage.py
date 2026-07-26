@@ -1195,3 +1195,36 @@ class Storage:
         return self.claim_register_attempt(
             self._REISSUE_NS + machine_hash, max_per_day, day
         )
+
+    def refund_machine_reissue(self, machine_hash: str, day: str | None = None) -> None:
+        """Give back a reissue claimed for a re-registration that issued nothing.
+
+        The claim happens before the handler knows whether it CAN re-issue, and
+        two answers mint nothing: the bound key row is gone (409
+        `binding_orphaned`), or it is suspended or revoked (403 `key_suspended`).
+        Without this refund those answers burn the day's allowance, so a user
+        whose key an operator suspended gets five 403s -- each one silently
+        spending a reissue -- and is then told by a 429 that someone has stolen
+        their machine id, while `reissue_count` on the binding sits at zero
+        because nothing was ever re-issued. The refusal was correct; the story
+        told afterwards was not.
+
+        This is the same shape, and the same reasoning, as `refund_invite`: a
+        claim consumed ahead of an operation that can still decline has to be
+        given back, or the ceiling meters failures instead of the thing it is
+        supposed to ration.
+
+        Floored at 0 so a stray double refund cannot manufacture allowance.
+
+        A refund that lands after UTC midnight targets the NEW day's row, finds
+        it at 0 and does nothing -- which is harmless rather than a leak: the
+        charge it failed to reverse is on yesterday's row, and yesterday's row is
+        never read again. The ceiling the caller faces is restored either way.
+        """
+        day = day or day_key()
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE register_attempts SET count = count - 1"
+                " WHERE ip_hash = ? AND day = ? AND count > 0",
+                (self._REISSUE_NS + machine_hash, day),
+            )
