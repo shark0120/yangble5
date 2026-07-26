@@ -34,9 +34,11 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
@@ -135,8 +137,12 @@ def fetch(url: str, timeout: float) -> tuple[bytes | None, str]:
             # visitor gets.
             "User-Agent": "yangble5-drift-check",
             "Accept": "*/*",
-            # A cached copy would make this check pass on a stale deploy, which
-            # is the failure it exists to catch.
+            # Asks the edge not to answer from cache. Sent because a cached copy
+            # would make this check pass on a stale deploy -- but do not rely on
+            # it: this site's CDN ignores both headers from ordinary clients,
+            # which was measured on 2026-07-26 when a cached 404 survived them
+            # and only a changed URL got through. That is why a 404 is re-probed
+            # with a cache-buster rather than believed. See probe().
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
         },
@@ -152,6 +158,70 @@ def fetch(url: str, timeout: float) -> tuple[bytes | None, str]:
         return None, f"unreachable: {exc}"
 
 
+# A 404 has two completely different causes with two completely different
+# remedies, and reporting the wrong one sends somebody to redeploy a site that
+# is already correct -- or, far worse, tells them the deploy worked when the
+# file is unreachable.
+#
+#   the deploy did not happen    -> origin does not have the file. Redeploy.
+#   the edge cached a 404        -> origin has it; the CDN is holding a negative
+#                                   entry from a probe made before publication.
+#                                   Wait for it to expire, or purge that URL.
+#
+# They are told apart by asking for the same path under a URL the edge has never
+# seen. If that answers, the origin has the file and only the cache is wrong.
+# The nonce must differ between runs: a fixed buster would itself get a cached
+# 404 on the first pre-publication run and be useless from then on.
+CACHE_BUSTER_PARAM = "drift-check-cache-bypass"
+
+
+def _nonce() -> str:
+    """A value the edge has not cached. Injectable so tests stay deterministic."""
+    return str(int(time.time()))
+
+
+def compare(name: str, got: bytes, local: Path) -> str | None:
+    """None when the served bytes are this repository's bytes, else what differs."""
+    want = normalise(local.read_bytes())
+    if got == want:
+        return None
+    raw_local = local.read_bytes()
+    if got == raw_local:
+        # Only possible if the page has no markers to strip; treat as fine.
+        return None
+    detail = f"{len(got)} bytes served, {len(want)} expected"
+    index = next(
+        (i for i in range(min(len(got), len(want))) if got[i] != want[i]),
+        min(len(got), len(want)),
+    )
+    return (
+        f"{name}: served copy differs ({detail}), first at byte {index}\n"
+        f"      repo : {want[max(0, index - 50) : index + 90]!r}\n"
+        f"      live : {got[max(0, index - 50) : index + 90]!r}"
+    )
+
+
+def probe(base: str, name: str, timeout: float, nonce: str) -> tuple[bytes | None, str, bool]:
+    """Fetch a published path. Returns (bytes, error, served_only_off_cache_bypass).
+
+    The third value is True only when the ordinary URL 404s and the cache-bypass
+    URL succeeds -- that is, when visitors cannot reach a file the origin is
+    serving correctly. It is still a failure; it just is not the failure the
+    plain 404 message would have named.
+    """
+    got, error = fetch(f"{base}/{name}", timeout)
+    if got is not None or error != "HTTP 404":
+        return got, error, False
+
+    bypass, _ = fetch(f"{base}/{name}?{CACHE_BUSTER_PARAM}={nonce}", timeout)
+    if bypass is None:
+        # Both URLs 404: the origin genuinely does not have it. Report the
+        # original error, not the probe's -- the probe is an implementation
+        # detail and naming it would send the reader chasing a query string.
+        return None, error, False
+    return bypass, "", True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare the served site against this repository.",
@@ -164,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
 
     base = args.base.rstrip("/")
     problems: list[str] = []
+    edge_cached_404: list[str] = []
+    nonce = _nonce()
 
     for name in PUBLISHED:
         local = SITE / name
@@ -171,32 +243,47 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"{name}: listed as published but missing from site/")
             continue
 
-        want = normalise(local.read_bytes())
-        got, error = fetch(f"{base}/{name}", args.timeout)
+        got, error, bypassed = probe(base, name, args.timeout, nonce)
         if got is None:
             problems.append(f"{name}: {error}")
             continue
 
-        if got == want:
-            if not args.quiet:
-                print(f"  ok      {name}")
+        difference = compare(name, got, local)
+        if bypassed:
+            # The bytes were still compared, so a file that is BOTH unreachable
+            # and wrong reports both facts rather than hiding one behind the
+            # other.
+            edge_cached_404.append(
+                difference
+                if difference
+                else f"{name}: origin serves the expected bytes; only the cached 404 is stale"
+            )
             continue
 
-        raw_local = local.read_bytes()
-        detail = f"{len(got)} bytes served, {len(want)} expected"
-        if got == raw_local:
-            # Only possible if the page has no markers to strip; treat as fine.
-            if not args.quiet:
-                print(f"  ok      {name}")
+        if difference:
+            problems.append(difference)
             continue
-        index = next(
-            (i for i in range(min(len(got), len(want))) if got[i] != want[i]),
-            min(len(got), len(want)),
+
+        if not args.quiet:
+            print(f"  ok      {name}")
+
+    if edge_cached_404:
+        print(
+            f"\n{len(edge_cached_404)} file(s) that visitors cannot reach, "
+            f"but which {base} is serving correctly:\n",
+            file=sys.stderr,
         )
-        problems.append(
-            f"{name}: served copy differs ({detail}), first at byte {index}\n"
-            f"      repo : {want[max(0, index - 50) : index + 90]!r}\n"
-            f"      live : {got[max(0, index - 50) : index + 90]!r}"
+        for item in edge_cached_404:
+            print(f"  - {item}", file=sys.stderr)
+        print(
+            "\nEach of these 404s at its normal URL and succeeds with a cache-buster,\n"
+            "which means the origin has the file and the CDN is holding a negative\n"
+            "cache entry -- almost always because something requested the URL before\n"
+            "it was published. THE FIX IS NOT TO REDEPLOY. Wait for the entry to\n"
+            "expire, or purge that one URL at the edge. To avoid causing it: publish\n"
+            "first, verify second, and never probe a public URL that does not exist\n"
+            "yet.",
+            file=sys.stderr,
         )
 
     if problems:
@@ -211,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
             "command shown to every visitor.",
             file=sys.stderr,
         )
+
+    if problems or edge_cached_404:
         return 1
 
     if not args.quiet:

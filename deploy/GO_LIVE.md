@@ -134,6 +134,27 @@ care about that — it means `default_type` is `application/octet-stream`. Not
 dangerous (`curl | sh` is unaffected) but it defeats "read it before you run
 it". The fix is in the nginx snippet's `location /`, applied in B3.
 
+**Publish first, verify second — never request a public URL before it exists.**
+Asking the CDN for a path that is not published yet gets a 404, and the CDN
+*caches that 404*. The file then stays unreachable to visitors for the length of
+the negative TTL after you deploy it, while the origin serves it perfectly. This
+happened on 2026-07-26: `tools/drift_check.py` was run before a deploy to see
+what was live, its probe of the not-yet-published archive was cached, and the
+archive 404'd publicly for hours afterwards even though the origin returned the
+exact expected digest. `Cache-Control: no-cache` from the client does not
+prevent it — this edge ignores it.
+
+Two consequences worth remembering:
+
+- If you want to know what is live *before* deploying, check the origin
+  (`curl --resolve yangble5.com:443:127.0.0.1 …` on the VPS), not the public
+  name. Only probe the public name for paths that already exist.
+- If it happens anyway, `drift_check` now names it correctly — it re-probes any
+  404 with a cache-buster and reports "visitors cannot reach" rather than
+  "the deploy did not happen". **Do not redeploy in response.** A redeploy
+  changes nothing at the edge; wait for the entry to expire or purge that one
+  URL.
+
 **Rollback**
 
 ```sh
