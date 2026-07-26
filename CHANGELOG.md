@@ -52,6 +52,9 @@ Two conventions specific to this repository, because they change how the entries
   cache-hostile example runs with `continue-on-error`, and a following step fails the job unless
   the action's actual outcome was `failure`. A negative control that cannot turn the product red
   turns the repository red instead.
+- **CI also starts the standalone guard with `--help`.** This smoke probe catches CLI startup
+  failures without reading fixtures, and the contributor-roster test explicitly keeps this
+  help-only invocation out of the pre-push gate list.
 
 ### Changed — the bundled skill is renamed
 

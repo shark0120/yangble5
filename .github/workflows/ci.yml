@@ -249,6 +249,7 @@ jobs:
         # here that it starts is what keeps those two outcomes distinguishable.
         run: |
           python tools/cache_bench.py --help
+          python tools/cache_guard.py --help
           python tools/cache_stats_sidecar.py --help
           python tools/claude_shim.py --help
           python tools/sitecheck.py --help

@@ -40,12 +40,12 @@ Two directions, and they are not the same check:
   entry is indistinguishable from it.
 
 The word "gate" is doing real work and the distinction is this file's only
-judgement call.  ``tools/`` also holds ``cache_bench.py``, ``cache_stats_sidecar.py``
-and ``claude_shim.py``, which CI runs -- but only as ``--help``, to prove they
-still start.  Those are tools a *user* runs, not gates over the repository's
-content, and a rule of "every script under ``tools/`` must appear in
-CONTRIBUTING" would go red today, on an unchanged repo, for three files that
-belong nowhere near a contributor's pre-push checklist.  A gate here is a
+judgement call.  ``tools/`` also holds ``cache_bench.py``, ``cache_guard.py``,
+``cache_stats_sidecar.py`` and ``claude_shim.py``, which CI runs -- but only as
+``--help``, to prove they still start.  Those are tools a *user* runs, not gates
+over the repository's content, and a rule of "every script under ``tools/`` must
+appear in CONTRIBUTING" would go red today, on an unchanged repo, for four files
+that belong nowhere near a contributor's pre-push checklist.  A gate here is a
 ``tools/*.py`` invocation whose non-zero exit fails the build because of what it
 *read*; a bare ``--help`` probe is excluded, and that exclusion is what keeps
 this test honest rather than merely strict.
@@ -285,15 +285,15 @@ def test_the_parsers_found_something_to_check(roster, workflow_roster, section):
 def test_a_help_probe_is_not_mistaken_for_a_gate(roster):
     """The file's one judgement call, asserted rather than assumed.
 
-    `cache_bench.py`, `cache_stats_sidecar.py` and `claude_shim.py` are run by
+    `cache_bench.py`, `cache_guard.py`, `cache_stats_sidecar.py` and `claude_shim.py` are run by
     CI only as `--help`. They are tools a user runs. If the exclusion in
     `roster` ever stops working, this test goes red *before*
     `test_every_gate_ci_runs_is_in_the_contributing_roster` does -- which is the
-    difference between "your exclusion broke" and three baffling demands to
+    difference between "your exclusion broke" and four baffling demands to
     document a benchmark as a gate.
     """
     text = _ci_text()
-    for tool in ("cache_bench", "cache_stats_sidecar", "claude_shim"):
+    for tool in ("cache_bench", "cache_guard", "cache_stats_sidecar", "claude_shim"):
         assert f"python tools/{tool}.py --help" in text, (
             f"tools/{tool}.py is no longer run as a --help probe in ci.yml. If it "
             "became a gate, document it in CONTRIBUTING; if it was dropped, remove "
