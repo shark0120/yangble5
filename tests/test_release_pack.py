@@ -32,9 +32,13 @@ def _pack() -> str:
     return PACK.read_text(encoding="utf-8")
 
 
-def _unreleased() -> str:
+def _release_candidate() -> str:
     text = CHANGELOG.read_text(encoding="utf-8")
-    return text.split("## [Unreleased]", 1)[1].split("\n## [0.1.0]", 1)[0]
+    unreleased, remainder = text.split("## [Unreleased]", 1)[1].split(
+        "\n## [0.2.0] - 2026-07-27", 1
+    )
+    assert not unreleased.strip(), "new work belongs under the empty Unreleased heading"
+    return remainder.split("\n## [0.1.0]", 1)[0]
 
 
 def _marked(text: str, name: str) -> str:
@@ -52,14 +56,27 @@ def _records() -> tuple[dict, list[dict]]:
 def test_recommended_version_follows_the_projects_breaking_change_policy():
     with (ROOT / "pyproject.toml").open("rb") as handle:
         current = tomllib.load(handle)["project"]["version"]
-    assert current == "0.1.0", "final version bump already happened; refresh this pre-tag pack"
-    unreleased = _unreleased()
-    assert "BREAKING" in unreleased
-    assert "/pool/status" in unreleased
-    assert "BYOK stored other people's provider credentials in plaintext" in unreleased
+    assert current == "0.2.0", "release-preparation tree must carry the recommended version"
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+    release_candidate = _release_candidate()
+    assert "BREAKING" in release_candidate
+    assert "/pool/status" in release_candidate
+    assert "BYOK stored other people's provider credentials in plaintext" in release_candidate
+    assert (
+        "[Unreleased]: https://github.com/shark0120/yangble5/compare/v0.2.0...HEAD"
+        in changelog
+    )
+    assert (
+        "[0.2.0]: https://github.com/shark0120/yangble5/releases/tag/v0.2.0" in changelog
+    )
     pack = _pack()
     assert "recommend `v0.2.0`" in pack
     assert "pre-1.0 breaking change bumps MINOR" in pack
+    assert (
+        "blob/v0.2.0/CHANGELOG.md#020---2026-07-27" in pack
+    ), "release draft must link to the versioned 0.2.0 changelog section"
+    assert "[FINAL_RELEASE_DATE]" not in pack
+    assert "[FINAL_CHANGELOG_ANCHOR]" not in pack
 
 
 def test_release_draft_carries_the_product_and_both_breaking_changes():
@@ -119,13 +136,11 @@ def test_upstream_draft_separates_current_source_from_live_reproduction():
     assert "Live observation: v7.1.23" in draft
 
 
-def test_pack_keeps_every_public_action_user_only_and_every_receipt_unfilled():
+def test_pack_keeps_every_public_action_user_only_and_user_receipts_unfilled():
     pack = _pack()
     assert "All five rows below are **USER ONLY**" in pack
     assert "The user—not an agent—creates/pushes the tag" in pack
     for placeholder in (
-        "[FINAL_RELEASE_DATE]",
-        "[FINAL_CHANGELOG_ANCHOR]",
         "[FINAL_COMMIT]",
         "[FINAL_CI_RUN_URL]",
         "[UPSTREAM_ISSUE_URL]",

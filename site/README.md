@@ -220,7 +220,7 @@ Today's gateway response — `gateway/app.py`, the `/health` route — is:
 {
   "status": "ok",
   "service": "yangble5-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "uptime_seconds": 8123,
   "accepting_requests": true,
   "registration": "invite"

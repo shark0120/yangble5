@@ -4,9 +4,10 @@ This file is the single handoff for the release, upstream report and announcemen
 It is deliberately **not executable**. No agent should create a tag, a GitHub Release, an
 upstream issue or a social post from this file. The user reviews and performs every public action.
 
-The repository still has post-B33 backlog work. Keep the `[FINAL_*]` placeholders until that work
-is committed and the final CI run is green; replacing them early would turn a draft into a false
-receipt.
+The repository backlog intended for v0.2.0 is complete. The release date and changelog anchor are
+now fixed; keep `[FINAL_COMMIT]`, `[FINAL_CI_RUN_URL]` and `[UPSTREAM_ISSUE_URL]` until the final
+CI run is green and the user has opened the upstream issue. Replacing those earlier would turn a
+draft into a false receipt.
 
 ## Decision: recommend `v0.2.0`
 
@@ -18,12 +19,12 @@ BYOK-enabled stack without an encryption key. Both are explicitly BREAKING.
 The repository's policy says a pre-1.0 breaking change bumps MINOR. Therefore the next release is
 `0.2.0`, not a second `0.1.0` and not `0.1.1`.
 
-Before a tag exists, the final release commit must move these together:
+The final release-preparation commit moves these together:
 
 - `pyproject.toml` `[project].version`: `0.1.0` → `0.2.0`
 - `gateway/__init__.py` `__version__`: `0.1.0` → `0.2.0`
 - `site/README.md` public health example: `0.1.0` → `0.2.0`
-- `CHANGELOG.md`: rename Unreleased to `[0.2.0] - [FINAL_RELEASE_DATE]`, open a new empty
+- `CHANGELOG.md`: rename the accumulated section to `[0.2.0] - 2026-07-27`, open a new empty
   Unreleased section, and update both comparison links
 - annotated tag name and message: `v0.2.0`, with the final changelog section as its message
 
@@ -48,8 +49,8 @@ claims can be corrected before the second post.
 
 ## GitHub Release draft
 
-Fill `[FINAL_RELEASE_DATE]`, `[FINAL_CHANGELOG_ANCHOR]`, `[FINAL_COMMIT]`,
-`[FINAL_CI_RUN_URL]` and `[UPSTREAM_ISSUE_URL]` from the final green tree.
+Fill `[FINAL_COMMIT]`, `[FINAL_CI_RUN_URL]` and `[UPSTREAM_ISSUE_URL]` from the final green tree
+and the user-created upstream issue.
 
 <!-- RELEASE_DRAFT:BEGIN -->
 ```markdown
@@ -88,7 +89,7 @@ around that engine; it is not a model and does not provide free credits.
 
 ### Added / Changed / Fixed
 
-See [CHANGELOG.md]([FINAL_CHANGELOG_ANCHOR]) for the complete entry, including the response
+See [CHANGELOG.md](https://github.com/shark0120/yangble5/blob/v0.2.0/CHANGELOG.md#020---2026-07-27) for the complete entry, including the response
 contract changes, Python 3.10 support, streaming-test repair and documentation/CI locks.
 
 ### Numbers in this release, and their conditions
@@ -123,7 +124,7 @@ Offline reproduction:
 
 - Release commit: `[FINAL_COMMIT]`
 - Full GitHub CI: [FINAL_CI_RUN_URL]
-- Release date: `[FINAL_RELEASE_DATE]`
+- Release date: `2026-07-27`
 
 ### Optional reviewed artifact
 

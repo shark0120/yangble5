@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yangble5"
-version = "0.1.0"
+version = "0.2.0"
 description = "Prompt-cache measurement and Claude-wire compatibility tooling for a local CLIProxyAPI-based proxy stack."
 readme = "README.md"
 # The floor and every version listed in the classifiers below are the exact set

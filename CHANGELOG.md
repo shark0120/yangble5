@@ -17,6 +17,8 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-27
+
 ### Added — machine-enforced documentation locks
 
 - **A publication-ready [doc-lock methods draft](docs/launch/doc-locks.md) extracts the pattern
@@ -413,5 +415,6 @@ These are release-blocking to *quote*, not to *ship*. Read them before repeating
 - **yangble5 is not a model.** Not a training run, not a fine-tune, not a hosted service, and not
   a source of free credits. Every token is billed to whatever upstream account *you* configure.
 
-[Unreleased]: https://github.com/shark0120/yangble5/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shark0120/yangble5/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shark0120/yangble5/releases/tag/v0.2.0
 [0.1.0]: https://github.com/shark0120/yangble5/releases/tag/v0.1.0
