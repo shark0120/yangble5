@@ -242,3 +242,12 @@ def test_agents_md_content_type_is_a_failure_not_a_warning() -> None:
         "that will not parse application/octet-stream cannot read step one of the "
         "install path, and a warning does not stop a release."
     )
+    # The block has TWO fail arms -- the '' (no header) and the *) (non-text,
+    # e.g. application/octet-stream, the 2026-07-23 defect) branches. A positive
+    # "fail present" check alone would stay green if ONLY the *) arm were
+    # downgraded to warn (mirroring install.sh's *) branch just above). Forbid any
+    # warn for this check so downgrading EITHER non-text arm turns the test red.
+    assert "warn \"AGENTS.md/content-type\"" not in block, (
+        "a non-text AGENTS.md content-type arm was downgraded from fail to warn; "
+        "octet-stream must block a release, not merely warn."
+    )

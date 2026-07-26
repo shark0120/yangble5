@@ -142,10 +142,18 @@ def test_rendered_config_carries_the_local_key_and_the_auth_dir():
 
 def test_session_ttl_is_rendered_as_a_string_not_a_number():
     """`12h` unquoted is fine, but `3600` unquoted would parse as an int and the
-    engine expects a Go duration string."""
+    engine expects a Go duration string.
+
+    validate_ttl forces a unit suffix (ms/s/m/h), so a bare-numeric TTL can never
+    reach the renderer and the parsed value is a str whether or not it is quoted --
+    an isinstance(str) check is therefore tautological and does NOT guard the
+    quoting. Assert on the raw text that the scalar is emitted DOUBLE-QUOTED, so
+    dropping yaml_quote on setup.py:593 (rendering `session-affinity-ttl: 3600s`)
+    fails here."""
     config = render(make_spec(session_ttl="3600s"))
     assert config["routing"]["session-affinity-ttl"] == "3600s"
-    assert isinstance(config["routing"]["session-affinity-ttl"], str)
+    rendered = byok.build_config(TEMPLATE, make_spec(session_ttl="3600s"))
+    assert 'session-affinity-ttl: "3600s"' in rendered
 
 
 def test_build_config_refuses_a_spec_with_no_local_key():

@@ -269,3 +269,14 @@ def test_the_streaming_probe_asks_for_enough_output_to_measure() -> None:
         "the streaming probe asks for too few tokens to tell a short reply from "
         "a buffered one; that is exactly the state that produced a false FAIL"
     )
+    # The helper's 120 tokens only matter if check_streaming actually SENDS it.
+    # Without this, re-pointing check_streaming at the 16-token round-trip body
+    # (`request_body true`) -- the precise original defect -- leaves
+    # stream_request_body's 120 intact and slips past the assertion above.
+    assert "check_streaming() {" in body
+    check_block = body[body.index("check_streaming() {") :]
+    check_block = check_block[: check_block.index("\n}\n")]
+    assert 'body="$(stream_request_body)"' in check_block, (
+        "check_streaming no longer sends the dedicated streaming body; a regression "
+        "to request_body/16 tokens would slip past the helper-only assertion above"
+    )
