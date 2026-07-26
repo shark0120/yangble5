@@ -43,6 +43,7 @@ __all__ = [
     "DayUsage",
     "EmailInUseError",
     "InviteError",
+    "InviteExistsError",
     "IssuedKey",
     "MachineBinding",
     "RegistrationCapError",
@@ -305,6 +306,24 @@ class DayUsage:
 
 class InviteError(Exception):
     """Invite code missing, expired, exhausted or revoked."""
+
+
+class InviteExistsError(Exception):
+    """That invite code is already in the table.
+
+    Exists so the HTTP layer can tell "you asked for a code that is taken" apart
+    from "this instance could not write it down". Both used to arrive there as a
+    bare exception and both were answered `409 invite_exists`, so a full disk, a
+    locked database or a broken schema all told the operator their code already
+    existed -- advice whose only follow-up, picking a different code, fails the
+    same way for the same invisible reason.
+
+    Raised from the INSERT rather than from a SELECT that ran before it, for the
+    reason `RegistrationCapError` and `EmailInUseError` give: a check made ahead
+    of the write is a check a concurrent write can slip past. `code_hash` is the
+    table's PRIMARY KEY, so the INSERT is itself the atomic test for existence,
+    and this is the DB reporting what it actually found.
+    """
 
 
 class RegistrationCapError(Exception):
@@ -975,12 +994,20 @@ class Storage:
             raise ValueError("max_uses must be >= 1")
         code_hash = self._invite_hash(code)
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO invites(code_hash, label, max_uses, used_count, status,"
-                " expires_at, created_at) VALUES(?, ?, ?, 0, 'active', ?, ?)",
-                (code_hash, label, max_uses,
-                 _iso(expires_at) if expires_at else None, _iso(utcnow())),
-            )
+            try:
+                self._conn.execute(
+                    "INSERT INTO invites(code_hash, label, max_uses, used_count, status,"
+                    " expires_at, created_at) VALUES(?, ?, ?, 0, 'active', ?, ?)",
+                    (code_hash, label, max_uses,
+                     _iso(expires_at) if expires_at else None, _iso(utcnow())),
+                )
+            except sqlite3.IntegrityError as exc:
+                # The ONLY integrity constraint this INSERT can trip. Every other
+                # column is either nullable or given a value on the line above,
+                # so a collision here means the PRIMARY KEY -- the code is taken.
+                # Narrow on purpose: a disk or schema fault is not this, must not
+                # be reported as this, and is left to propagate.
+                raise InviteExistsError("that invite code already exists") from exc
         return code_hash
 
     def consume_invite(self, code: str, moment: datetime | None = None) -> str:

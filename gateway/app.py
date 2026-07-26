@@ -75,6 +75,7 @@ from .storage import (
     MACHINE_ID_MIN_CHARS,
     EmailInUseError,
     InviteError,
+    InviteExistsError,
     RegistrationCapError,
     Storage,
     day_key,
@@ -3317,7 +3318,13 @@ def _register_admin_routes(app: FastAPI, state: GatewayState) -> None:
                     code, label=payload.label, max_uses=payload.max_uses, expires_at=expires
                 )
             )
-        except Exception:
+        except InviteExistsError:
+            # Only the taken-code case. Anything else -- a full disk, a locked or
+            # corrupt database -- propagates to the handler at the bottom of this
+            # file, which answers 500 and logs the exception class for the
+            # operator. Catching it here instead told them to pick a different
+            # code, which is advice that cannot work: the next code fails the
+            # same way, and the reason never reaches anyone who could act on it.
             return _error(409, "invite_exists", "That invite code already exists.")
         _log(logging.INFO, "admin.invite_created", max_uses=payload.max_uses)
         # Returned once. Only a salted hash of the code is stored.

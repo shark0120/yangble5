@@ -610,6 +610,70 @@ def test_invite_mode_requires_a_valid_code(build):
     assert gw.register(email="c@b.com", invite_code=code).status_code == 403
 
 
+def test_a_genuinely_taken_invite_code_is_still_a_409(build):
+    """The narrow catch must keep answering the case it was written for.
+
+    Asked for a code that exists, the operator gets 409 `invite_exists` and the
+    advice to pick another -- advice that works, because the next code is free.
+    Untested until now: the 409 was produced by a bare `except Exception`, so
+    nothing anywhere established that a duplicate reaches it at all.
+    """
+    gw = build(REGISTRATION_MODE="invite")
+    first = gw.client.post(
+        "/admin/invites",
+        headers={"Authorization": f"Bearer {ADMIN_KEY}"},
+        json={"code": "yb5inv_taken"},
+    )
+    assert first.status_code == 201
+
+    again = gw.client.post(
+        "/admin/invites",
+        headers={"Authorization": f"Bearer {ADMIN_KEY}"},
+        json={"code": "yb5inv_taken"},
+    )
+    assert again.status_code == 409
+    assert again.json()["error"]["type"] == "invite_exists"
+
+
+def test_a_storage_fault_is_not_reported_as_a_taken_invite_code(build, monkeypatch):
+    """A full disk is not a naming collision, and must not be described as one.
+
+    The endpoint used to wrap the write in a bare `except Exception` and answer
+    409 `invite_exists` to all of it, so a locked database told the operator
+    their code was taken. The only follow-up that answer suggests is picking a
+    different code, and that fails identically -- the operator can retry all day
+    without learning that the disk is the problem, because the one fact that
+    would tell them never leaves the process.
+
+    Now it propagates to the last-resort handler: 500, and the exception class
+    goes to the log where an operator can read it. The body is asserted to stay
+    silent about the cause for the reason that handler's docstring gives -- it
+    cannot know whether the text holds a path or a traceback.
+    """
+    gw = build(REGISTRATION_MODE="invite")
+    # raise_server_exceptions=False so the handler's RESPONSE is what arrives
+    # here; the default re-raises and the body is never seen. Same idiom, and
+    # same reason, as test_an_unhandled_exception_answers_the_envelope_and_leaks_nothing.
+    client = TestClient(gw.client.app, raise_server_exceptions=False)
+
+    def boom(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked: /var/lib/yangble5/gw.db")
+
+    monkeypatch.setattr(gw.storage, "create_invite", boom)
+
+    response = client.post(
+        "/admin/invites",
+        headers={"Authorization": f"Bearer {ADMIN_KEY}"},
+        json={"max_uses": 1},
+    )
+    assert response.status_code == 500
+    assert response.json()["error"]["type"] == "internal_error"
+    body = response.text.lower()
+    for leaked in ("locked", "sqlite", "operationalerror", "traceback", "gw.db"):
+        assert leaked not in body
+    client.close()
+
+
 def test_invite_code_is_stored_only_as_a_hash(build):
     gw = build(REGISTRATION_MODE="invite")
     created = gw.client.post(
