@@ -14,6 +14,14 @@ test and noticed the neighbouring rot.  Nobody was careless.  Adding a gate is a
 notice the omission -- whoever gets the surprise red -- is by then already
 surprised.
 
+B24 found the same defect one layer lower.  The original parser knew only
+``python tools/x.py``, while CI also rejects shell and PowerShell syntax, stale
+installer digests, secrets, real e-mail/IP addresses, third-party imports and
+workflow/project metadata drift.  Two of those checks live in heredocs and do
+not even have a filename a contributor could discover.  They need a second
+roster and a second parser; pretending they are Python-file gates would make the
+first parser less precise.
+
 This is the same defect as the one ``test_readme_layout.py`` guards, and it is
 worth stating why a prose roster is worse than a stale README tree.  A missing
 line on a map is an omission: the reader looks for something and does not find
@@ -24,12 +32,12 @@ whose own pitch is that its claims are checkable rather than believed.
 
 Two directions, and they are not the same check:
 
-* **Forward** -- every gate CI runs is named in the section.  This is the one
-  that rotted.
-* **Reverse** -- every ``tools/*.py`` the section names is really run by CI.  A
-  roster that lists a gate CI dropped is worse than one that omits a gate: it
-  spends a contributor's time on a check that cannot block anything, and the
-  next stale entry is indistinguishable from it.
+* **Forward** -- every classified gate CI runs is named in the section.  This is
+  the direction that rotted.
+* **Reverse** -- every gate the section names is really run by CI.  A roster that
+  lists a gate CI dropped is worse than one that omits a gate: it spends a
+  contributor's time on a check that cannot block anything, and the next stale
+  entry is indistinguishable from it.
 
 The word "gate" is doing real work and the distinction is this file's only
 judgement call.  ``tools/`` also holds ``cache_bench.py``, ``cache_stats_sidecar.py``
@@ -57,9 +65,15 @@ The reverse direction is scoped to the section for the same reason.
 run against their own account.  Matching ``tools/*.py`` across the whole file
 would drag that into the roster and fail immediately.
 
-What this file deliberately does **not** lock: the section also says three of
-the four gates are offline and the last needs a network.  That split is not
-derivable from the repository with the rigour the rest of this file has.  The
+The workflow-native parser recognizes pairs of command/code signatures, not
+step names.  Renaming a step therefore does not erase the gate, and seeing only
+half of a signature pair is a hard failure rather than a silent omission.  A
+wholly new shape is deliberately outside this parser; B25 is the queued
+step-count inventory that closes that separate hole.
+
+What this file deliberately does **not** lock: the Python-gate subsection says
+three of its four gates are offline and the last needs a network.  That split is
+not derivable from the repository with the rigour the rest of this file has.  The
 obvious proxy -- does the script import ``urllib`` -- is sound only if a gate
 cannot reach the network any other way, and ``name_guard.py`` shells out through
 ``subprocess``, so the proxy is already not airtight.  A lock that is *nearly*
@@ -69,12 +83,14 @@ red somebody deletes.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 
 import pytest
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEFAULT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("YB5_CONTRIBUTING_GATES_ROOT", DEFAULT_ROOT))
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 
@@ -98,17 +114,59 @@ UNSEEN_FORMS = {
 }
 
 NUMBER_WORDS = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
 }
 
-# The two countable claims in the section's opening sentence. Both are read, and
-# a section with neither is a failure rather than a pass -- see
-# `test_the_section_still_states_a_count`.
-COUNT_CLAIMS = (
-    re.compile(r"\b(\w+) more checks run outside pytest", re.IGNORECASE),
-    re.compile(r"\ball (\w+) guard\b", re.IGNORECASE),
-)
+PYTHON_COUNT = re.compile(r"\b(\w+) Python-script gates\b", re.IGNORECASE)
+WORKFLOW_COUNT = re.compile(r"\b(\w+) workflow-native gates\b", re.IGNORECASE)
+
+# Each workflow-native gate has two independent signatures.  A step-name roster
+# would certify the label rather than the check; these strings come from the
+# executable body.  B25 owns detection of a wholly new, unclassified step.
+WORKFLOW_GATE_SIGNATURES = {
+    "stdlib-import-audit": (
+        'pathlib.Path("tools").rglob("*.py")',
+        "ast.parse(path.read_text",
+    ),
+    "shell-syntax": (
+        "git ls-files '*.sh'",
+        'bash -n "$script"',
+    ),
+    "powershell-syntax": (
+        "git ls-files '*.ps1'",
+        "[System.Management.Automation.Language.Parser]::ParseFile",
+    ),
+    "workflow-metadata": (
+        'yaml.safe_load(open(".github/workflows/ci.yml"',
+        'workflow["jobs"].items()',
+    ),
+    "installer-digests": (
+        'payloads=(*.sh *.ps1)',
+        'sha256sum -c "${digests[@]}"',
+    ),
+    "secret-scan": (
+        "git grep -nIE 'sk-",
+        "possible secret, credential or operator path committed",
+    ),
+    "reserved-email-scan": (
+        "git grep -hIoE '[A-Za-z0-9._%+-]+@",
+        "every committed address is at a reserved or fixture domain",
+    ),
+    "ip-allowlist-scan": (
+        "git grep -hIoE '\\b([0-9]{1,3}\\.){3}[0-9]{1,3}\\b'",
+        "comm -23 /tmp/found-ips.txt /tmp/allowed-ips.txt",
+    ),
+}
+WORKFLOW_GATE_MARKER = re.compile(r"`workflow-gate:([a-z0-9-]+)`")
 
 
 def _strip_yaml_comment(line: str) -> str:
@@ -143,6 +201,29 @@ def roster() -> set[str]:
 
 
 @pytest.fixture(scope="module")
+def workflow_roster() -> set[str]:
+    """Workflow-native gates, derived from pairs of executable signatures."""
+    text = _ci_text()
+    gates = set()
+    for name, signatures in WORKFLOW_GATE_SIGNATURES.items():
+        counts = [text.count(signature) for signature in signatures]
+        present = [count > 0 for count in counts]
+        assert all(present) or not any(present), (
+            f"workflow-native gate {name!r} only partly matches ci.yml: "
+            f"{dict(zip(signatures, counts, strict=True))}. Its implementation changed; "
+            "update the signature pair and CONTRIBUTING together."
+        )
+        if all(present):
+            assert counts == [1, 1], (
+                f"workflow-native gate {name!r} has ambiguous signatures in ci.yml: "
+                f"{dict(zip(signatures, counts, strict=True))}. A roster parser must identify "
+                "one executable check, not guess among duplicates."
+            )
+            gates.add(name)
+    return gates
+
+
+@pytest.fixture(scope="module")
 def section() -> str:
     """``### The gates that are not pytest``, up to the next heading."""
     lines = CONTRIBUTING.read_text(encoding="utf-8").splitlines()
@@ -164,7 +245,11 @@ def _named_in(section_text: str) -> set[str]:
     return set(re.findall(r"tools/(\w+)\.py", section_text))
 
 
-def test_the_parser_found_something_to_check(roster, section):
+def _named_workflow_in(section_text: str) -> set[str]:
+    return set(WORKFLOW_GATE_MARKER.findall(section_text))
+
+
+def test_the_parsers_found_something_to_check(roster, workflow_roster, section):
     """The check every other test here depends on.
 
     A regex that matches nothing reports no drift, which is also what a repo in
@@ -186,6 +271,14 @@ def test_the_parser_found_something_to_check(roster, section):
     assert len(_named_in(section)) >= 3, (
         "the section was located but names almost no tools/*.py scripts, so the "
         "reverse check below has nothing to compare against"
+    )
+    assert workflow_roster == set(WORKFLOW_GATE_SIGNATURES), (
+        "the workflow-native parser did not find all eight known command shapes; "
+        f"found {sorted(workflow_roster)}"
+    )
+    assert len(_named_workflow_in(section)) >= 8, (
+        "the section names fewer than eight workflow-native gates, so its second "
+        "reverse check would be nearly vacuous"
     )
 
 
@@ -255,35 +348,62 @@ def test_every_gate_contributing_names_is_really_run(roster, section):
     )
 
 
-def test_the_section_still_states_a_count(section):
-    """"Four more checks" is the sentence that was wrong. Keep it countable.
-
-    A count claim rewritten out of existence is not a fix: it removes the
-    statement a reader uses to know whether they have run everything. If the
-    prose genuinely no longer counts anything, this test should be changed
-    deliberately rather than pass by finding nothing to read.
-    """
-    found = [pattern.search(section) for pattern in COUNT_CLAIMS]
-    assert any(found), (
-        f"no countable claim left in {HEADING!r}. This test locks the sentence that "
-        "once said two gates ran outside pytest while four did. If it was reworded, "
-        "point COUNT_CLAIMS at the new wording."
+def test_every_workflow_native_gate_is_in_the_contributing_roster(
+    workflow_roster, section
+):
+    """Forward for gates that do not have a ``tools/*.py`` filename."""
+    undocumented = sorted(workflow_roster - _named_workflow_in(section))
+    assert undocumented == [], (
+        "CI rejects repository content with these workflow-native gates, but "
+        "CONTRIBUTING never names them:\n  "
+        + "\n  ".join(undocumented)
+        + f"\n\nAdd each to {HEADING!r}, including its `workflow-gate:<id>` marker "
+        "and what a red result means."
     )
 
 
-@pytest.mark.parametrize("pattern", COUNT_CLAIMS, ids=["opening-sentence", "all-N-guard"])
-def test_the_stated_count_matches_the_roster(pattern, roster, section):
+def test_every_workflow_native_gate_contributing_names_is_really_run(
+    workflow_roster, section
+):
+    """Reverse for workflow-native checks whose implementation was dropped."""
+    phantom = sorted(_named_workflow_in(section) - workflow_roster)
+    assert phantom == [], (
+        f"{HEADING!r} tells contributors about workflow-native gates no longer "
+        "recognized in ci.yml:\n  "
+        + "\n  ".join(phantom)
+        + "\n\nIf the implementation changed, update WORKFLOW_GATE_SIGNATURES; "
+        "if CI dropped the gate, remove the roster entry."
+    )
+
+
+def _assert_count(pattern: re.Pattern[str], expected: int, section: str, label: str) -> None:
     match = pattern.search(section)
-    if match is None:
-        pytest.skip("this phrasing is not present; test_the_section_still_states_a_count "
-                    "fails if none of them is")
+    assert match is not None, (
+        f"{HEADING!r} no longer states a count for {label}. A count rewritten out "
+        "of existence cannot drift, but it also stops telling contributors whether "
+        "they ran everything."
+    )
     word = match.group(1).lower()
     assert word in NUMBER_WORDS, (
         f"{match.group(0)!r} does not state a number this test can read. Write the "
         f"count as a word ({', '.join(sorted(NUMBER_WORDS))}) so it stays checkable."
     )
-    assert NUMBER_WORDS[word] == len(roster), (
-        f"CONTRIBUTING says {match.group(0)!r}, but ci.yml runs {len(roster)} gates "
-        f"outside pytest: {', '.join(sorted(roster))}.\n\n"
-        "This exact sentence has been wrong before -- it said two while four ran."
+    assert NUMBER_WORDS[word] == expected, (
+        f"CONTRIBUTING says {match.group(0)!r}, but ci.yml exposes {expected} "
+        f"{label}. This is a roster drift, not a wording-only failure."
+    )
+
+
+def test_the_python_gate_count_matches_the_python_roster(roster, section):
+    """"Four Python-script gates" replaces the sentence that once said two."""
+    _assert_count(PYTHON_COUNT, len(roster), section, "Python-script gates")
+
+
+def test_the_workflow_native_count_matches_its_roster(workflow_roster, section):
+    """"Eight workflow-native gates" keeps the newly documented half countable."""
+    _assert_count(
+        WORKFLOW_COUNT,
+        len(workflow_roster),
+        section,
+        "workflow-native gates",
     )

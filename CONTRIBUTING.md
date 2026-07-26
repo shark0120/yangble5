@@ -102,8 +102,14 @@ you push.
 
 ### The gates that are not pytest
 
-Four more checks run outside pytest, and all four guard what the project *says* rather than what
-it does. Three are offline. The first:
+`pytest -q` is not the whole pull-request contract. The remaining content checks have two
+different shapes, so this section keeps two rosters instead of pretending every gate is a Python
+file.
+
+#### Python-file gates
+
+Four Python-script gates run outside pytest, and all four guard what the project *says* rather
+than what it does. Three are offline. The first:
 
 ```sh
 python tools/sitecheck.py --self-test   # the checker proves it can still go red
@@ -151,15 +157,42 @@ with the **known, enumerated** transformations applied and fails on anything els
 failure away as "just the CDN" without reading which transformation it could not account for; that
 is the whole signal.
 
-That list of four is checked, not maintained by hope. `tests/test_contributing_gates.py` reads
-every `tools/*.py` invocation out of `ci.yml`, drops the `--help` probes that only prove a script
-starts, and fails if the result differs from what this section names - in either direction, and
-including the count in the sentence above. It exists because this section said **two** while CI
-ran four, and the instructive part is that the sentence was *correct when it was written*: two
-gates was the truth until `honesty_gate.py` and then `name_guard.py` landed, and neither commit
-had any reason to open this file. Adding a gate is one `run:` line; the prose went stale 35
-commits before anyone noticed. If you add a gate and that test goes red, the red *is* the
-reminder - add it here.
+That Python list of four is checked, not maintained by hope. `tests/test_contributing_gates.py`
+reads every `tools/*.py` invocation out of `ci.yml`, drops the `--help` probes that only prove a
+script starts, and fails if the result differs from what this section names - in either direction,
+and including the count in the sentence above. It exists because this section said **two** while
+CI ran four, and the instructive part is that the sentence was *correct when it was written*: two
+gates was the truth until `honesty_gate.py` and then `name_guard.py` landed, and neither commit had
+any reason to open this file. Adding a gate is one `run:` line; the prose went stale 35 commits
+before anyone noticed.
+
+#### Workflow-native content gates
+
+Eight workflow-native gates also reject pull requests, but none has a `tools/*.py` filename that
+the roster above can discover:
+
+* `workflow-gate:stdlib-import-audit` - an AST walk over every Python file under `tools/` and
+  `byok/` rejects a non-standard-library import. It lives in a `python` heredoc so it can run on a
+  deliberately bare interpreter.
+* `workflow-gate:shell-syntax` - `git ls-files '*.sh'` followed by `bash -n` rejects a syntax error
+  in any tracked shell script, including scripts no test executes.
+* `workflow-gate:powershell-syntax` - `git ls-files '*.ps1'` followed by PowerShell's
+  `Parser::ParseFile` does the same for every tracked PowerShell script.
+* `workflow-gate:workflow-metadata` - a `yaml.safe_load` heredoc rejects disagreement between the
+  Python matrix, `requires-python`, classifiers and README badge, or a malformed workflow step.
+* `workflow-gate:installer-digests` - `sha256sum -c` rejects a published top-level `site/` payload
+  without a sidecar, an orphan sidecar, or a sidecar whose bytes no longer match.
+* `workflow-gate:secret-scan` - `git grep -nIE` rejects credential-shaped strings and operator
+  paths after the explicit fixture filter. The pattern has one authoritative copy in `ci.yml`.
+* `workflow-gate:reserved-email-scan` - a second `git grep` rejects committed e-mail addresses
+  outside reserved or documented fixture domains.
+* `workflow-gate:ip-allowlist-scan` - dotted-quad extraction plus `comm` rejects a public address
+  absent from `.github/ip-allowlist.txt` and rejects an allow-list entry no tracked file uses.
+
+Those eight identifiers are machine-readable anchors, not decorative labels. The same test derives
+each gate from two executable signatures in `ci.yml` rather than trusting its step name, then
+compares the derived and documented sets in both directions and locks the count above. If half a
+signature changes, the parser fails loudly.
 
 If you touched a shell or PowerShell script, the `offline-self-checks` job is worth reproducing
 too. It parses every `*.sh` with `bash -n` and every `*.ps1` with the PowerShell parser, then runs
