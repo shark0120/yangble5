@@ -190,6 +190,11 @@ is discoverable and unambiguous through HTTP alone.
 
 ### Fixed
 
+- **Unknown but well-formed key IDs no longer skip password hashing.** The gateway now verifies
+  them against a fixed in-memory dummy credential, using the configured KDF in the worker pool,
+  before returning the same generic `401`. This removes the cheaper missing-row branch that could
+  otherwise reveal whether a candidate public key ID exists through repeated timing measurements.
+
 - **BYOK stored other people's provider credentials in plaintext on any deployment that
   followed the documentation.** `BYOK_ENABLED` defaults to `true`, and `BYOK_ENCRYPTION_KEY`
   appeared in `gateway/` and `tests/` and nowhere else — not in `deploy/.env.example`, not in

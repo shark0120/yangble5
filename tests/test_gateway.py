@@ -24,6 +24,7 @@ import yaml
 from fastapi.testclient import TestClient
 from starlette.requests import Request as StarletteRequest
 
+import gateway.app as gateway_app
 from gateway import __version__
 from gateway.app import (
     MAX_REISSUES_PER_MACHINE_PER_DAY,
@@ -858,6 +859,48 @@ def test_unauthenticated_requests_are_refused(gw):
     assert gw.client.post(
         "/v1/messages", headers={"Authorization": "Bearer nonsense"}, json={}
     ).status_code == 401
+
+
+def test_unknown_key_id_pays_the_dummy_kdf_in_a_worker(build, monkeypatch):
+    """The missing-row branch must not be cheaper than a real key's bad secret.
+
+    Wall-clock comparisons are too noisy to be a useful regression test.  This
+    instead proves the structural contract: the verifier receives the dummy
+    state through ``run_in_threadpool``.  Returning True also proves the dummy
+    digest can never authenticate a request.
+    """
+    gw = build()
+    state = gw.app.state.gateway
+    verifier_calls = []
+    threaded_functions = []
+    real_run_in_threadpool = gateway_app.run_in_threadpool
+
+    def recording_verifier(*args):
+        verifier_calls.append(args)
+        return True
+
+    async def recording_threadpool(function, *args, **kwargs):
+        threaded_functions.append(function)
+        return await real_run_in_threadpool(function, *args, **kwargs)
+
+    monkeypatch.setattr(gateway_app, "verify_secret", recording_verifier)
+    monkeypatch.setattr(gateway_app, "run_in_threadpool", recording_threadpool)
+
+    secret = "unknown-secret"
+    response = gw.call(f"yb5_{'0' * 16}_{secret}")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["type"] == "authentication_error"
+    assert verifier_calls == [
+        (
+            secret,
+            state.auth_dummy_digest,
+            state.auth_dummy_salt,
+            state.auth_dummy_scheme,
+            gw.settings.key_pepper,
+        )
+    ]
+    assert threaded_functions.count(recording_verifier) == 1
 
 
 def test_suspended_key_is_refused_immediately(gw):

@@ -79,6 +79,7 @@ from .storage import (
     RegistrationCapError,
     Storage,
     day_key,
+    hash_secret,
     month_key,
     normalize_machine_id,
     parse_key,
@@ -99,6 +100,13 @@ __all__ = ["GatewayState", "create_app"]
 logger = logging.getLogger("yangble5.gateway")
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+# A well-formed key whose public id misses the database must still pay the KDF
+# cost of a wrong secret for an existing key.  The digest is derived once per
+# app from fixed dummy material and the configured scheme/pepper, then kept only
+# in memory; no dummy row or usable credential is ever created.
+_AUTH_DUMMY_MATERIAL = "yangble5-auth-dummy-never-issued"
+_AUTH_DUMMY_SALT = bytes.fromhex("ef1d984a53a5f903b3f5c8c6fb291a70")
 
 # The engine paths this gateway is willing to expose. An allowlist, not a
 # catch-all `/{path:path}` route: the engine also serves a management API, and a
@@ -963,6 +971,16 @@ class GatewayState:
             settings.auth_fail_lockout_threshold, settings.auth_fail_lockout_seconds
         )
         self.auth_cache = AuthCache(settings.auth_cache_ttl_seconds)
+        (
+            self.auth_dummy_digest,
+            self.auth_dummy_salt,
+            self.auth_dummy_scheme,
+        ) = hash_secret(
+            _AUTH_DUMMY_MATERIAL,
+            scheme=settings.key_hash_scheme,
+            pepper=settings.key_pepper,
+            salt=_AUTH_DUMMY_SALT,
+        )
         self.spend = GlobalSpendTracker(storage)
         self.binding_throttle = TimedThrottle()
         self.byok_cipher = ByokCipher(settings.byok_encryption_key)
@@ -1305,6 +1323,18 @@ async def authenticate(request: Request, state: GatewayState) -> AuthContext:
     # suspending or revoking a key takes effect on the caller's next call.
     record = await run_in_threadpool(state.storage.get_key, key_id)
     if record is None:
+        # Do not make the public key_id an existence oracle.  This deliberately
+        # ignores the verifier's result: the dummy credential is not an account.
+        # Keep the CPU-heavy work off the event loop, exactly like the real-key
+        # cache-miss path below.
+        await run_in_threadpool(
+            verify_secret,
+            secret,
+            state.auth_dummy_digest,
+            state.auth_dummy_salt,
+            state.auth_dummy_scheme,
+            settings.key_pepper,
+        )
         state.auth_backoff.record_failure(ip_hash)
         raise _AuthFailure(_error(401, "authentication_error", "Invalid yangble5 key."))
 
