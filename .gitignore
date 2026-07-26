@@ -8,6 +8,16 @@ config.yaml
 .env.*
 !.env.example
 *secret*
+# ...but the glob above cannot tell a file that CONTAINS secrets from a
+# document ABOUT handling them, and it was silently eating the second kind.
+# deploy/SECRETS_SETUP.md is the guide GO_LIVE.md sends you to before you
+# supply any upstream credential, and the one smoke_test.sh names when it
+# suspects a leak -- so for months every clone of this repo carried four
+# dangling pointers to a page that was never shipped, including one an
+# operator would follow mid-incident. It holds no credential of any kind;
+# CI's own three scans (key shapes, addresses, IPs) run over it like any
+# other tracked file. Negate the narrowest possible path, never the glob.
+!deploy/SECRETS_SETUP.md
 *credential*
 *token*.json
 !package-lock.json

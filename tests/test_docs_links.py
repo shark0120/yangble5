@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import subprocess
 from collections.abc import Iterator
 
 import pytest
@@ -53,7 +54,13 @@ EXTERNAL = ("http://", "https://", "mailto:", "tel:")
 
 
 def markdown_files() -> list[pathlib.Path]:
-    """Every tracked markdown file.
+    """Every markdown file ON DISK -- which is not the same set CI sees.
+
+    The distinction cost a red build. This walks the working tree, so a file
+    that git ignores is visible here and absent from every clone; the first
+    version of this docstring said "tracked" and was wrong, and that word is
+    exactly why the gap went unnoticed. `test_every_linked_file_is_one_a_fresh
+    _clone_will_have` is the test that closes it.
 
     Dot-directories are skipped rather than named: `.pytest_cache` ships its own
     README, exists only on a machine that has run the suite, and would make this
@@ -145,6 +152,47 @@ def hoist_hrefs(line: str) -> str:
     return MD_LINK.sub(replace, line)
 
 
+def shipped_paths() -> set[pathlib.Path] | None:
+    """Every path a fresh clone receives, or None if git cannot be asked.
+
+    One `git ls-files` rather than a `check-ignore` per link: it is a single
+    process, and it catches BOTH ways a file goes missing from a clone -- never
+    added, or added to .gitignore afterwards -- where an ignore check only sees
+    the second.
+
+    The directories are added back deliberately. Git has no directory objects,
+    so `ls-files` cannot report one, but `[the BYOK gateway](byok/)` is a
+    perfectly good link and a clone does get that directory. Checking files
+    alone called every such link broken -- four of them on the first run -- and
+    a gate that reports four false alarms to catch one real defect is a gate
+    somebody switches off, taking the real defect with it. Only directories
+    under ROOT are added: an ancestor of the repository is not something a
+    clone ships.
+    """
+    try:
+        listing = subprocess.run(
+            # S607: `git` off PATH rather than an absolute path, because there
+            # is no portable absolute path for it -- CI runs this on ubuntu and
+            # on windows. The argv is a fixed literal and shell=False, so there
+            # is nothing here an input could steer.
+            ["git", "ls-files", "-z"],  # noqa: S607
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            timeout=60,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    root = ROOT.resolve()
+    files = {(ROOT / name).resolve() for name in listing.decode("utf-8").split("\0") if name}
+    return files | {
+        parent
+        for path in files
+        for parent in path.parents
+        if parent == root or root in parent.parents
+    }
+
+
 # ── the three checkers ─────────────────────────────────────────────────────
 
 
@@ -213,6 +261,45 @@ def test_there_are_markdown_files_to_check():
 
 def test_every_relative_link_points_at_a_file_that_exists():
     problems = [problem for path in markdown_files() for problem in broken_links(path)]
+    assert problems == [], "\n".join(problems)
+
+
+def test_every_linked_file_is_one_a_fresh_clone_will_have():
+    """A link can resolve on the author's disk and be broken for everyone else.
+
+    That is not hypothetical. `.gitignore` carried `*secret*` to keep secret
+    FILES out, and it also swallowed `deploy/SECRETS_SETUP.md` -- the guide
+    GO_LIVE.md sends you to before you hand over an upstream credential, and the
+    one smoke_test.sh names when it suspects a leak. It sat on the author's disk
+    for months, so every local run of the test above was green while four
+    pointers dangled in every clone, including one an operator would follow
+    mid-incident.
+
+    The test above cannot see this, because it asks the filesystem. This one
+    asks git. It is a no-op in CI -- a checkout has nothing untracked to find --
+    and that is the point: it exists to fail HERE, before the push, on the one
+    machine where the two answers can differ.
+    """
+    tracked = shipped_paths()
+    if tracked is None:
+        pytest.skip("no usable git checkout; a clone cannot be simulated")
+    assert tracked, "git reported no tracked files, so this test would prove nothing"
+
+    problems = []
+    for path in markdown_files():
+        if path.resolve() not in tracked:
+            continue  # a doc that does not ship cannot mislead a reader of the repo
+        for lineno, line in prose_lines(path):
+            for match in MD_LINK.finditer(INLINE_CODE.sub("``", line)):
+                target = match.group(2)
+                if not target or target.startswith(EXTERNAL):
+                    continue
+                found = resolve(path, target)
+                if found is not None and found.resolve() not in tracked:
+                    problems.append(
+                        f"{label(path)}:{lineno}: {target} exists here but is not in the "
+                        f"repository, so this link is broken in every clone"
+                    )
     assert problems == [], "\n".join(problems)
 
 
