@@ -660,11 +660,20 @@ yangble5/
 │  │                             the measurement record. Self-tests before it certifies anything
 │  ├─ honesty_gate.py            static gate: fails CI on an over-claim (a skill/hit-rate mix-up,
 │  │                             a borrowed shock number) so the repo cannot quietly oversell
+│  ├─ name_guard.py              static gate: a retired name stays retired -- it reads every
+│  │                             tracked file of any type, and inside published archives
 │  └─ drift_check.py             is the site that is SERVED the site that is in this repo?
 │                                compares against the repo copy with known edge transforms applied
+├─ evidence/
+│  └─ run-749k-20260721.jsonl    the recorded run the headline figure is computed from;
+│                                replay it through cache_bench.py with no API key
+├─ examples/
+│  └─ cache_guard/               a good prompt and a cache-breaking one, and the cost
+│                                difference between them
 ├─ byok/                         bring your own key: one script that writes a correct engine
 │  ├─ setup.py                   config against YOUR upstream account, on your own machine
-│  └─ config.template.yaml       the routing + 1:1 alias block it renders
+│  ├─ config.template.yaml       the routing + 1:1 alias block it renders
+│  └─ README.md                  start here -- what BYOK is, and what it is not (zh-TW)
 ├─ gateway/                      optional FastAPI edge: key auth, registration, quotas,
 │  ├─ config.py                  hard spend caps. Turning this on makes you an operator.
 │  └─ .env.example               every gateway setting, bare names, placeholders only
@@ -688,6 +697,7 @@ yangble5/
    ├─ BENCHMARK.md               methodology precise enough to refute us, incl. every confound
    ├─ COMPARISON.md              vs LiteLLM / OpenRouter / direct API, including where we lose
    ├─ OPERATING_A_PUBLIC_SERVICE.md   spend caps, provider terms, pre-launch checklist
+   ├─ AGENT_INTERVIEW.md         what an install agent may ask the human, and what it may not
    ├─ UPGRADING_ENGINE.md        moving to a newer CLIProxyAPI, and dropping the shim
    ├─ REPO_METADATA.md           description, topics, social-preview copy
    ├─ evidence/

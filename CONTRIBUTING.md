@@ -102,8 +102,8 @@ you push.
 
 ### The gates that are not pytest
 
-Two more checks run outside pytest, and both guard published claims rather than code. The first
-one is offline:
+Four more checks run outside pytest, and all four guard what the project *says* rather than what
+it does. Three are offline. The first:
 
 ```sh
 python tools/sitecheck.py --self-test   # the checker proves it can still go red
@@ -117,7 +117,27 @@ than quietly living outside the guard - `--coverage` prints that classification 
 prints what was actually examined, because "0 problems" is also what a checker that read nothing
 says.
 
-The second needs a network, and its own `--help` says it has to be run from outside the origin
+The other two offline gates read prose instead of figures, and they read different amounts of the
+repository on purpose:
+
+```sh
+python tools/honesty_gate.py --root .   # the disclosure discipline, machine-enforced
+python tools/name_guard.py --root .     # a retired name stays retired
+```
+
+`honesty_gate.py` reads only what the project publishes (`.md`, `.html`, `.txt`) and fails on the
+two ways this repo could become the thing it criticises: the bundled skill's stable-prefix ratio
+described as a cache-hit rate, and the borrowed Bedrock-bill shock figure. If you try to write
+that figure into a doc in order to *explain* this rule, the gate will stop you, which is the
+intended answer: the project does not get to spend other people's outrage, not even as an
+example. `name_guard.py` reads
+**every tracked file of any type**, and expands published archives to read their members, because
+a name retired for colliding with an AI vendor's model name is as unwelcome in a JSON key or an
+nginx comment as in a sentence — and the shipped `.tar.gz` is simultaneously the likeliest place for the old name
+to survive and the one place a byte scan is blind. Its allow-list is two paths, both of them the
+historical record that tells someone holding the old archive what happened to it.
+
+The last one needs a network, and its own `--help` says it has to be run from outside the origin
 host or it proves nothing:
 
 ```sh
