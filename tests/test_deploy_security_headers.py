@@ -382,13 +382,13 @@ BYTE_SENSITIVE = (
     "site/llms.txt",
     "site/sitemap.xml",
     "site/.well-known/security.txt",
-    # The Fable5 release surface, drift-checked byte for byte like the set
+    # The yb5 release surface, drift-checked byte for byte like the set
     # above. The .tar.gz itself is deliberately absent: it is pinned `binary`
     # in .gitattributes, so `eol` resolves to unspecified rather than lf, and
     # that is the correct answer for a file no eol translation may ever touch.
-    "site/fable5/index.html",
-    "site/fable5/FABLE5.md",
-    "site/fable5/fable5-v1.0.0.tar.gz.sha256",
+    "site/skill/index.html",
+    "site/skill/YANGBLE5-SKILL.md",
+    "site/skill/yangble5-skill-v1.0.0.tar.gz.sha256",
 )
 
 

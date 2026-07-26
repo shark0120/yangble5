@@ -67,17 +67,17 @@ PUBLISHED = (
     "llms.txt",
     "sitemap.xml",
     ".well-known/security.txt",
-    # The Fable5 release. FABLE5.md is to the skill what AGENTS.md is to the
+    # The yb5 release. YANGBLE5-SKILL.md is to the skill what AGENTS.md is to the
     # installer — the sheet an agent acts on — and the archive/.sha256 pair is
     # only meaningful when the served bytes are the repository's bytes, so all
     # four are compared like the installers. normalise() is a no-op on bytes
     # that carry no email_off marker, so for the archive this is an exact
     # byte-for-byte comparison — and the `got == raw_local` fallback below
     # already covers a served copy the edge left untouched.
-    "fable5/index.html",
-    "fable5/FABLE5.md",
-    "fable5/fable5-v1.0.0.tar.gz",
-    "fable5/fable5-v1.0.0.tar.gz.sha256",
+    "skill/index.html",
+    "skill/YANGBLE5-SKILL.md",
+    "skill/yangble5-skill-v1.0.0.tar.gz",
+    "skill/yangble5-skill-v1.0.0.tar.gz.sha256",
 )
 
 # robots.txt is PUBLISHED but is deliberately NOT in the list above, and the

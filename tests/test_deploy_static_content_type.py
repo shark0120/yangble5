@@ -56,7 +56,7 @@ TEXT_SUFFIXES = {".html", ".md", ".txt", ".xml", ".sh", ".ps1", ".sha256"}
 # include AND in PART 3d is a red test (see
 # test_declared_binaries_have_an_honest_content_type), so a suffix cannot be
 # waved through by editing this dict alone.  Today it holds exactly one entry:
-# the Fable5 release archive under site/fable5/.
+# the yb5 release archive under site/skill/.
 BINARY_SUFFIXES = {".gz": "application/gzip"}
 
 

@@ -283,12 +283,22 @@ jobs:
       - name: Honesty gate
         # The project's pitch is that its numbers are checkable, not believed.
         # This fails the build on the two ways it would overclaim: calling
-        # fable5's stable-prefix ratio a "cache hit rate", or reviving a borrowed
+        # yb5's stable-prefix ratio a "cache hit rate", or reviving a borrowed
         # $38k Bedrock-bill hook with no source in this repo. It deliberately
         # does NOT police bare headline numbers -- see the tool's docstring for
         # why a regex cannot do that without false-positiving a disciplined repo.
         # tests/test_honesty_gate.py also asserts the repo passes its own gate.
         run: python tools/honesty_gate.py --root .
+
+      - name: Name guard
+        # The skill's previous name collided with an AI vendor's model name and
+        # was withdrawn. Withdrawing a name is one edit; keeping it withdrawn is
+        # a standing obligation, and this is what enforces it -- across every
+        # tracked file of every type, not just the prose the honesty gate reads.
+        # One allow-listed mention survives (the changelog entry that tells a
+        # user holding the old archive what happened to it), and an allow-list
+        # entry that stops matching anything is itself reported.
+        run: python tools/name_guard.py --root .
 
       - name: preflight.sh --self-test
         # Pure address/CIDR/ELF helpers against known inputs. No network, no
@@ -423,6 +433,13 @@ jobs:
     # "check this digest before you pipe the script into a shell". A digest that
     # has drifted from its file does not fail loudly -- it teaches the one user
     # who bothered to check that checking is pointless.
+    #
+    # This job is deliberately top-level only. The skill archive under
+    # site/skill/ has its own digest and its own download page, and it is held
+    # to a stricter rule than "the sidecar matches" by
+    # tests/test_site_skill_archive.py, which also pins the digest printed in
+    # the page prose and the directory layout the page tells readers to verify.
+    # Re-checking it here in bash would add maintenance without adding cover.
     name: site installer digests match their files
     runs-on: ubuntu-latest
     steps:

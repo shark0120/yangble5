@@ -13,9 +13,12 @@ number with no conditions attached.
 So the discipline is a test. CI fails if either of these appears in the prose
 (``.md`` / ``.html`` / ``.txt``) the project publishes:
 
-  1. ``fable5`` and "hit rate" / "cache hit" in the same paragraph. Fable5's
-     stable-prefix ratio is a structural proxy, never a cache-hit rate, and
-     conflating the two is the single easiest way to overclaim.
+  1. The bundled skill (``yb5``, "the yangble5 skill") and "hit rate" / "cache
+     hit" in the same paragraph. The skill's stable-prefix ratio is a structural
+     proxy, never a cache-hit rate, and conflating the two is the single easiest
+     way to overclaim. Note the asymmetry this rule depends on: ``yangble5`` on
+     its own is the proxy stack, whose cache hit rate is measured and may be
+     called one.
   2. A ``$38,000`` / ``$38k`` Bedrock-bill style hook. It is a borrowed number
      with no source in this repo; the project does not get to use other
      people's outrage as evidence.
@@ -46,9 +49,23 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-# Match the model name however it is punctuated -- "fable5", "fable 5",
-# "fable-5", "fable_5". A bare `\s*` let "Fable-5 cache hit rate" slip the gate.
-FABLE5_RE = re.compile(r"fable[\s\-_]*5", re.IGNORECASE)
+# Match the SKILL, and specifically not the project it is named after.
+#
+# The skill is namespaced under the project (`yb5` in code, "the yangble5 skill"
+# in prose) rather than separately branded, which makes this pattern harder than
+# the two names it replaced. Those were distinct words, so matching them was
+# unambiguous. This one shares its stem with `yangble5` -- the proxy stack -- and
+# the proxy stack measures a real, observed cache hit rate on real traffic and
+# says so in a dozen places across this repo. That sentence is the honest claim
+# this whole project is built on. A pattern loose enough to catch `yangble5`
+# alone would fail the build on the truth, and a gate that fires on the truth is
+# one somebody switches off within a week.
+#
+# So the rule needs the qualifier: bare `yangble5` is the proxy and is fine;
+# `yb5` or "yangble5 skill" is the skill and is not. tests/test_honesty_gate.py
+# pins both halves, because getting only one right leaves the gate either blind
+# or intolerable.
+SKILL_RE = re.compile(r"\byb5\b|\byangble5[\s\-]+skill\b", re.IGNORECASE)
 HITRATE_RE = re.compile(r"hit[\s-]?rate|cache[\s-]?hit|命中率", re.IGNORECASE)
 
 # The borrowed "$38,000 Bedrock bill" shock hook, in its currency-anchored forms.
@@ -112,13 +129,15 @@ def scan_text(text: str) -> list[dict[str, object]]:
     """Return honesty violations in a single document's text."""
     violations: list[dict[str, object]] = []
     for idx, para in enumerate(paragraphs(text)):
-        if FABLE5_RE.search(para) and HITRATE_RE.search(para):
+        if SKILL_RE.search(para) and HITRATE_RE.search(para):
             violations.append(
                 {
-                    "kind": "fable5_called_hit_rate",
+                    "kind": "skill_called_hit_rate",
                     "paragraph": idx,
-                    "detail": "fable5 and 'hit rate'/'cache hit' in one paragraph; "
-                    "fable5's stable-prefix ratio is not a cache-hit rate",
+                    "detail": "the skill and 'hit rate'/'cache hit' in one paragraph; "
+                    "the skill's stable-prefix ratio is a structural proxy, not a "
+                    "cache-hit rate (the proxy stack's measured hit rate is a "
+                    "different number and may be described as one)",
                 }
             )
         if BORROWED_HOOK_RE.search(para) or (
@@ -173,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     findings = scan_repo(root)
     if not findings:
-        print("honesty_gate: OK -- no fable5/hit-rate conflation, no borrowed shock number.")
+        print("honesty_gate: OK -- no skill/hit-rate conflation, no borrowed shock number.")
         return 0
 
     print(f"honesty_gate: {len(findings)} violation(s):")
@@ -182,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"      {f['detail']}")
     print(
         "\nThese are the specific ways this project would overclaim about itself. "
-        "Add the missing qualifier, rename the fable5 metric, or drop the borrowed number."
+        "Add the missing qualifier, rename the skill's metric, or drop the borrowed number."
     )
     return 1
 

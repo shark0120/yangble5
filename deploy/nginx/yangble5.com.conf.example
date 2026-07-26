@@ -675,8 +675,8 @@
     # contents of site/ there — index.html, verify.html, install.sh,
     # install.ps1, uninstall.sh, uninstall.ps1, robots.txt, the four .sha256
     # files, the agent-facing set: AGENTS.md, llms.txt, sitemap.xml and
-    # .well-known/security.txt — and the fable5/ directory whole: its
-    # index.html, FABLE5.md, the .tar.gz release archive and that archive's
+    # .well-known/security.txt — and the skill/ directory whole: its
+    # index.html, YANGBLE5-SKILL.md, the .tar.gz release archive and that archive's
     # .sha256, which must always deploy as a pair.
     #
     # AGENTS.md is not optional decoration. The one-liner published on the
@@ -719,8 +719,8 @@
         # Cloudflare on every release.
     }
 
-    # The one binary exception to the text-only webroot: the Fable5 release
-    # archive under /fable5/. Served as text/plain it renders as garbage in a
+    # The one binary exception to the text-only webroot: the yb5 release
+    # archive under /skill/. Served as text/plain it renders as garbage in a
     # browser instead of downloading, so it gets its honest type. Same block
     # as in static-content-type.conf — the test suite asserts the two copies
     # agree — and, exactly like everywhere else, NO add_header in here: one

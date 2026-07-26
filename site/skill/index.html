@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fable5 — 執行協定與評分閘門</title>
-<meta name="description" content="Fable5 是一個給 Claude Code 與 Codex 用的開源 skill:一套固定的執行迴圈加上出貨前的評分閘門。離線、無網路、不需帳號。評分是結構性檢查,PASS 不代表內容為真。">
+<title>yb5 — 執行協定與評分閘門</title>
+<meta name="description" content="yb5 是一個給 Claude Code 與 Codex 用的開源 skill:一套固定的執行迴圈加上出貨前的評分閘門。離線、無網路、不需帳號。評分是結構性檢查,PASS 不代表內容為真。">
 <meta name="color-scheme" content="dark light">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#0a0e14" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-<link rel="canonical" href="https://yangble5.com/fable5/index.html">
+<link rel="canonical" href="https://yangble5.com/skill/index.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0e14'/%3E%3Cpath d='M14 20h8l10 14 10-14h8L37 40v10h-10V40z' fill='%235aa9ff'/%3E%3C/svg%3E">
 <style>
 /* ═══════════════════════════════════════════════════════════════════════════
-   yangble5.com/fable5/ — single-file static page for the Fable5 skill.
+   yangble5.com/skill/ — single-file static page for the yb5 skill.
 
    Constraints, all load-bearing, inherited from the landing page:
      · zero external subresources (no CDN, webfont, image, tracker)
@@ -152,7 +152,7 @@ footer.site{border-top:1px solid var(--line); background:var(--surface-1); paddi
 <header class="site">
   <div class="wrap">
     <a class="brand" href="/">yangble<span>5</span></a>
-    <span class="tagline">Fable5 — 執行協定與評分閘門</span>
+    <span class="tagline">yb5 — 執行協定與評分閘門</span>
     <nav aria-label="主要導覽">
       <a href="#what">這是什麼</a><a href="#download">下載</a><a href="#install">安裝</a><a href="/">回主站</a>
     </nav>
@@ -164,9 +164,9 @@ footer.site{border-top:1px solid var(--line); background:var(--surface-1); paddi
 <section class="hero" id="what">
   <div class="wrap">
     <p class="eyebrow">開源 · MIT · 離線 · 不需帳號</p>
-    <h1>Fable5:先跑完流程,才准出貨。</h1>
+    <h1>yb5:先跑完流程,才准出貨。</h1>
     <p class="lede">
-      Fable5 是一個給 Claude Code 與 Codex 用的 <strong>skill</strong>:它讓 agent
+      yb5 是一個給 Claude Code 與 Codex 用的 <strong>skill</strong>:它讓 agent
       不再「答一次就交卷」,而是走一條固定的執行迴圈,最後過一道評分閘門才能出貨。
       每一條結論都必須標上四態之一:<strong>VERIFIED / SUPPORTED / UNVERIFIED / CONTESTED</strong>。
       閘門不過就升深度重跑;全部腳本離線執行,不連網、不需要任何 API 金鑰。
@@ -188,10 +188,10 @@ CRITIC~EXECUTE &gt; SYNTHESIZE &gt; METACRITIC &gt; GATE &gt; (BUMP | OMEGA | SH
     <p class="eyebrow">下載與核對</p>
     <h2>先對雜湊,再解壓</h2>
     <div class="dl">
-      <h3><a class="dl-file" href="fable5-v1.0.0.tar.gz">fable5-v1.0.0.tar.gz</a></h3>
-      <p class="fine">對應的公告摘要:<a class="dl-file" href="fable5-v1.0.0.tar.gz.sha256">fable5-v1.0.0.tar.gz.sha256</a></p>
+      <h3><a class="dl-file" href="yangble5-skill-v1.0.0.tar.gz">yangble5-skill-v1.0.0.tar.gz</a></h3>
+      <p class="fine">對應的公告摘要:<a class="dl-file" href="yangble5-skill-v1.0.0.tar.gz.sha256">yangble5-skill-v1.0.0.tar.gz.sha256</a></p>
       <p class="sha-line">SHA256(全文,逐字比對):<br>
-        <code>ee1473e759506e5e7a307c221c0521dfe5fa3288b1e9c52c87bbfdb315c6b796</code>
+        <code>bff3216e71a08f26a5b25d32f10966c5aff566a84507db0ebc8774b2e5ddf6dd</code>
       </p>
       <p class="fine">
         摘要跟壓縮檔在同一個網域。這能擋下載壞掉或被攔截的情況,擋不了來源本身被換掉 ——
@@ -209,19 +209,19 @@ CRITIC~EXECUTE &gt; SYNTHESIZE &gt; METACRITIC &gt; GATE &gt; (BUMP | OMEGA | SH
       <li><b>下載</b>上面兩個檔案到同一個資料夾。</li>
       <li><b>核對 SHA256。</b>不符就停,不要解壓。
         <pre class="cmd"># macOS / Linux
-shasum -a 256 -c fable5-v1.0.0.tar.gz.sha256
+shasum -a 256 -c yangble5-skill-v1.0.0.tar.gz.sha256
 
 # Windows PowerShell:算出來的值必須等於 .sha256 檔裡那一行
-Get-FileHash .\fable5-v1.0.0.tar.gz -Algorithm SHA256</pre></li>
-      <li><b>解壓到 skills 目錄。</b>壓縮檔內是一個頂層 <code>fable5/</code> 資料夾。
+Get-FileHash .\yangble5-skill-v1.0.0.tar.gz -Algorithm SHA256</pre></li>
+      <li><b>解壓到 skills 目錄。</b>壓縮檔內是一個頂層 <code>yangble5/</code> 資料夾。
         <pre class="cmd"># Claude Code
-tar -xzf fable5-v1.0.0.tar.gz -C ~/.claude/skills/
+tar -xzf yangble5-skill-v1.0.0.tar.gz -C ~/.claude/skills/
 
 # Codex
-tar -xzf fable5-v1.0.0.tar.gz -C ~/.codex/skills/</pre></li>
-      <li><b>跑 selftest。</b>離線執行,看到 <code>fable5_selftest: PASS</code> 才算裝好。
-        <pre class="cmd">cd ~/.claude/skills/fable5/scripts
-python fable5_selftest.py</pre></li>
+tar -xzf yangble5-skill-v1.0.0.tar.gz -C ~/.codex/skills/</pre></li>
+      <li><b>跑 selftest。</b>離線執行,看到 <code>yb5_selftest: PASS</code> 才算裝好。
+        <pre class="cmd">cd ~/.claude/skills/yangble5/scripts
+python yb5_selftest.py</pre></li>
     </ol>
 
     <div class="claimbox">
@@ -233,7 +233,7 @@ python fable5_selftest.py</pre></li>
     </div>
 
     <p style="margin-top:var(--s-6)">
-      要讓 AI agent 代為安裝?給它 <a href="FABLE5.md">FABLE5.md</a> ——
+      要讓 AI agent 代為安裝?給它 <a href="YANGBLE5-SKILL.md">YANGBLE5-SKILL.md</a> ——
       那份文件會要求它下載、核對雜湊、先列出壓縮檔內容給你看、問過你才安裝。
     </p>
   </div>

@@ -17,6 +17,53 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Changed — the bundled skill is renamed
+
+- **The skill published at `/fable5/` is withdrawn and republished at `/skill/`.** The old name
+  collided with an AI vendor's model name, which is a trademark risk this project has no reason to
+  carry and no standing to argue about. Nothing about the skill's behaviour changed: the rename is
+  mechanical — the install directory (`~/.claude/skills/yangble5/`), every bundled script filename
+  (`yb5_*.py`), the archive (`yangble5-skill-v1.0.0.tar.gz`) and the agent-facing install sheet
+  (`YANGBLE5-SKILL.md`). The internal integrity pins were regenerated because renaming the files
+  changes their digests, and the bundled offline self-test passes against the regenerated pins.
+
+  **If you already downloaded the withdrawn archive**, it still works — nothing in it was unsafe,
+  and this is a naming change, not a security advisory. But it is no longer published, its URL now
+  404s, and it will not receive updates. Re-download from `https://yangble5.com/skill/` and delete
+  the old skill directory; the archive's digest is published beside it as before.
+
+  **The replacement is not a new brand, and that is deliberate.** Before settling on this, eight
+  candidate names were checked against npm, PyPI and GitHub; every one of them was already an
+  actively-developed AI-agent tool doing roughly what this skill does — evidence gates, verifier
+  harnesses, skills auditors. That is not bad luck eight times. The evocative vocabulary around
+  *evidence*, *verification* and *assaying* is being drawn from by everyone building in this space
+  right now, and a ninth dictionary word would have been taken too. Picking one would have traded a
+  model-name collision for a same-category product collision, which is the worse of the two. So the
+  skill is namespaced under the project that already owns its name: `yangble5` where the name is
+  seen, `yb5` in code where brevity buys something. There is no new mark to clear.
+
+- **`tools/name_guard.py`** (new CI step) fails the build if the retired name reappears anywhere in
+  the repository — in any tracked file of any type, not just the prose `honesty_gate.py` reads.
+  Withdrawing a name is one edit; keeping it withdrawn is a standing obligation, and the entry
+  above is the single allow-listed exception, because a user holding the old archive has to be able
+  to find out what happened to it. An allow-list entry that stops matching anything is itself
+  reported, so this exception cannot quietly turn into cover for a real one.
+
+  It expands `.tar.gz` artifacts and reads them member by member, which is not a refinement but the
+  point: a gzip stream shares no substring with its input, so a byte scan of the published archive
+  is guaranteed to find nothing no matter what is inside it. That was measured, not assumed — a
+  tarball carrying the old name in both a member path and a file body scanned clean before this
+  existed. The archive is the artifact users extract onto their disk, so it was simultaneously the
+  likeliest place for the name to survive and the only place the gate could not look.
+
+- **`tests/test_site_skill_archive.py`** (new) holds the published archive to everything the
+  download page says about it: that the printed SHA256 is the archive's own, that the sidecar
+  matches, that the single top-level directory is the one both the page and the agent-facing sheet
+  name, and that the selftest path the page tells you to run exists inside. Each of those is an
+  instruction a careful reader follows *before* trusting the file, so a stale one does not read as
+  a typo — it reads as evidence of tampering. Both halves of that had in fact drifted during the
+  rename, and neither was caught by anything until this file existed.
+
 ### Added — measurement you can check without trusting us
 
 The project's claim is that its numbers are reproducible rather than believed. These make that
@@ -38,7 +85,7 @@ silently costing money, and the disclosure discipline is enforced by a test rath
   `examples/cache_guard/`.
 
 - **`tools/honesty_gate.py`** (CI step, and a test that holds the repo to it) fails the build on
-  the two ways this project would overclaim: mislabelling fable5's structural stable-prefix ratio
+  the two ways this project would overclaim: mislabelling the skill's structural stable-prefix ratio
   as a live cache-read metric, or reviving a borrowed five-figure Bedrock-bill shock number with
   no source here. It deliberately does *not* police bare headline numbers — on an
   already-disciplined repo a regex cannot tell a naked claim from a datum, a caveat or a diagram

@@ -140,16 +140,16 @@ EXEMPT: dict[str, str] = {
     "install.sh.sha256": _DIGEST_REASON,
     "uninstall.ps1.sha256": _DIGEST_REASON,
     "uninstall.sh.sha256": _DIGEST_REASON,
-    "fable5/fable5-v1.0.0.tar.gz": (
+    "skill/yangble5-skill-v1.0.0.tar.gz": (
         "a binary release archive, not prose: no text in it is served to a "
         "reader, so there is no sentence or figure here for this guard to "
         "audit. Its integrity is pinned by the .sha256 published beside it, "
-        "and site/fable5/index.html shows that digest in full."
+        "and site/skill/index.html shows that digest in full."
     ),
-    "fable5/fable5-v1.0.0.tar.gz.sha256": (
+    "skill/yangble5-skill-v1.0.0.tar.gz.sha256": (
         "a bare SHA-256 digest and a filename: no prose, no figure, nothing "
         "that could misstate a measurement. It pins the release archive "
-        "published beside it under site/fable5/."
+        "published beside it under site/skill/."
     ),
 }
 
@@ -803,7 +803,7 @@ def check_page(name: str, src: str, used: set[str]) -> list[str]:
     if d.styles != 1:
         problems.append(f"expected exactly 1 <style>, found {d.styles}")
     # At most one, not exactly one. A page with NO inline script pins nothing
-    # in the CSP and cannot go stale there, which is why site/fable5/index.html
+    # in the CSP and cannot go stale there, which is why site/skill/index.html
     # carries zero on purpose. What stays forbidden is a SECOND block: the CSP
     # comments and the recompute recipe in site/README.md all assume one hash
     # per page, and a page that grows an unpinned script is exactly the silent

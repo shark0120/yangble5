@@ -658,7 +658,7 @@ yangble5/
 │  ├─ claude_shim.py             system-role fix for engine < 7.2.93
 │  ├─ sitecheck.py               static gate: every figure published under site/ must trace to
 │  │                             the measurement record. Self-tests before it certifies anything
-│  ├─ honesty_gate.py            static gate: fails CI on an over-claim (a fable5/hit-rate mix-up,
+│  ├─ honesty_gate.py            static gate: fails CI on an over-claim (a skill/hit-rate mix-up,
 │  │                             a borrowed shock number) so the repo cannot quietly oversell
 │  └─ drift_check.py             is the site that is SERVED the site that is in this repo?
 │                                compares against the repo copy with known edge transforms applied
