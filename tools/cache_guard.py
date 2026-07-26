@@ -118,10 +118,21 @@ VOLATILITY_RULES: tuple[Volatility, ...] = (
 def prompt_text(payload: Any) -> str:
     """Extract the cacheable-prefix text from a payload.
 
-    A bare string is used as-is. ``{"prompt": s}`` uses ``s``. An Anthropic-style
-    body contributes its ``system`` text and every message *except the last*
-    (the last is the fresh turn and is allowed to differ). Message content may be
-    a string or a list of ``{"type": "text", "text": ...}`` blocks.
+    Understands the shapes a real client sends, so the same guard runs whichever
+    API a project targets:
+
+    * a bare string, used as-is; ``{"prompt": s}`` uses ``s``.
+    * **Anthropic Messages** / **OpenAI chat.completions**: ``system`` (a string or
+      a list of ``{"type": "text", "text": ...}`` blocks) plus every entry of
+      ``messages`` *except the last* -- the last is the fresh turn and is allowed to
+      differ. An OpenAI chat.completions body carries its system prompt as a
+      ``role: "system"`` entry inside ``messages``, which the same loop folds in.
+    * **OpenAI Responses**: ``instructions`` is the system prompt; ``input`` is the
+      user turn(s) -- a list whose last entry is the fresh turn (folded like
+      ``messages``), or a bare string, which is itself the single fresh turn and so
+      contributes nothing to the stable prefix.
+
+    Content may be a string or a list of ``{"type": "text", "text": ...}`` blocks.
     """
     if isinstance(payload, str):
         return payload
@@ -140,6 +151,17 @@ def prompt_text(payload: Any) -> str:
         for message in messages[:-1]:  # exclude the fresh final turn
             if isinstance(message, dict):
                 parts.append(_blocks_text(message.get("content")))
+    # OpenAI Responses API shape.
+    instructions = payload.get("instructions")
+    if isinstance(instructions, str):
+        parts.append(instructions)
+    responses_input = payload.get("input")
+    if isinstance(responses_input, list) and responses_input:
+        for item in responses_input[:-1]:  # last is the fresh turn, as with messages
+            if isinstance(item, dict):
+                parts.append(_blocks_text(item.get("content")))
+            elif isinstance(item, str):
+                parts.append(item)
     return "\n".join(p for p in parts if p)
 
 

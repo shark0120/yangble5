@@ -38,6 +38,26 @@ delta per 1,000 requests. Every dollar figure is an estimate from the byte diff
 with its assumptions printed on the same line; the tool never invents a request
 volume or claims a measured saving.
 
+## Whichever API you target
+
+The same guard reads the payload shapes a real client sends, so it drops into a CI
+that talks to any of these — you feed it what your app already serializes:
+
+* **Anthropic Messages** — `system` plus `messages` (the files above).
+* **OpenAI chat.completions** — the system prompt is a `role: "system"` entry
+  inside `messages`; the guard folds it in the same way.
+* **OpenAI Responses** — `instructions` is the system prompt and `input` is the
+  turn(s). See [`openai_responses.jsonl`](openai_responses.jsonl):
+
+  ```bash
+  python tools/cache_guard.py scan examples/cache_guard/openai_responses.jsonl
+  ```
+
+In every shape the *last* turn is treated as the fresh, allowed-to-vary input and
+excluded from the cacheable prefix — put your stable content in `system` /
+`instructions` / earlier turns, exactly where a real client would to get a cache
+hit. A bare-string `prompt` or Responses `input` is scanned as-is.
+
 ## Use it as a CI gate
 
 Fail the build when a pull request makes a prompt cache-hostile. Point it at

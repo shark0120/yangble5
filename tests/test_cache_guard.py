@@ -40,6 +40,55 @@ def test_prompt_text_reads_text_blocks():
     assert cache_guard.prompt_text(payload) == "block one"
 
 
+def test_prompt_text_folds_openai_chat_completions_system_message():
+    """OpenAI chat.completions carries the system prompt as a role:system entry
+    inside messages, not a top-level field; the same fold picks it up."""
+    payload = {
+        "model": "gpt-5",
+        "messages": [
+            {"role": "system", "content": "STABLE SYSTEM"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "FRESH QUESTION"},
+        ],
+    }
+    text = cache_guard.prompt_text(payload)
+    assert "STABLE SYSTEM" in text and "old question" in text and "old answer" in text
+    assert "FRESH QUESTION" not in text  # the varying tail is excluded
+
+
+def test_prompt_text_reads_the_openai_responses_shape():
+    """Responses API: `instructions` is the system prompt, `input` the turns."""
+    payload = {
+        "model": "gpt-5",
+        "instructions": "STABLE INSTRUCTIONS",
+        "input": [
+            {"role": "user", "content": "old turn"},
+            {"role": "assistant", "content": "old reply"},
+            {"role": "user", "content": "FRESH TURN"},
+        ],
+    }
+    text = cache_guard.prompt_text(payload)
+    assert "STABLE INSTRUCTIONS" in text and "old turn" in text and "old reply" in text
+    assert "FRESH TURN" not in text
+
+
+def test_prompt_text_bare_string_responses_input_is_the_fresh_turn():
+    """A bare-string `input` is the single fresh turn, so only `instructions` is
+    part of the stable prefix -- mirroring a lone final message."""
+    payload = {"instructions": "STABLE", "input": "the user's one-off question"}
+    assert cache_guard.prompt_text(payload) == "STABLE"
+
+
+def test_scan_flags_a_timestamp_in_openai_responses_instructions():
+    """End to end: the guard runs on a Responses payload, not just Anthropic."""
+    report = cache_guard.scan_payloads(
+        [{"instructions": "Reviewer. Generated 2026-07-25T03:14:07Z.", "input": "go"}]
+    )
+    assert not report.clean
+    assert report.high >= 1
+
+
 # --- pure helpers -----------------------------------------------------------
 
 
