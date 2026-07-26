@@ -68,8 +68,8 @@ would drag that into the roster and fail immediately.
 The workflow-native parser recognizes pairs of command/code signatures, not
 step names.  Renaming a step therefore does not erase the gate, and seeing only
 half of a signature pair is a hard failure rather than a silent omission.  A
-wholly new shape is deliberately outside this parser; B25 is the queued
-step-count inventory that closes that separate hole.
+wholly new shape is deliberately outside this parser;
+``test_ci_step_inventory.py`` closes that separate hole with per-job counts.
 
 What this file deliberately does **not** lock: the Python-gate subsection says
 three of its four gates are offline and the last needs a network.  That split is

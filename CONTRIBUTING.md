@@ -194,6 +194,13 @@ each gate from two executable signatures in `ci.yml` rather than trusting its st
 compares the derived and documented sets in both directions and locks the count above. If half a
 signature changes, the parser fails loudly.
 
+There is one unavoidable blind spot: a wholly new command shape has no signature yet. To keep that
+from passing as an invisible green, `tests/test_ci_step_inventory.py` pins both the total and named
+step count of every job, and rejects a new job too. It deliberately does **not** pin step wording,
+so renaming a step is harmless. If its count tripwire goes red, classify the change: a repository
+gate belongs in the roster above; setup or reporting belongs in the inventory with the reason for
+adding it stated in the change.
+
 If you touched a shell or PowerShell script, the `offline-self-checks` job is worth reproducing
 too. It parses every `*.sh` with `bash -n` and every `*.ps1` with the PowerShell parser, then runs
 the paths a user reaches *before* anything is installed - the ones nothing else exercises:
