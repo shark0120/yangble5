@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from gateway.app import create_app
 from gateway.config import Settings
 from gateway.storage import Storage, parse_key
+from gateway.upstream import UpstreamError
 
 ENGINE_KEY = "sk-engine-test-only-not-a-real-key"
 ADMIN_KEY = "admin-test-only-not-a-real-key"
@@ -66,13 +67,26 @@ class FakeResponse:
 
 
 class FakeUpstream:
-    """Engine stand-in. `gate` lets a test hold requests in flight."""
+    """Engine stand-in. `gate` lets a test hold requests in flight.
+
+    An upstream fails in two ways and this fake could only produce one of them.
+    `status` models "the engine answered, badly". `error` models "the engine did
+    not answer at all" — connection refused, DNS gone, no response headers before
+    the connect timeout — which is a different branch of `_proxy` reached by
+    raising out of the context manager rather than by returning a response.
+
+    That gap was not cosmetic. Every health test below drove its outage through
+    `status`, because `status` was all there was, and the unreachable branch went
+    years without recording a single failure while three tests in this section
+    read as though the property was covered.
+    """
 
     def __init__(self):
         self.status = 200
         self.headers = {"content-type": "application/json"}
         self.chunks: list[bytes] = [b'{"ok":true}']
         self.calls: list[dict] = []
+        self.error: Exception | None = None
         self.gate: threading.Event | None = None
         self.entered = threading.Semaphore(0)
 
@@ -106,6 +120,10 @@ class FakeUpstream:
                     # Block the worker thread TestClient runs this on. Portal
                     # threads are real threads, so this genuinely holds a slot.
                     gate.wait(timeout=30)
+                # After the gate, so a test can hold a request in flight and
+                # then decide it never reaches the engine.
+                if upstream.error:
+                    raise upstream.error
                 return FakeResponse(upstream.status, dict(upstream.headers), list(upstream.chunks))
 
             async def __aexit__(self, *exc):
@@ -372,6 +390,95 @@ def test_pool_status_stops_claiming_capacity_while_the_upstream_refuses(build):
     assert stats["upstream"]["ok"] is False
     assert stats["upstream"]["last_failure_status"] == 429
     assert stats["accepting_requests"] is False
+
+
+def test_an_unreachable_engine_shows_up_on_every_capacity_surface(build):
+    """THE DEFECT: the failure above was recorded, this one was not.
+
+    `_proxy` has two failure branches. The one for "the engine answered with a
+    bad status" calls `record_failure`. The one for `UpstreamError` -- connection
+    refused, DNS gone, TLS failed, no response headers before the connect timeout
+    -- returned 502 to the caller and told the rest of the gateway nothing. So the
+    single worst outage this service can have, the engine being *down* rather than
+    merely unhappy, was the one outage no capacity surface could see.
+
+    The test asserts the three surfaces, NOT the 502. The 502 was always correct
+    and `test_upstream_failure_does_not_leak_internal_detail` already pins it --
+    it asserts the status, the message and the absence of the internal host, and
+    it sailed through this defect for exactly that reason. What a caller is told
+    about their own request and what the service publishes about itself are
+    different claims, and only the second one was wrong.
+    """
+    gw = build(GLOBAL_MONTHLY_USD_BUDGET=100.0, DAILY_TOKEN_BUDGET=NO_KEY_LIMIT,
+               UPSTREAM_HEALTH_FAILURE_THRESHOLD=2, RATE_LIMIT_RPM=0)
+    key = gw.new_key()
+    assert gw.client.get("/pool/status").json()["accepting_requests"] is True
+
+    gw.upstream.error = UpstreamError("ConnectError: [Errno 111] Connection refused")
+    for _ in range(2):
+        assert gw.call(key).status_code == 502
+
+    body = gw.client.get("/pool/status").json()
+    assert body["accepting_requests"] is False, (
+        "the engine refused the connection twice and the public widget still "
+        "invites people in"
+    )
+    assert body["remaining_pct"] == 0.0, (
+        "an unreachable engine writes no usage row, so the budget ratio cannot "
+        "move; reporting it raw means reporting 100% during a total outage"
+    )
+
+    stats = gw.client.get(
+        "/admin/stats", headers={"Authorization": f"Bearer {ADMIN_KEY}"}
+    ).json()
+    assert stats["upstream"]["ok"] is False
+    assert stats["upstream"]["recent_failures"] == 2
+    # 502 is this gateway's own answer, not the engine's -- the engine never sent
+    # one. It is reported rather than 0 because this field renders raw into the
+    # operator's dashboard and 0 is not a status anybody can look up.
+    assert stats["upstream"]["last_failure_status"] == 502
+    assert stats["accepting_requests"] is False
+
+    # The surface that does lasting damage: registration still succeeds by
+    # design, because attaching BYOK needs a key to attach to -- but the key must
+    # not go out stamped as working. An installer that stores a key described as
+    # `usable_now` and reports success has lied to its user on our behalf.
+    issued = gw.register(email="arriving-mid-outage@b.com")
+    assert issued.status_code == 201, "registration is deliberately not gated on this"
+    handed_out = issued.json()
+    assert handed_out["usable_now"] is False, (
+        "the key is valid and every request it makes will be refused; saying so "
+        "is the whole reason this field exists"
+    )
+    assert handed_out["not_usable_reason"] == "upstream_unavailable"
+    assert handed_out["byok_instructions"]["available"] is True
+
+
+def test_an_unreachable_engine_counts_even_when_the_caller_was_on_byok(build):
+    """The deliberate difference from `test_a_byok_failure_does_not_mark_...`.
+
+    That test is about a *status*: the engine answered, and 403 is a verdict on
+    the caller's own credential, which says nothing about the operator's account.
+    This one is about a *transport failure*: nothing answered, so no credential
+    was evaluated at all. BYOK and shared-pool traffic go through the same
+    `httpx.AsyncClient` at the same base URL and differ only by the header
+    injected downstream, so an engine that cannot be reached by a BYOK request
+    cannot be reached by anyone.
+
+    Both tests are here so that copying the `not byok` guard from the intercept
+    branch onto the unreachable branch -- which looks like consistency -- goes
+    red instead of quietly restoring the outage-masking.
+    """
+    gw = build(UPSTREAM_HEALTH_FAILURE_THRESHOLD=1, RATE_LIMIT_RPM=0)
+    key = gw.new_key()
+    assert gw.attach_byok(key).status_code == 201
+
+    gw.upstream.error = UpstreamError("ConnectError")
+    assert gw.call(key).status_code == 502
+    assert gw.client.get("/pool/status").json()["accepting_requests"] is False, (
+        "the host every request shares did not answer; whose credential was in "
+        "the header is not what that measures"
+    )
 
 
 def test_one_success_clears_the_outage_signal(build):

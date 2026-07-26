@@ -2928,6 +2928,32 @@ async def _proxy(
     except UpstreamError as exc:
         await stack.aclose()
         release_once()
+        # AN ENGINE THAT NEVER ANSWERS IS AN OUTAGE, AND MUST BE COUNTED AS ONE.
+        #
+        # This branch used to record nothing. Every other capacity surface reads
+        # `upstream_health`, so a dead engine -- connection refused, DNS gone,
+        # TLS failed, no response headers before the connect timeout -- left
+        # `/pool/status` answering `accepting_requests: true` with
+        # `remaining_pct: 1.0`, `/admin/stats` reporting upstream `ok`, and
+        # `POST /auth/register` handing out keys stamped `usable_now: true`. That
+        # is the exact outage-masking the class below was written to stop; it was
+        # only ever wired to the OTHER way an upstream fails.
+        #
+        # NOT gated on `not byok`, and that is the one real difference from the
+        # sibling call in the intercept branch. There the engine answered and the
+        # status is a verdict on ONE credential, so a BYOK 403 says nothing about
+        # the operator's account. Here nothing answered and no credential was
+        # ever evaluated: BYOK and pool traffic go through the same
+        # `httpx.AsyncClient` at the same base URL, differing only by the header
+        # injected downstream. Whoever was calling, the host every request shares
+        # is unreachable.
+        #
+        # 502 rather than 0: there is no upstream status to report, and
+        # `last_failure_status` renders raw into /admin/stats, where 0 is not
+        # something an operator can look up. 502 is what this exchange answered.
+        # The `upstream.unreachable` log line below is what distinguishes "the
+        # engine said 502" from "the engine said nothing".
+        state.upstream_health.record_failure(502)
         _log(
             logging.ERROR, "upstream.unreachable",
             key_id=ctx.key_id, endpoint=path, error=str(exc),
