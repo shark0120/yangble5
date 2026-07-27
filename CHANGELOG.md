@@ -17,6 +17,15 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Changed
+
+- **GitHub-hosted CI and the reusable cache-guard action now use
+  `actions/checkout@v7` and `actions/setup-python@v7`.** The ten-cell Linux/Windows,
+  Python 3.10–3.14 matrix is unchanged. Tests now lock all eight workflow checkout
+  steps to their intended history depth: `test` and `live-site-drift` keep
+  `fetch-depth: 0` for retired-path discovery, while the other six intentionally
+  retain checkout's shallow default.
+
 ## [0.2.0] - 2026-07-27
 
 ### Added — machine-enforced documentation locks

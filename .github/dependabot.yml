@@ -56,9 +56,11 @@ updates:
         update-types: ["minor", "patch"]
 
   # ---- GitHub Actions ------------------------------------------------------
-  # The workflows use pinned major tags (actions/checkout@v4). Left unattended
+  # The workflows and composite action use pinned major tags. Left unattended
   # those quietly rot, and a stale action is a supply-chain surface on a
-  # repository whose CI holds no secrets but whose badge people trust.
+  # repository whose CI holds no secrets but whose badge people trust. A major
+  # bump lands alone so its runner and checkout semantics can be verified before
+  # routine dependency changes make a red build ambiguous.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

@@ -36,16 +36,33 @@ def test_real_history_derives_a_nonempty_retired_roster_without_source_literals(
 def test_ci_jobs_that_execute_or_test_history_discovery_fetch_full_history():
     workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
-    for job_name in ("test", "live-site-drift"):
+    expected_depths = {
+        "test": 0,
+        "cache-guard-action": None,
+        "tools-are-stdlib-only": None,
+        "offline-self-checks": None,
+        "installer-digests": None,
+        "published-numbers": None,
+        "no-secrets": None,
+        "live-site-drift": 0,
+    }
+    actual_depths = {}
+    for job_name, job in jobs.items():
         checkouts = [
             step
-            for step in jobs[job_name]["steps"]
-            if step.get("uses") == "actions/checkout@v4"
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
         ]
         assert len(checkouts) == 1, f"{job_name} must have exactly one checkout step"
-        assert checkouts[0].get("with", {}).get("fetch-depth") == 0, (
-            f"{job_name} must fetch complete history for retired-path discovery"
-        )
+        actual_depths[job_name] = checkouts[0].get("with", {}).get("fetch-depth")
+
+    assert actual_depths == expected_depths, (
+        "checkout history depth changed without deciding whether the job needs full history.\n"
+        f"  expected: {expected_depths}\n"
+        f"  actual:   {actual_depths}\n"
+        "`test` and `live-site-drift` execute or test retired-path discovery and must use "
+        "`fetch-depth: 0`; the other jobs intentionally keep checkout's default shallow clone."
+    )
 
 
 def test_shortest_absent_parent_is_derived_from_deleted_paths(monkeypatch):

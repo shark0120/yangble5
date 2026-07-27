@@ -98,3 +98,11 @@ def test_each_inventoried_step_has_one_executable_shape():
                 f"job {job!r} step {index} has executable shapes {shapes}; "
                 "each step must have exactly one of `run` or `uses`"
             )
+
+
+def test_pytest_matrix_still_expands_to_ten_supported_combinations():
+    """An action bump must not silently narrow the advertised Python matrix."""
+    matrix = _jobs()["test"]["strategy"]["matrix"]
+    assert matrix["os"] == ["ubuntu-latest", "windows-latest"]
+    assert matrix["python-version"] == ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    assert len(matrix["os"]) * len(matrix["python-version"]) == 10

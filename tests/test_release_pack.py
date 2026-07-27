@@ -32,12 +32,9 @@ def _pack() -> str:
     return PACK.read_text(encoding="utf-8")
 
 
-def _release_candidate() -> str:
+def _released_020() -> str:
     text = CHANGELOG.read_text(encoding="utf-8")
-    unreleased, remainder = text.split("## [Unreleased]", 1)[1].split(
-        "\n## [0.2.0] - 2026-07-27", 1
-    )
-    assert not unreleased.strip(), "new work belongs under the empty Unreleased heading"
+    remainder = text.split("\n## [0.2.0] - 2026-07-27", 1)[1]
     return remainder.split("\n## [0.1.0]", 1)[0]
 
 
@@ -58,10 +55,10 @@ def test_recommended_version_follows_the_projects_breaking_change_policy():
         current = tomllib.load(handle)["project"]["version"]
     assert current == "0.2.0", "release-preparation tree must carry the recommended version"
     changelog = CHANGELOG.read_text(encoding="utf-8")
-    release_candidate = _release_candidate()
-    assert "BREAKING" in release_candidate
-    assert "/pool/status" in release_candidate
-    assert "BYOK stored other people's provider credentials in plaintext" in release_candidate
+    released_020 = _released_020()
+    assert "BREAKING" in released_020
+    assert "/pool/status" in released_020
+    assert "BYOK stored other people's provider credentials in plaintext" in released_020
     assert (
         "[Unreleased]: https://github.com/shark0120/yangble5/compare/v0.2.0...HEAD"
         in changelog
