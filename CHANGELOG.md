@@ -25,6 +25,10 @@ Two conventions specific to this repository, because they change how the entries
   steps to their intended history depth: `test` and `live-site-drift` keep
   `fetch-depth: 0` for retired-path discovery, while the other six intentionally
   retain checkout's shallow default.
+- **The gateway dependency floors are now FastAPI 0.140.0 and httpx 0.28.1.**
+  `gateway/requirements.txt`, the installable `gateway` extra and the `dev` test
+  environment deliberately share these lower bounds because all three install the
+  same runtime; Python 3.10 installation remains part of the verified contract.
 
 ## [0.2.0] - 2026-07-27
 
