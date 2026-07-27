@@ -15,6 +15,21 @@ enough to notice.
 
 ## Variant 1 — r/LocalLLaMA
 
+> **THIS DRAFT IS NOT POSTABLE AS WRITTEN — checked 2026-07-27.** r/LocalLLaMA's current rules
+> prohibit posts written wholly or mostly by an LLM, and require affiliation to be disclosed
+> explicitly. This body was drafted by an agent and never says "I built this", so it fails both.
+>
+> **The fix is not an edit, and no agent may perform it.** The author has to write the body in
+> their own words, and say plainly that the project is theirs. An agent rewriting it to *sound*
+> human would be this project publishing, into a community that bans exactly that, the same kind
+> of claim `tools/honesty_gate.py` exists to stop it making anywhere else. Getting caught also
+> burns the venue permanently, which is a worse outcome than never posting.
+>
+> What an agent may still do, and what this draft is now for: supply verified facts to write
+> from — the measurement conditions, the offline reproduction command, the links — and check a
+> human-written draft afterwards for wrong numbers, missing qualifiers, dead links, length and
+> flair. Everything below is raw material, not copy to paste.
+
 **Read this first:** r/LocalLLaMA is a *local inference* subreddit and this project talks to
 cloud upstreams. If you bury that, the top comment will be "this isn't local" and it will be
 correct. So it goes in the second sentence, and the actual offer to this audience is the
@@ -110,7 +125,7 @@ rounds at a 748,918-token prompt, ingested with no truncation.
    timestamp near the front invalidates the whole cached prefix and makes a working cache measure
    0%.
 
-Repo (MIT), full methodology written so it can be refuted, raw per-round records: [LINK]
+Repo (MIT), full methodology written so it can be refuted, raw per-round records: https://github.com/shark0120/yangble5
 
 The Go engine doing the actual protocol work is CLIProxyAPI and it's someone else's project —
 star that one first, this is useless without it.
@@ -225,7 +240,7 @@ warm rounds** at a 748,918-token prompt.
   If you need current information, this is the wrong setup.
 - The underlying Go engine (CLIProxyAPI, MIT) is not mine. It does all the hard protocol work.
 
-Repo with the config, the shim, the benchmark and the full writeup: [LINK]
+Repo with the config, the shim, the benchmark and the full writeup: https://github.com/shark0120/yangble5
 
 Happy to answer anything, including "why not just pay for the normal thing", which for most
 people remains the right answer.

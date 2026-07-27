@@ -171,7 +171,7 @@ routing:
 
 ---
 
-repo 在這(MIT,附完整量測方法,寫成可以被推翻的樣子):[LINK]
+repo 在這(MIT,附完整量測方法,寫成可以被推翻的樣子):https://github.com/shark0120/yangble5
 
 會開源這支量測工具而不是只貼結果,是因為上游供應商隨時會改快取行為,
 2026 年 7 月量到的數字撐不撐得到 8 月我不知道。**與其相信我,不如自己跑一次。**
@@ -252,7 +252,7 @@ Threads 節奏快、句子短,可以有情緒,但**技術數字一個字都不�
 這大概就是我理解的「台灣人的 AI token 自由」:
 **不是免費,是不用再猜。**
 
-repo 在這 [LINK]。底層引擎 CLIProxyAPI 是別人的專案(MIT),請先去 star 它。
+repo 在這 https://github.com/shark0120/yangble5。底層引擎 CLIProxyAPI 是別人的專案(MIT),請先去 star 它。
 另外,**這套完全沒有即時網搜**——問它今年幾年,Gemini 說 2024、Grok 說 2025,
 就是這麼誠實。
 

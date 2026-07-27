@@ -130,7 +130,7 @@ clause squeezed into one.
 ```
 The Go engine doing the real work is CLIProxyAPI (MIT), not mine. Star that first.
 
-Repo: [LINK]
+Repo: https://github.com/shark0120/yangble5
 ```
 
 ---

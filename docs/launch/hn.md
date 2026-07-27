@@ -1,5 +1,17 @@
 # Hacker News — Show HN
 
+> **BLOCKED as of 2026-07-27 — do not attempt to work around this.** The account reaching Show HN
+> is redirected to <https://news.ycombinator.com/showlim>, which is HN's rate limit on Show HN
+> submissions from new accounts. There is no post URL because nothing was submitted.
+>
+> The only acceptable resolutions are to participate normally until the account is no longer
+> new, or to drop this venue. Creating a second account, asking someone else to submit, or any
+> other route around the limit is evasion, and getting caught costs more than the post is worth.
+> A project whose entire claim is that its numbers are checkable does not get to launch by
+> circumventing a rule.
+>
+> The upstream issue prerequisite below is satisfied: <https://github.com/router-for-me/CLIProxyAPI/issues/4600>
+
 > Draft copy. Before posting: file the pool-rotation behaviour with CLIProxyAPI upstream and
 > link the issue from the post — publishing a source-level finding about someone else's project
 > without telling them first is not acceptable.
@@ -115,7 +127,7 @@ a compatibility shim, and two measurement tools. **There is no live web search t
 asked what year it was, the Gemini upstream said 2024 and the Grok upstream said 2025. Treat
 everything it returns as parametric recall behind a training cutoff.
 
-Repo, methodology written to be refuted, and the raw records: [LINK]
+Repo, methodology written to be refuted, and the raw records: https://github.com/shark0120/yangble5
 
 The most useful thing anyone could do is run `cache_bench.py` against a provider I haven't tested
 and post the JSON, especially if it contradicts me.
