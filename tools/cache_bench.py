@@ -402,9 +402,7 @@ def load_replay(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if not isinstance(usage, dict):
             raise SystemExit(f"error: {path} line {lineno}: 'usage' must be a JSON object")
         try:
-            rounds.append(
-                usage_to_round(int(obj["round"]), usage, int(obj.get("latency_ms") or 0))
-            )
+            rounds.append(usage_to_round(int(obj["round"]), usage, int(obj.get("latency_ms") or 0)))
         except (TypeError, ValueError, OverflowError) as exc:
             # OverflowError included deliberately: `1e400` and `Infinity` are
             # accepted by json.loads and raise OverflowError (an
