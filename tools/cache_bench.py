@@ -24,6 +24,15 @@ Round 1 is EXCLUDED from that number and printed on its own line. Every
 session's first request is a cold write; pretending otherwise is the standard
 way this metric gets inflated.
 
+Writes are counted separately from reads. The summary totals the
+``cache_creation_input_tokens`` recorded in the trace across ALL rounds (the
+cold round IS the write) and for warm rounds on their own, and it says
+explicitly when no round in the trace carried a write count at all -- null is
+not zero, and a hit rate alone hides the workload that rewrites its cache
+every turn. Token counts only, never
+prices: write premiums differ by provider and TTL and drift, so pricing belongs
+to the reader's current price sheet, not to this tool's output.
+
 Usage comes straight off each response. This script deliberately does NOT read
 ``/v0/management/usage-queue`` -- that endpoint is consume-on-read, so polling
 it here would steal records from ``cache_stats_sidecar.py``.
@@ -85,6 +94,16 @@ ZERO_CACHE_NOTE = (
 NO_WARM_ROUNDS_NOTE = (
     "no warm rounds were run, so there is nothing to measure. Round 1 is always a "
     "cold cache write; use --rounds 2 or more."
+)
+
+WRITES_UNREPORTED_NOTE = (
+    "no round in this trace carried a cache_creation_input_tokens value (null or "
+    "absent on every round), so cache-WRITE counts are unknown -- either the "
+    "endpoint did not report them or they were not captured on the way into this "
+    "trace. 'Zero tokens written' and 'no write count recorded' are different "
+    "facts and this trace can only support the second: write-side cost accounting "
+    "is not possible from this trace. The figures above are read-side token "
+    "counts only."
 )
 
 
@@ -156,18 +175,43 @@ def usage_to_round(
     latency_ms: int,
     reply: str = "",
 ) -> dict[str, Any]:
-    """Turn one response ``usage`` block into a normalised round record."""
+    """Turn one response ``usage`` block into a normalised round record.
+
+    ``cache_write`` coerces a missing value to 0 for arithmetic, but the record
+    ALSO keeps ``cache_write_reported``: whether the raw usage block carried a
+    USABLE ``cache_creation_input_tokens`` -- a non-negative integer, not merely
+    any non-null value. WHY: "a zero write count was recorded" and "no write
+    count was recorded" are different facts, and folding both into 0 -- the
+    previous behaviour -- made write-side cost accounting silently
+    unfalsifiable. The validity gate also keeps a crafted trace from flipping
+    the summary to "reported" with a bool, string, or negative in that field.
+    The released trace has ``null`` on every row, so the distinction is exactly
+    what the shipped evidence exercises. Additive key; the existing row fields
+    are unchanged.
+    """
     inp = int(usage.get("input_tokens") or 0)
     cread = int(usage.get("cache_read_input_tokens") or 0)
-    cwrite = int(usage.get("cache_creation_input_tokens") or 0)
+    raw_write = usage.get("cache_creation_input_tokens")
+    write_ok = isinstance(raw_write, int) and not isinstance(raw_write, bool) and raw_write >= 0
+    cwrite = raw_write if write_ok else 0
+    # The denominator keeps the old permissive coercion on purpose: a float or
+    # numeric-string write count is not a USABLE recorded value (strict gate
+    # above), but the tokens it describes were still paid for, and dropping them
+    # here would shrink the denominator and inflate the hit rate under the
+    # disjoint convention -- the exact inflation this tool exists to catch.
+    try:
+        denom_write = max(0, int(raw_write or 0))
+    except (TypeError, ValueError):
+        denom_write = 0
     out = int(usage.get("output_tokens") or 0)
-    prompt = prompt_denominator(inp, cread, cwrite)
+    prompt = prompt_denominator(inp, cread, denom_write)
     return {
         "round": round_no,
         "prompt_total": prompt,
         "input": inp,
         "cache_read": cread,
         "cache_write": cwrite,
+        "cache_write_reported": write_ok,
         "output": out,
         "ratio": round(cread / prompt, 4) if prompt else 0.0,
         "latency_ms": latency_ms,
@@ -210,11 +254,39 @@ def summarize(rounds: Sequence[dict[str, Any]], target: float = DEFAULT_TARGET) 
     cached, prompt = totals(warm)
     rate = token_weighted_hit_rate(warm)
 
+    # Write-side accounting, additive -- it never touches the headline rate.
+    # WHY writes get their own columns: a cache write is billed at a premium over
+    # base input on providers that bill it, so a workload that rewrites the cache
+    # every turn can cost MORE than not caching at all, and a single hit rate
+    # hides that case completely. The all-rounds total includes the cold round on
+    # purpose: the cold round IS the write. Counts only -- no price multiplier
+    # lives in this tool, because pricing drifts and the only thing this project
+    # reports is what the trace itself recorded.
+    write_total = sum(max(0, int(r.get("cache_write") or 0)) for r in rounds)
+    warm_write_total = sum(max(0, int(r.get("cache_write") or 0)) for r in warm)
+    reported_rounds = sum(1 for r in rounds if r.get("cache_write_reported"))
+    # Tri-state, because collapsing it to a number would lie in one direction or
+    # the other: "reported" (every round carried a usable count, a non-negative
+    # integer -- a total of 0 is then a recorded absence), "unreported" (no
+    # round ever carried one -- the
+    # released trace's case, where write accounting is impossible), and "partial"
+    # (some did -- the total is only a floor). None when there are no rounds.
+    if not rounds:
+        write_reporting = None
+    elif reported_rounds == len(rounds):
+        write_reporting = "reported"
+    elif reported_rounds:
+        write_reporting = "partial"
+    else:
+        write_reporting = "unreported"
+
     notes: list[str] = []
     if not warm:
         notes.append(NO_WARM_ROUNDS_NOTE)
     if rounds and all(int(r.get("cache_read") or 0) == 0 for r in rounds):
         notes.append(ZERO_CACHE_NOTE)
+    if write_reporting == "unreported":
+        notes.append(WRITES_UNREPORTED_NOTE)
 
     passed = bool(warm) and prompt > 0 and rate >= target
     return {
@@ -224,6 +296,9 @@ def summarize(rounds: Sequence[dict[str, Any]], target: float = DEFAULT_TARGET) 
         "cached_tokens": cached,
         "prompt_tokens": prompt,
         "eligible_hit_rate": round(rate, 4),
+        "cache_write_tokens": write_total,
+        "warm_cache_write_tokens": warm_write_total,
+        "cache_write_reporting": write_reporting,
         "target": target,
         "pass": passed,
         "notes": notes,
@@ -335,6 +410,8 @@ def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., No
         f"({result['cached_tokens']:,} / {result['prompt_tokens']:,} tok) "
         f"target {target:.0%} -> {'PASS' if result['pass'] else 'FAIL'}"
     )
+    for line in _format_write_lines(result):
+        log(line)
     for note in result["notes"]:
         log(f"  NOTE: {note}")
     # Surface the environment the fixture was captured in, so a reproduction is
@@ -361,6 +438,15 @@ def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., No
         # not covered by the three sums above; check it explicitly so editing the
         # cold-write figure (748,918 here) also trips the tamper check.
         ("cold_round_prompt", cold_round.get("prompt_total")),
+        # Write-side figures are published output too, so they live inside the
+        # tamper envelope: without these, editing only cache_creation_input_tokens
+        # in a distributed fixture would fabricate write totals -- and flip the
+        # reporting tri-state -- while the replay still printed REPRODUCED. The
+        # `want is not None` guard below keeps fixtures that predate these keys
+        # valid.
+        ("cache_write_tokens", result["cache_write_tokens"]),
+        ("warm_cache_write_tokens", result["warm_cache_write_tokens"]),
+        ("cache_write_reporting", result["cache_write_reporting"]),
     )
     for key, got in checks:
         want = expected.get(key)
@@ -538,6 +624,34 @@ def _format_round(record: dict[str, Any]) -> str:
     )
 
 
+def _format_write_lines(result: dict[str, Any]) -> list[str]:
+    """Human lines for the write-side accounting. Token counts only, never prices.
+
+    WHY the unreported case renders nothing here: it already speaks through
+    WRITES_UNREPORTED_NOTE, and printing "0" beside it would read as the
+    recorded-zero it is not. WHY no dollar figure: write premiums differ by
+    provider and cache TTL and drift without notice, so a price multiplier baked
+    in here would turn a recorded count into a speculative cost claim. The
+    reader multiplies the counts by their provider's current price sheet.
+    """
+    reporting = result.get("cache_write_reporting")
+    if reporting not in ("reported", "partial"):
+        return []
+    qualifier = ""
+    if reporting == "partial":
+        qualifier = " [only some rounds reported a count; this total is a floor]"
+    lines = [
+        f"  cache write tokens (ALL rounds, cold write included): "
+        f"{result['cache_write_tokens']:,}{qualifier}"
+    ]
+    if result.get("warm_cache_write_tokens", 0) > 0:
+        lines.append(
+            f"  cache write tokens (warm rounds only -- a warm round that writes "
+            f"is the rewrite-every-turn symptom): {result['warm_cache_write_tokens']:,}"
+        )
+    return lines
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     log = _logger(args.json)
@@ -622,6 +736,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({result['cached_tokens']:,} / {result['prompt_tokens']:,} tok) "
         f"target {args.target:.0%} -> {'PASS' if result['pass'] else 'FAIL'}"
     )
+    for line in _format_write_lines(result):
+        log(line)
     for note in result["notes"]:
         log(f"  NOTE: {note}")
     log(_format_environment(environment))

@@ -274,6 +274,215 @@ def test_summary_is_json_serialisable_for_the_json_flag():
     assert payload["eligible_hit_rate"] == 0.99
 
 
+# ---------------------------------------------------- write-side accounting ---
+# Requested by an external reviewer of the public benchmark thread: a cache
+# write is billed at a premium over base input on providers that bill it, so a
+# workload that rewrites its cache every turn can cost more than not caching at
+# all -- and a single hit rate hides that case completely. The summary counts
+# writes separately from reads, and refuses to invent a recorded zero when no
+# write count was ever recorded in the trace.
+
+
+def wrnd(number: int, prompt: int, cached: int, write: int, *, reported: bool = True) -> dict:
+    """A round record carrying the write-side fields usage_to_round now emits."""
+    return {
+        "round": number,
+        "prompt_total": prompt,
+        "cache_read": cached,
+        "cache_write": write,
+        "cache_write_reported": reported,
+    }
+
+
+def test_usage_to_round_distinguishes_a_null_write_count_from_a_reported_zero():
+    """`cache_creation_input_tokens: null` and `: 0` are different facts. Coercing
+    both to 0 made 'no write count was recorded' indistinguishable from 'a zero was
+    recorded', and write-side accounting needs to know which one it is looking at."""
+    zero = cache_bench.usage_to_round(1, {"cache_creation_input_tokens": 0}, 1)
+    null = cache_bench.usage_to_round(1, {"cache_creation_input_tokens": None}, 1)
+    absent = cache_bench.usage_to_round(1, {}, 1)
+    assert zero["cache_write"] == null["cache_write"] == absent["cache_write"] == 0
+    assert zero["cache_write_reported"] is True
+    assert null["cache_write_reported"] is False
+    assert absent["cache_write_reported"] is False
+
+
+def test_non_integer_or_negative_write_values_do_not_count_as_recorded():
+    """Only a non-negative integer is a usable write count. Bools, strings,
+    floats, negatives and containers must not flip the tri-state to 'reported'
+    (or cancel a real write): a crafted trace would otherwise fabricate a
+    'recorded zero' -- exactly the reading this feature exists to prevent."""
+    for junk in (True, False, "900", "", 1.9, -1, -700000, {}, [1]):
+        row = cache_bench.usage_to_round(1, {"cache_creation_input_tokens": junk}, 1)
+        assert row["cache_write"] == 0, repr(junk)
+        assert row["cache_write_reported"] is False, repr(junk)
+
+
+def test_summarize_clamps_negative_write_values_in_rows():
+    """Defence in depth for hand-built or replayed rows: a negative cache_write
+    can never subtract from the totals or render as a negative token count."""
+    rounds = [wrnd(1, 1000, 0, 900), wrnd(2, 1000, 950, -900)]
+    result = cache_bench.summarize(rounds, target=0.90)
+    assert result["cache_write_tokens"] == 900
+    assert result["warm_cache_write_tokens"] == 0
+
+
+def test_numeric_but_invalid_write_values_still_pay_into_the_denominator():
+    """The strict gate is for the RECORDED totals only. A float or numeric-string
+    write count is not a usable recorded value, but the tokens it describes were
+    still paid for: dropping them from prompt_denominator would shrink the
+    denominator and inflate the hit rate under the disjoint convention -- the
+    exact inflation this tool exists to catch."""
+    for junk, expected_prompt in ((1200.0, 2190), ("1200", 2190), (None, 990)):
+        row = cache_bench.usage_to_round(
+            1,
+            {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 980,
+                "cache_creation_input_tokens": junk,
+            },
+            1,
+        )
+        assert row["prompt_total"] == expected_prompt, repr(junk)
+        assert row["cache_write_reported"] is False, repr(junk)
+        assert row["cache_write"] == 0, repr(junk)
+
+
+def test_summarize_counts_writes_separately_from_reads():
+    """Mixed reported values: the cold round IS the write, so the all-rounds total
+    includes it, and the warm-round share is broken out on its own."""
+    rounds = [
+        wrnd(1, 1000, 0, 900),  # cold: the cache write
+        wrnd(2, 1000, 950, 50),  # a warm round that also wrote -- the rewrite symptom
+        wrnd(3, 1000, 950, 0),
+    ]
+    result = cache_bench.summarize(rounds, target=0.90)
+    assert result["cache_write_tokens"] == 950
+    assert result["warm_cache_write_tokens"] == 50
+    assert result["cache_write_reporting"] == "reported"
+    assert not any("cache_creation_input_tokens" in note for note in result["notes"])
+
+
+def test_write_accounting_never_touches_the_headline():
+    """The write columns are additive: identical read-side rows must produce an
+    identical hit rate whether or not writes were reported beside them."""
+    with_writes = [wrnd(1, 1000, 0, 900), wrnd(2, 1000, 950, 50)]
+    without = [rnd(1, 1000, 0), rnd(2, 1000, 950)]
+    a = cache_bench.summarize(with_writes, target=0.99)
+    b = cache_bench.summarize(without, target=0.99)
+    for key in ("eligible_hit_rate", "cached_tokens", "prompt_tokens", "pass"):
+        assert a[key] == b[key]
+
+
+def test_all_null_write_counts_raise_the_unreported_note():
+    """The shipped evidence's shape: cache_creation_input_tokens is null on every
+    row. The summary must say write accounting is impossible, not report a zero."""
+    rounds = [
+        cache_bench.usage_to_round(
+            1,
+            {
+                "input_tokens": 1000,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": None,
+            },
+            1,
+        ),
+        cache_bench.usage_to_round(
+            2,
+            {
+                "input_tokens": 1000,
+                "cache_read_input_tokens": 995,
+                "cache_creation_input_tokens": None,
+            },
+            1,
+        ),
+    ]
+    result = cache_bench.summarize(rounds, target=0.99)
+    assert result["cache_write_reporting"] == "unreported"
+    assert result["cache_write_tokens"] == 0
+    assert any("cache_creation_input_tokens" in note for note in result["notes"])
+    assert any("not possible" in note for note in result["notes"])
+
+
+def test_zero_but_reported_writes_do_not_raise_the_unreported_note():
+    """An endpoint that reports `cache_creation_input_tokens: 0` measured zero
+    writes. That is a fact, not a gap, and must not be labelled unreported."""
+    rounds = [wrnd(1, 1000, 0, 0), wrnd(2, 1000, 995, 0)]
+    result = cache_bench.summarize(rounds, target=0.99)
+    assert result["cache_write_reporting"] == "reported"
+    assert result["cache_write_tokens"] == 0
+    assert not any("cache_creation_input_tokens" in note for note in result["notes"])
+
+
+def test_partially_reported_writes_are_neither_reported_nor_unreported():
+    """Some rounds carried a count, some carried null: the total is only a floor,
+    and calling it either 'reported' or 'unreported' would overclaim one way."""
+    rounds = [wrnd(1, 1000, 0, 500), wrnd(2, 1000, 995, 0, reported=False)]
+    result = cache_bench.summarize(rounds, target=0.99)
+    assert result["cache_write_reporting"] == "partial"
+    assert result["cache_write_tokens"] == 500
+    assert not any("cache_creation_input_tokens" in note for note in result["notes"])
+
+
+def test_rows_without_write_fields_are_treated_as_unreported():
+    """Hand-built round records (this file's own rnd() helper) predate the write
+    fields entirely; absent must read as 'never reported', not as a reported zero."""
+    result = cache_bench.summarize([rnd(1, 1000, 0), rnd(2, 1000, 990)], target=0.99)
+    assert result["cache_write_reporting"] == "unreported"
+    assert result["cache_write_tokens"] == 0
+
+
+def test_replay_of_the_shipped_evidence_says_writes_were_unreported(monkeypatch, capsys):
+    """evidence/run-749k-20260721.jsonl carries cache_creation_input_tokens: null
+    on every row, so the released trace exercises exactly the unreported path --
+    and the replayed headline must not move by a digit."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    code = cache_bench.main(["--replay", str(_EVIDENCE), "--json"])
+    assert code == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["cache_write_reporting"] == "unreported"
+    assert payload["cache_write_tokens"] == 0
+    assert payload["eligible_hit_rate"] == 0.9953  # the headline is untouched
+    assert any("cache_creation_input_tokens" in note for note in payload["notes"])
+    # The human summary (stderr under --json) says it out loud, not only in JSON.
+    assert "write-side cost accounting is not possible" in captured.err
+
+
+def test_replay_prints_write_totals_when_the_endpoint_reported_them(tmp_path, monkeypatch, capsys):
+    """An Anthropic-convention trace with real write counts must render the write
+    totals -- all rounds (cold included) and the warm share -- as counts, no prices."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    rows = [
+        {
+            "round": 1,
+            "usage": {
+                "input_tokens": 20,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 1000,
+            },
+        },
+        {
+            "round": 2,
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 980,
+                "cache_creation_input_tokens": 30,
+            },
+        },
+    ]
+    trace = tmp_path / "writes.jsonl"
+    trace.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    # 980/990 is below the 0.99 default target, so the run exits 1 -- assert it,
+    # so a future change to the fixture or the target cannot pass unnoticed.
+    assert cache_bench.main(["--replay", str(trace)]) == 1
+    out = capsys.readouterr().out
+    assert "cache write tokens (ALL rounds, cold write included): 1,030" in out
+    assert "is the rewrite-every-turn symptom): 30" in out  # pins the warm figure itself
+    assert "write-side cost accounting is not possible" not in out
+    assert "$" not in out  # counts only; pricing drifts and is not this tool's claim
+
+
 # ------------------------------------------------------- response decoding ---
 
 
@@ -446,6 +655,23 @@ def test_replay_detects_a_tampered_cold_round_prompt(tmp_path, monkeypatch):
     bad.write_text(doctored, encoding="utf-8")
     code = cache_bench.main(["--replay", str(bad)])
     assert code == 1  # cold_round_prompt no longer matches the recorded headline
+
+
+def test_replay_detects_a_tampered_write_count(tmp_path, monkeypatch):
+    """Editing only cache_creation_input_tokens in the shipped fixture must trip
+    the tamper check. Two of the three write pins are 0, so this test is what
+    keeps the `want is not None` guard honest: a refactor to a truthiness check
+    would silently drop both numeric write pins, and only this test would notice."""
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    text = _EVIDENCE.read_text(encoding="utf-8")
+    doctored = text.replace(
+        '"cache_creation_input_tokens": null', '"cache_creation_input_tokens": 12345', 1
+    )
+    assert doctored != text, "fixture must carry a null write count to tamper with"
+    bad = tmp_path / "tampered-write.jsonl"
+    bad.write_text(doctored, encoding="utf-8")
+    code = cache_bench.main(["--replay", str(bad)])
+    assert code == 1  # write totals and tri-state no longer match the recorded pins
 
 
 def test_replay_fixture_carries_no_account_identity():

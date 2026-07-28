@@ -17,6 +17,28 @@ Two conventions specific to this repository, because they change how the entries
 
 ## [Unreleased]
 
+### Added
+
+- **`tools/cache_bench.py` now counts cache writes separately from reads.** Requested by an
+  external reviewer — [a comment on the r/LocalLLaMA launch
+  thread](https://www.reddit.com/r/LocalLLaMA/comments/1v7x8g4/comment/p01odlr/): a single hit
+  rate hides the workload that rewrites its cache every turn, which on providers that bill cache
+  writes at a premium over base input can cost more than not caching at all. The summary now
+  reports `cache_creation_input_tokens` totals — across all rounds (the cold round *is* the
+  write) and separately for warm rounds — plus a tri-state `cache_write_reporting` field
+  (`reported` / `partial` / `unreported`) that keeps "a zero was recorded" distinct from "no
+  value was recorded": a `null` is no longer coerced into a reported 0, and only a non-negative
+  integer counts as recorded. The released trace `evidence/run-749k-20260721.jsonl` is the
+  second case — it carries `cache_creation_input_tokens: null` on every row, and its own
+  metadata records that the sidecar which produced it did not capture the field — so the replay
+  now states explicitly that write-side cost accounting is not possible from that trace. The
+  write-side figures live inside the replay tamper envelope alongside the headline. Token counts
+  only, deliberately: no dollar prices or provider multipliers are embedded, because write
+  premiums differ by provider and cache TTL and drift without notice. The replayed headline
+  (99.53%, token-weighted, warm rounds only, ~749K prefix, one machine, one run, n=1, captured
+  2026-07-21 — an upper bound for this harness's 15-token-per-round tail) is unchanged; the
+  accounting is additive.
+
 ### Changed
 
 - **GitHub-hosted CI and the reusable cache-guard action now use

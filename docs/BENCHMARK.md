@@ -165,6 +165,36 @@ Identical under both conventions, and incapable of reporting more than 100%. If 
 a third provider, check which convention it uses before trusting the output - and tell us, so we
 can note it here.
 
+### Writes are counted separately from reads
+
+A cache **write** is not a free event: providers that bill it do so at a premium over the base
+input price ([Anthropic's prompt-caching documentation](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+bills `cache_creation_input_tokens` above the base input rate and `cache_read_input_tokens` below
+it; the multipliers vary by cache TTL and change without notice, so no figure is quoted here). A
+workload that rewrites its cache every turn without re-reading it can therefore cost **more**
+than not caching at all — and a single hit rate hides that case completely. So the summary also
+reports the write side, as counts:
+
+- total `cache_creation_input_tokens` across **all** rounds — the cold round is included because
+  the cold round *is* the write;
+- the warm-round share on its own when it is nonzero, because a warm round that writes is the
+  rewrite-every-turn symptom.
+
+Counts only, deliberately: printing a dollar figure would bind this tool to one provider's price
+sheet on one day. Multiply the reported counts by your provider's current prices.
+
+Not every trace carries write counts. The released trace
+([`evidence/run-749k-20260721.jsonl`](../evidence/run-749k-20260721.jsonl)) has
+`cache_creation_input_tokens: null` on every row — its own metadata records that the rolling
+sidecar which produced it did not capture that field, so whether the upstream reports it is not
+established here — and null is not zero: "nothing was written" and "no write count was recorded"
+are different facts. The summary keeps the distinction as a tri-state `cache_write_reporting`
+field (`reported` / `partial` / `unreported`). When no round ever carried a count, the human
+summary omits the write totals entirely and says outright that write-side cost accounting is not
+possible from that trace; under `--json` the totals are still emitted as `0` and must be read
+together with `cache_write_reporting`, which is the field that says whether that `0` was ever
+recorded.
+
 ---
 
 ## 5. Why the cold round is excluded

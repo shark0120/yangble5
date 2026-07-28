@@ -1,5 +1,15 @@
 # Reddit
 
+> **POSTED 2026-07-27 — the record.** The author posted two threads in their own words (neither
+> variant below went out as written):
+>
+> - r/LocalLLaMA: <https://www.reddit.com/r/LocalLLaMA/comments/1v7x8g4/> — live. The
+>   write-accounting change in the CHANGELOG traces to
+>   [a comment on this thread](https://www.reddit.com/r/LocalLLaMA/comments/1v7x8g4/comment/p01odlr/).
+> - r/LLMDevs: <https://www.reddit.com/r/LLMDevs/comments/1v7xi1p/> — removed by Reddit's
+>   content filter minutes after posting (new-account auto-filter; a manual mod-review request
+>   is the recorded next step).
+
 Two variants. They are **not** the same post with the subreddit name swapped — the audiences
 fail differently, so the honest disclosures that matter are different in each.
 
