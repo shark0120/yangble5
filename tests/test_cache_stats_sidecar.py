@@ -405,3 +405,90 @@ def test_malformed_numeric_environment_values_fall_back_to_defaults():
     args = parser.parse_args([])
     assert args.poll_seconds == sidecar.DEFAULT_POLL_SECONDS
     assert args.lock_port == sidecar.DEFAULT_LOCK_PORT
+
+
+# ------------------------------------------------------------- write capture ---
+# The released 749K trace carries cache_creation_input_tokens: null on every row
+# because this sidecar never copied the field -- which is why the public replay
+# can only say "no write count recorded". These tests pin the capture path so
+# the NEXT released trace can carry real write counts.
+
+
+def test_ingest_captures_a_usable_write_count():
+    stats = sidecar.fresh_stats()
+    rec = record(inp=100, cached=0, out=1)
+    rec["tokens"]["cache_creation_input_tokens"] = 900
+    sidecar.ingest(stats, rec)
+    assert stats["tokens"]["cache_write"] == 900
+    assert stats["write_reported_rows"] == 1
+    assert stats["recent"][-1]["cwrite"] == 900
+
+
+def test_ingest_keeps_a_missing_or_junk_write_count_as_null_not_zero():
+    """Null must stay null all the way into the ring log: a trace exporter
+    reading `recent` must emit null for these rows, never a fabricated 0 --
+    'a zero was recorded' and 'no value was recorded' are different facts."""
+    stats = sidecar.fresh_stats()
+    sidecar.ingest(stats, record(inp=10))  # field absent entirely
+    for junk in (None, True, "900", -5, 1.9):
+        rec = record(inp=10)
+        rec["tokens"]["cache_creation_input_tokens"] = junk
+        sidecar.ingest(stats, rec)
+    assert stats["tokens"]["cache_write"] == 0
+    assert stats["write_reported_rows"] == 0
+    assert all(row["cwrite"] is None for row in stats["recent"])
+
+
+def test_ingest_write_key_aliases_are_recognised():
+    stats = sidecar.fresh_stats()
+    for key, val in (
+        ("cache_write_tokens", 5),
+        ("cache_creation_tokens", 7),
+        ("cache_creation_input_tokens", 11),
+    ):
+        rec = record(inp=10)
+        rec["tokens"][key] = val
+        sidecar.ingest(stats, rec)
+    assert stats["tokens"]["cache_write"] == 23
+    assert stats["write_reported_rows"] == 3
+
+
+def test_ingest_zero_write_count_is_recorded_not_dropped():
+    stats = sidecar.fresh_stats()
+    rec = record(inp=10)
+    rec["tokens"]["cache_creation_input_tokens"] = 0
+    sidecar.ingest(stats, rec)
+    assert stats["tokens"]["cache_write"] == 0
+    assert stats["write_reported_rows"] == 1
+    assert stats["recent"][-1]["cwrite"] == 0
+
+
+def test_malformed_queue_record_raises_the_types_the_poll_loop_catches():
+    """ingest() can raise TypeError / AttributeError on one malformed queue
+    record. The queue is consume-on-read: if the poll loop's except tuple did
+    not include these, a single bad record would kill an unattended sidecar
+    and lose the whole drained batch forever."""
+    stats = sidecar.fresh_stats()
+    bad_latency = record(inp=1)
+    bad_latency["latency_ms"] = [1]
+    with pytest.raises(TypeError):
+        sidecar.ingest(stats, bad_latency)
+    bad_tokens = record(inp=1)
+    bad_tokens["tokens"] = "x"
+    with pytest.raises(AttributeError):
+        sidecar.ingest(stats, bad_tokens)
+
+
+def test_non_string_alias_or_source_falls_into_the_question_mark_bucket():
+    """An object or array alias in a hostile queue record must not explode
+    mid-ingest after the cumulative counters have already moved -- that would
+    half-apply the record. It lands in the same "?" bucket as absence."""
+    stats = sidecar.fresh_stats()
+    rec = record(inp=5)
+    rec["alias"] = {"a": 1}
+    rec["source"] = [1, 2]
+    sidecar.ingest(stats, rec)
+    assert stats["requests"] == 1
+    assert "?" in stats["by_alias"]
+    assert "?" in stats["by_source"]
+    assert len(stats["recent"]) == 1

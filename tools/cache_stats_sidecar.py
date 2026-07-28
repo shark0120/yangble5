@@ -74,7 +74,7 @@ DEFAULT_RECENT_KEEP = 1000
 DEFAULT_LOCK_PORT = 8319
 DEFAULT_HTTP_TIMEOUT = 6.0
 
-SCHEMA = 2
+SCHEMA = 3
 
 QUEUE_PATH = "/v0/management/usage-queue"
 
@@ -117,7 +117,8 @@ def fresh_stats(window: int = DEFAULT_ROLLING_WINDOW, now: float | None = None) 
         "updated_at": "",
         "requests": 0,
         "failures": 0,
-        "tokens": {"input": 0, "prompt": 0, "output": 0, "cached": 0, "total": 0},
+        "tokens": {"input": 0, "prompt": 0, "output": 0, "cached": 0, "cache_write": 0, "total": 0},
+        "write_reported_rows": 0,
         "hit_rate": 0.0,
         "rolling": {"window": window, "hit_rate": 0.0, "input": 0, "cached": 0},
         "by_alias": {},
@@ -178,6 +179,13 @@ def ingest(
     tokens = record.get("tokens") or {}
     alias = record.get("alias") or record.get("model") or "?"
     source = record.get("source") or "?"
+    # A non-string alias/source (a JSON object or array in a hostile queue
+    # record) would raise mid-ingest AFTER the cumulative counters moved,
+    # half-applying the record. Coerce to the same "?" bucket instead.
+    if not isinstance(alias, str):
+        alias = "?"
+    if not isinstance(source, str):
+        source = "?"
     failed = bool(record.get("failed"))
     latency = int(record.get("latency_ms") or 0)
 
@@ -186,6 +194,26 @@ def ingest(
     cached = int(tokens.get("cached_tokens") or 0)
     total = int(tokens.get("total_tokens") or (inp + out))
     prompt = prompt_denominator(inp, cached)
+    # Cache-WRITE capture. The released 749K trace has null on every row because
+    # this sidecar simply never copied the field -- that gap is what made the
+    # trace unable to say anything about write-side cost. Same strict gate as
+    # cache_bench.usage_to_round: only a non-negative integer is a usable count;
+    # everything else stays None so a future trace exporter writes null, not a
+    # fabricated 0. The key aliases cover the conventions seen in the wild.
+    raw_write = next(
+        (
+            tokens[key]
+            for key in (
+                "cache_write_tokens",
+                "cache_creation_tokens",
+                "cache_creation_input_tokens",
+            )
+            if key in tokens
+        ),
+        None,
+    )
+    write_ok = isinstance(raw_write, int) and not isinstance(raw_write, bool) and raw_write >= 0
+    cwrite = raw_write if write_ok else None
 
     stats["requests"] += 1
     if failed:
@@ -196,6 +224,9 @@ def ingest(
         bucket["prompt"] = bucket.get("prompt", 0) + prompt
         bucket["output"] += out
         bucket["cached"] += cached
+        if write_ok:
+            bucket["cache_write"] = bucket.get("cache_write", 0) + cwrite
+            stats["write_reported_rows"] = stats.get("write_reported_rows", 0) + 1
         bucket["total"] += total
 
     per_alias = stats["by_alias"].setdefault(
@@ -223,6 +254,9 @@ def ingest(
             "prompt": prompt,
             "out": out,
             "cached": cached,
+            # None when the record carried no usable write count -- a trace
+            # exporter reading this ring must emit null, never a fabricated 0.
+            "cwrite": cwrite,
             "lat": latency,
         }
     )
@@ -433,9 +467,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 rows = drain_queue(args.base_url, mgmt_key, args.timeout)
                 if apply_records(stats, rows, args.window, args.recent_keep):
                     save_stats(args.stats_path, stats)
-            except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as exc:
-                # Proxy restarting or transient: keep the accumulated stats and
-                # retry. Losing the process here would lose the history.
+            except (
+                urllib.error.URLError,
+                OSError,
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+                AttributeError,
+                OverflowError,
+            ) as exc:
+                # Proxy restarting, transient failure, OR one malformed queue
+                # record (the queue is consume-on-read, so dying here would lose
+                # the already-drained batch forever and stop an unattended
+                # sidecar for good). Keep the accumulated stats and retry.
                 print(
                     f"cache_stats_sidecar: poll failed ({type(exc).__name__}: {exc})",
                     file=sys.stderr,

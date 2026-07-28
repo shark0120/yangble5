@@ -366,22 +366,54 @@ def load_replay(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     meta: dict[str, Any] = {}
     rounds: list[dict[str, Any]] = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # An unreadable or non-UTF-8 file must not traceback either -- the
+        # message names only the user-supplied path, never the runner's.
+        raise SystemExit(f"error: cannot read {path}: {type(exc).__name__}") from exc
+    for lineno, raw in enumerate(text.splitlines(), start=1):
         raw = raw.strip()
         if not raw:
             continue
+        # A replay file is untrusted input: someone WILL eventually point this at
+        # a hostile or garbage trace, and a raw traceback would print the
+        # runner's local filesystem paths. Every malformed shape exits through
+        # the same clean `error:` path that names only the trace file itself.
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except ValueError as exc:
+            # ValueError, not JSONDecodeError: a >4300-digit integer literal
+            # raises a plain ValueError from the int-conversion limit, which a
+            # JSONDecodeError-only handler lets straight through as a traceback.
             raise SystemExit(f"error: {path} line {lineno} is not valid JSON: {exc}") from exc
+        if not isinstance(obj, dict):
+            raise SystemExit(
+                f"error: {path} line {lineno} must be a JSON object, not {type(obj).__name__}"
+            )
         if "_meta" in obj:
             meta = obj["_meta"]
+            if not isinstance(meta, dict):
+                raise SystemExit(f"error: {path} line {lineno}: '_meta' must be a JSON object")
             continue
         if "usage" not in obj or "round" not in obj:
             raise SystemExit(f"error: {path} line {lineno} needs both 'round' and 'usage' keys")
-        rounds.append(
-            usage_to_round(int(obj["round"]), obj["usage"] or {}, int(obj.get("latency_ms") or 0))
-        )
+        usage = obj["usage"] or {}
+        if not isinstance(usage, dict):
+            raise SystemExit(f"error: {path} line {lineno}: 'usage' must be a JSON object")
+        try:
+            rounds.append(
+                usage_to_round(int(obj["round"]), usage, int(obj.get("latency_ms") or 0))
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            # OverflowError included deliberately: `1e400` and `Infinity` are
+            # accepted by json.loads and raise OverflowError (an
+            # ArithmeticError, not a ValueError) at int() -- without this, a
+            # 30-character valid-JSON file tracebacks.
+            raise SystemExit(
+                f"error: {path} line {lineno} has a non-numeric 'round', 'latency_ms' "
+                f"or usage field: {exc}"
+            ) from exc
     return meta, rounds
 
 
@@ -421,7 +453,11 @@ def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., No
         value = meta.get(label)
         if value:
             log(f"  {label.replace('_', ' ')}: {value}")
-    for qualifier in meta.get("qualifiers", []):
+    qualifiers = meta.get("qualifiers", [])
+    if not isinstance(qualifiers, list):
+        # A bare string would iterate per character and print 60 one-letter lines.
+        qualifiers = [qualifiers]
+    for qualifier in qualifiers:
         log(f"  qualifier: {qualifier}")
 
     # Tamper check: the fixture records the headline it must produce. Recompute
@@ -429,6 +465,8 @@ def run_replay(path: Path, target: float, json_mode: bool, log: Callable[..., No
     # loudly rather than quietly publishing a doctored figure.
     reproduced = True
     expected = meta.get("expected_headline") or {}
+    if not isinstance(expected, dict):
+        raise SystemExit(f"error: {path}: '_meta.expected_headline' must be a JSON object")
     cold_round = result.get("cold_round") or {}
     checks = (
         ("warm_token_weighted_hit_rate", result["eligible_hit_rate"]),

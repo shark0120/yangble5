@@ -100,6 +100,17 @@ executeStreamWithModelPool -> 2
 That establishes the code path is present in the artifact we measured. Then read the function
 in the upstream source for **your** version - behaviour may differ outside 7.1.23.
 
+**Upstream status as of 2026-07-28** (source-level check only, not a behaviour re-test): the
+upstream had reached v7.2.104, shipping several releases a week, and `modelPoolOffsets` — the
+per-pool rotation state this finding hinges on — was still present in
+`sdk/cliproxy/auth/conductor.go` on the upstream `main` branch. Release notes for v7.2.100–v7.2.103 mention
+weighted round-robin scheduling and session-affinity changes, so the selection behaviour around
+this state may be evolving; re-run the `strings` check against whatever binary you actually
+deploy before relying on this finding, and treat this paragraph as dated the day it was written.
+The behaviour was reported upstream as
+[CLIProxyAPI issue #4600](https://github.com/router-for-me/CLIProxyAPI/issues/4600) on
+2026-07-27 (open, no maintainer response at the time of this note).
+
 ### Why this destroys prompt caching
 
 The load-bearing fact: **upstream prompt caches are scoped per model and per account.** They
@@ -480,6 +491,18 @@ The deterministic corpus matters too: the prefix is generated from an index, wit
 timestamp or dict iteration order anywhere in it. Anything random in the prefix would invalidate
 the cache on every round and make a *working* cache look broken - or, if you only ever tested
 that way, make a broken cache indistinguishable from a working one.
+
+**5. Writes are counted separately from reads** (added 2026-07-28, after an external reviewer
+pointed out the gap). A cache write bills at a premium over base input on providers that bill
+it, so a workload that rewrites its cache every turn can cost more than not caching at all —
+and a read-side hit rate hides that case completely. The summary therefore totals
+`cache_creation_input_tokens` across all rounds (the cold round *is* the write) and for warm
+rounds separately, and carries a tri-state `cache_write_reporting` (`reported` / `partial` /
+`unreported`) that keeps "a zero was recorded" distinct from "no value was recorded". Our own
+released trace is the `unreported` case — the capture sidecar never copied the field — which
+the replay now states outright instead of printing a 0 that would read as a recorded absence.
+Counts only, never prices: write premiums differ by provider and cache TTL and drift without
+notice.
 
 ---
 

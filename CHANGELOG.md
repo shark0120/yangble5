@@ -19,6 +19,21 @@ Two conventions specific to this repository, because they change how the entries
 
 ### Added
 
+- **`tools/cache_stats_sidecar.py` now captures `cache_creation_input_tokens`** (stats schema
+  2 → 3; an older `stats.json` restarts fresh rather than accumulating a misleading partial
+  total). The released 749K trace carries `null` on every row precisely because the sidecar
+  never copied this field — closing that gap is what lets the *next* released trace carry real
+  write counts. Same strict gate as `cache_bench.py`: only a non-negative integer counts as
+  recorded; junk values and absences stay `null` in the ring log, never a fabricated 0.
+- **`docs/launch/FAQ_HARD_QUESTIONS.md` gains questions 9 and 10** — "why does your released
+  trace have no cache-write counts?" and "doesn't a hit rate hide the write-side cost?" — with
+  the honest answers (the capture gap was ours; a hit rate alone can hide it; counts only, no
+  prices).
+- **`docs/FINDINGS.md` carries a dated upstream-status note**: as of 2026-07-28 the upstream
+  had reached v7.2.104 and `modelPoolOffsets` was still present on `main` (source-level check
+  only); session-affinity changes in v7.2.100–103 are flagged, and issue #4600 remains open
+  with no maintainer response. Finding 6 also gains the write-accounting design decision.
+
 - **`tools/cache_bench.py` now counts cache writes separately from reads.** Requested by an
   external reviewer — [a comment on the r/LocalLLaMA launch
   thread](https://www.reddit.com/r/LocalLLaMA/comments/1v7x8g4/comment/p01odlr/): a single hit
@@ -38,6 +53,22 @@ Two conventions specific to this repository, because they change how the entries
   (99.53%, token-weighted, warm rounds only, ~749K prefix, one machine, one run, n=1, captured
   2026-07-21 — an upper bound for this harness's 15-token-per-round tail) is unchanged; the
   accounting is additive.
+
+### Fixed
+
+- **A malformed or hostile replay trace now exits with a clean `error:` line instead of a raw
+  traceback** (which printed the runner's local filesystem paths). Covered shapes: non-numeric
+  `round`/`latency_ms`/usage fields, non-object rows, a non-object `usage` or `_meta` or
+  `_meta.expected_headline`, an unreadable or non-UTF-8 file, the >4300-digit integer that
+  raises a plain `ValueError` from inside `json.loads`, and the JSON-valid `1e400` /
+  `Infinity` whose `OverflowError` is an `ArithmeticError` no `ValueError` handler catches.
+- **A string `_meta.qualifiers` is now normalised to a single entry** instead of being
+  iterated per character into sixty one-letter lines (cosmetic; it never crashed).
+- **One malformed usage-queue record can no longer kill the sidecar's poll loop.** The queue is
+  consume-on-read, so dying mid-batch lost the drained records forever and silently stopped an
+  unattended sidecar; `TypeError`, `AttributeError` and `OverflowError` from a bad record are
+  now caught and logged like any other transient failure, and a non-string `alias`/`source`
+  falls into the `"?"` bucket instead of half-applying the record mid-ingest.
 
 ### Changed
 

@@ -811,3 +811,57 @@ def test_replay_surfaces_the_fixtures_environment_context(monkeypatch, capsys):
     assert "CLIProxyAPI" in out                     # the upstream it ran against
     assert "single machine, single run" in out      # the qualifier
     assert "n=1" in out                              # the released-evidence-set note
+
+
+@pytest.mark.parametrize(
+    ("line", "fragment"),
+    [
+        ('{"round": "one", "usage": {}}', "non-numeric"),
+        ('{"round": null, "usage": {}}', "non-numeric"),
+        ('{"round": 1, "usage": {"input_tokens": "lots"}}', "non-numeric"),
+        ('{"round": 1, "usage": {}, "latency_ms": "slow"}', "non-numeric"),
+        ('{"round": 1, "usage": "big"}', "JSON object"),
+        ("42", "JSON object"),
+        ('{"_meta": "oops"}', "JSON object"),
+        ('{"round": 1, "usage": {"input_tokens": ' + "9" * 5000 + "}}", "not valid JSON"),
+        ('{"round": 1, "usage": {"input_tokens": 1e400}}', "non-numeric"),
+        ('{"round": 1e400, "usage": {}}', "non-numeric"),
+        ('{"round": 1, "usage": {}, "latency_ms": Infinity}', "non-numeric"),
+    ],
+)
+def test_load_replay_turns_malformed_rows_into_a_clean_error(tmp_path, line, fragment):
+    """A malformed or hostile trace must exit `error: <file> line N ...`, never
+    a raw traceback -- a traceback prints the runner's local filesystem paths.
+    The 5000-digit case pins the ValueError (not JSONDecodeError) that Python's
+    integer-conversion limit raises from inside json.loads."""
+    bad = tmp_path / "hostile.jsonl"
+    bad.write_text(line + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cache_bench.load_replay(bad)
+    assert "line 1" in str(excinfo.value)
+    assert fragment in str(excinfo.value)
+
+
+def test_load_replay_reports_an_unreadable_file_without_a_traceback(tmp_path):
+    """A non-UTF-8 (or otherwise unreadable) trace must exit through the same
+    clean `error:` path -- read_text() outside the guard was a traceback that
+    printed the runner's local paths."""
+    bad = tmp_path / "not-utf8.jsonl"
+    bad.write_bytes(b"\xff\xfe garbage")
+    with pytest.raises(SystemExit) as excinfo:
+        cache_bench.load_replay(bad)
+    assert "cannot read" in str(excinfo.value)
+    assert "UnicodeDecodeError" in str(excinfo.value)
+
+
+def test_run_replay_rejects_a_non_dict_expected_headline(tmp_path, monkeypatch):
+    monkeypatch.delenv(cache_bench.API_KEY_ENV, raising=False)
+    rows = [
+        '{"_meta": {"expected_headline": "oops"}}',
+        '{"round": 1, "usage": {"input_tokens": 10}}',
+    ]
+    bad = tmp_path / "badmeta.jsonl"
+    bad.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        cache_bench.main(["--replay", str(bad)])
+    assert "expected_headline" in str(excinfo.value)

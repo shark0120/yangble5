@@ -279,3 +279,56 @@ you've never met has deployed.
 **Trust posture we'd suggest generally:** don't take our word for any of the above. It's MIT and
 it's a small amount of readable Python. `grep` it for logging calls yourself — that's a faster and
 more reliable answer than anything we can say here.
+
+---
+
+## 9. "Why does your released trace have no cache-write counts?"
+
+**Because the sidecar that captured it never recorded the field. That is a gap in our capture
+path, not an established property of the upstream — and from that trace we cannot retroactively
+tell you which.**
+
+Every row of [`evidence/run-749k-20260721.jsonl`](../../evidence/run-749k-20260721.jsonl)
+carries `cache_creation_input_tokens: null`. The trace was built from the rolling sidecar's
+per-request records, and that sidecar simply did not copy a write-count field, so null is all
+the trace can honestly say. Null is not zero: "no tokens were written" and "no write count was
+recorded" are different facts, and this trace can only support the second.
+
+What changed after a reviewer pushed on this: `cache_bench.py` now accounts for writes
+separately from reads — total `cache_creation_input_tokens` across all rounds (the cold round
+*is* the write), the warm-round share on its own, and a tri-state `cache_write_reporting`
+field (`reported` / `partial` / `unreported`), so a recorded zero can never be conflated with
+a missing value. The sidecar now captures the field too, so a future trace can carry real
+counts. Replaying the released trace states outright that write-side cost accounting is not
+possible from it. The 99.53% headline is unchanged by any of this — it is a read-side figure
+and always was.
+
+What we still owe: a released trace captured with the write field intact. Until one exists,
+the honest summary of our write-side evidence is "none".
+
+---
+
+## 10. "A cache write costs more than a read. Doesn't your headline hide the real cost?"
+
+**A hit rate alone can absolutely hide it, yes. That's why the tool no longer prints one
+number.**
+
+On providers that bill caching explicitly, a cache write is charged at a premium over base
+input and a read at a discount — the multipliers vary by provider and cache TTL and change
+without notice, which is why no figure is quoted here. A workload that rewrites its cache
+every turn without re-reading it can therefore cost *more* than not caching at all, and a 99%
+read ratio would hide that completely.
+
+So the summary reports both sides, as counts: cache-write totals across all rounds and for
+warm rounds separately — a warm round that writes is the rewrite-every-turn symptom — next to
+the read-side hit rate. Counts only, never dollars: pricing belongs to your provider's current
+price sheet, not to this tool's output. Whether caching pays off for you is those counts
+multiplied by your prices, and the break-even moves whenever a price sheet does.
+
+Two honest limits. First, our released trace carries no write counts at all (see question 9),
+so we cannot compute the write side of our own headline run: we can tell you the warm rounds
+read 99.53% of a ~749K-token prompt (one machine, one run), and we cannot tell you what the
+cold write cost. Second, on the Gemini convention we measured, `input_tokens` already includes
+the cached portion, so the headline's denominator never dropped write tokens — the methodology
+in [`BENCHMARK.md`](../BENCHMARK.md) walks through exactly what the number does and does not
+contain.

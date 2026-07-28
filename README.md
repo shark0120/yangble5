@@ -278,6 +278,7 @@ Read the footnotes before quoting anything.
 | Claude Code working end to end through the stack | 3 of 3 attempts | raw record: [`docs/evidence/claude-code-e2e.md`](docs/evidence/claude-code-e2e.md). A smoke test, never a benchmark - it shows the path works, and measures nothing |
 | Time to first token (TTFT) | **not measured** | the harness sends `stream: false`; every latency above is a whole round trip |
 | Hit rate at any other prefix size | **not measured** | only the 748,918-token run is in the released evidence set |
+| Cache-write tokens for this run (`cache_creation_input_tokens`) | **not recorded** | the sidecar that captured the trace didn't record the field — null on every row, and null is not zero. `--replay` reports write totals and a `cache_write_reporting` tri-state whenever a trace carries them |
 | Hit rate of the broken pool config (the "before" number) | **not measured** | no pool-vs-direct A/B was ever run |
 | Context beyond 748,918 tokens | **not measured** | - |
 | Recall quality at long context | **not measured** | no needle-in-a-haystack test was run |
@@ -326,6 +327,11 @@ Warm token-weighted hit rate = `(745,438 + 745,430 + 745,422) / (748,933 + 748,9
 5. **`--prefix-tokens` is a target, not a count.** The generator calibrates at ~30 tokens/line;
    the live tokenizer counted ~37. `--prefix-tokens 600000` therefore produced a 748,918-token
    prompt. The tool reports the real number.
+6. **Reads and writes are accounted separately.** A cache write is billed at a premium on
+   providers that bill it, so `cache_bench.py` totals `cache_creation_input_tokens` across all
+   rounds and for warm rounds separately, with a tri-state `cache_write_reporting` that keeps
+   "a zero was recorded" distinct from "no value was recorded". This run's trace recorded no
+   write counts, so its write side is unknown — the 99.53% is a read-side figure.
 
 ---
 
