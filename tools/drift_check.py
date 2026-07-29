@@ -20,18 +20,27 @@ transformations applied, and fails on anything else. A new edge feature turned
 on in a dashboard shows up here as an unexplained difference, which is exactly
 what you want to hear about.
 
+It then asks the same question about the service rather than the pages: does the
+gateway answering `/health` name the version this repository ships? Files and
+container are deployed by different acts and go stale independently, so a site
+that matches to the byte says nothing about the build behind it.
+
 Usage:
     python tools/drift_check.py                      # against yangble5.com
     python tools/drift_check.py --base https://host  # against a staging host
 
-Exit status is 0 only when every published file matches. Run it from a machine
-that is NOT the origin: resolving the name to the origin skips the edge, which
-is the thing being tested.
+Exit status is 0 only when every published file matches and the live gateway
+does not name a different build. A gateway that cannot be asked at all is
+reported, but is not a failure: not every deployment has one. Run it from a
+machine that is NOT the origin: resolving the name to the origin skips the edge,
+which is the thing being tested.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import json
 import pathlib
 import subprocess
 import sys
@@ -285,9 +294,129 @@ def probe(base: str, name: str, timeout: float, nonce: str) -> tuple[bytes | Non
     return bypass, "", True
 
 
+# ── the other half of "is what is live what was shipped" ───────────────────
+#
+# Everything above compares FILES. Nothing in this project compared the running
+# SERVICE against the one this repository ships, and the two go stale
+# independently: the site is republished by copying a directory, the gateway
+# changes only when its container is rebuilt and restarted. A deploy that does
+# one and not the other leaves a repository describing a build that is not
+# answering -- and, unlike a stale page, a stale gateway is missing every fix
+# released since it started.
+#
+# This is the same defect shape as the one PUBLISHED had: the loop below had
+# exactly one source of names, so it could only ever report on things somebody
+# had already thought to list. No line of this tool mentioned the API at all,
+# so a gateway three releases behind was not a finding anyone could have
+# suppressed -- it was a question nothing here asked.
+#
+# The routes and their order come from site/README.md's "/api/health contract":
+# the status widget on index.html tries exactly this sequence. Asking the way a
+# visitor's browser asks is the point; a private route would prove something
+# about a surface nobody uses.
+HEALTH_ROUTES = ("/api/health", "/health", "/healthz")
+
+# gateway/__init__.py, not pyproject.toml, for two reasons. It is what `/health`
+# actually renders -- the handler builds its response from the package version --
+# so this compares like with like. And it is Python, which a stdlib-only tool
+# can read on the 3.10 floor the scheduled job pins; `tomllib` arrived in 3.11.
+# tests/test_release_version.py already locks this value to pyproject's, so
+# reading the mirror does not create a second source of truth.
+GATEWAY_INIT = ROOT / "gateway" / "__init__.py"
+
+# Three outcomes, kept apart deliberately. Folding the third into either of the
+# others is the same error as counting an unrecorded cache write as zero: "the
+# live build is 0.1.0" and "nothing here could tell me the live build" call for
+# different actions, and only one of them is a deploy.
+BUILD_MATCH = "match"
+BUILD_DRIFT = "drift"
+BUILD_UNKNOWN = "unknown"
+
+
+def repo_gateway_version(init: Path = GATEWAY_INIT) -> str | None:
+    """The version this repository's gateway would report, or None if unreadable.
+
+    None rather than an exception: a fork that vendored only site/ still deserves
+    the file comparisons above, and a build check that cannot name an expected
+    value has nothing to say rather than something wrong. Exactly one string
+    literal counts -- two assignments mean the last one wins at import time and
+    this parse would have to guess which, and a guess here would be compared
+    against production.
+    """
+    try:
+        tree = ast.parse(init.read_text(encoding="utf-8"), filename=str(init))
+    except (OSError, ValueError, SyntaxError):
+        # SyntaxError is named explicitly: it descends from Exception, not from
+        # ValueError, so the obvious two-name tuple lets a half-written package
+        # crash a run whose real job is comparing eighteen files.
+        # UnicodeDecodeError needs no entry -- it is a ValueError.
+        return None
+    found = [
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        and node.value.value
+    ]
+    if len(found) != 1:
+        return None
+    return found[0]
+
+
+def live_build(base: str, timeout: float, expected: str) -> tuple[str, str]:
+    """(status, message) for the gateway answering `base`, against `expected`.
+
+    Unlike the browser widget, which takes the first route that RESPONDS, this
+    takes the first route that yields a usable version and keeps going
+    otherwise. A 200 of HTML from an edge fallback is an answer to a different
+    question; stopping there would report "could not tell" while /healthz sat
+    two lines below naming the build.
+
+    An unknown is not a failure. A static-only or self-hosted deployment has no
+    gateway to ask, and failing those runs would make this tool useless to the
+    people most likely to run it against their own host.
+    """
+    attempts: list[str] = []
+    for route in HEALTH_ROUTES:
+        raw, error = fetch(f"{base}{route}", timeout)
+        if raw is None:
+            attempts.append(f"{route}: {error}")
+            continue
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            attempts.append(f"{route}: answered, but not with JSON ({exc})")
+            continue
+        if not isinstance(payload, dict):
+            attempts.append(f"{route}: answered with JSON that is not an object")
+            continue
+        served = payload.get("version")
+        if not isinstance(served, str) or not served:
+            # A bool is an int, a number is not a version, and a missing field is
+            # not a version either. None of them may be coerced into one: a
+            # coerced value would be compared against `expected` and could match.
+            attempts.append(f"{route}: answered without a usable 'version' field")
+            continue
+        if served == expected:
+            return BUILD_MATCH, f"live gateway reports {served}, the build this repo ships"
+        return (
+            BUILD_DRIFT,
+            f"{route} reports version {served}; this repository ships {expected}. "
+            "The service the public is using is not the build that was released.",
+        )
+    return (
+        BUILD_UNKNOWN,
+        "no health route named a build: " + "; ".join(attempts),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Compare the served site against this repository.",
+        description="Compare the served site and the running gateway against this repository.",
         epilog="Run this from outside the origin host, or it proves nothing.",
     )
     parser.add_argument("--base", default=DEFAULT_BASE, help=f"default {DEFAULT_BASE}")
@@ -354,6 +483,24 @@ def main(argv: list[str] | None = None) -> int:
         if not args.quiet:
             print(f"  ok      {name}")
 
+    expected_build = repo_gateway_version()
+    if expected_build is None:
+        build_status = BUILD_UNKNOWN
+        build_message = (
+            f"{GATEWAY_INIT.name} does not carry exactly one __version__ string, so there is "
+            "no shipped version to compare the live service against"
+        )
+    else:
+        build_status, build_message = live_build(base, args.timeout, expected_build)
+
+    if build_status == BUILD_UNKNOWN:
+        # Printed even under --quiet, which reports "only problems". An unanswered
+        # question is not an answer: a run that could not check the build must never
+        # look like a run that checked it and found it fine.
+        print(f"\nbuild check inconclusive: {build_message}", file=sys.stderr)
+    elif build_status == BUILD_MATCH and not args.quiet:
+        print(f"  ok      {build_message}")
+
     if edge_cached_404:
         print(
             f"\n{len(edge_cached_404)} file(s) that visitors cannot reach, "
@@ -386,7 +533,21 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    if problems or edge_cached_404:
+    if build_status == BUILD_DRIFT:
+        # Its own block, not appended to `problems`: the remedy above is "publish
+        # site/ again", and doing that would change nothing here. Naming the wrong
+        # fix is how the cached-404 message sent someone to redeploy a correct site.
+        print("\nthe live gateway is not the build this repo ships:\n", file=sys.stderr)
+        print(f"  - {build_message}", file=sys.stderr)
+        print(
+            "\nCopying site/ again will NOT fix this. The pages are files; the\n"
+            "gateway is a container that has to be rebuilt and restarted. Until it\n"
+            "is, every fix released since that build is absent from the service\n"
+            "the public is using, while this repository describes it as shipped.",
+            file=sys.stderr,
+        )
+
+    if problems or edge_cached_404 or build_status == BUILD_DRIFT:
         return 1
 
     if not args.quiet:

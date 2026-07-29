@@ -148,8 +148,19 @@ The last one needs a network, and its own `--help` says it has to be run from ou
 host or it proves nothing:
 
 ```sh
-python tools/drift_check.py             # is the site that is SERVED the site in this repo?
+python tools/drift_check.py             # is what is LIVE what this repo shipped — pages and gateway
 ```
+
+It asks that of two things that go stale independently. The published files are compared byte for
+byte with the edge's enumerated rewrites applied; the running service is then asked for its build,
+over the same `/api/health` → `/health` → `/healthz` sequence the status widget uses, and compared
+with `gateway/__init__.py`. A site republished without the container rebuilt matches perfectly on
+every file while serving a gateway that is missing every fix in the release the repository
+describes — which is exactly what was live on 2026-07-30, and which nothing here had asked about.
+A version that disagrees fails the run in its own report block, because the remedy is a rebuild and
+a restart, not another `cp -a site/.`. No gateway answering at all is reported as inconclusive and
+does **not** fail: a static-only or self-hosted deployment has nothing to ask, and a check that
+fails those runs is a check they turn off.
 
 Unlike the three above, `drift_check.py` does **not** gate a push or pull request. Its
 `live-site-drift` job is visibly skipped for those events and runs only on the `schedule` or

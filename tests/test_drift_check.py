@@ -18,10 +18,12 @@ wait for it or purge it, and nothing about a redeploy does either.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
 import sys
+import urllib.parse
 
 import pytest
 
@@ -441,3 +443,177 @@ def test_non_http_schemes_are_refused():
         got, error = dc.fetch(url, 1.0)
         assert got is None
         assert "refusing to fetch" in error, url
+
+
+# ── the build behind the pages ─────────────────────────────────────────────
+#
+# On 2026-07-30 https://yangble5.com/health answered `"version": "0.1.0"` while
+# this repository had shipped 0.2.0 three days earlier: the pages matched to the
+# byte and the container behind them had not been rebuilt since before the
+# release. Nothing in this file, or anywhere else in the project, had an opinion
+# about that -- the tool's only loop was over PUBLISHED, and PUBLISHED is files.
+
+
+class FakeRoutes:
+    """A fetch stand-in keyed on the EXACT path, which records the order asked.
+
+    Deliberately not FakeEdge's substring match, and deliberately not `endswith`
+    either -- both were tried here and both are wrong for these three routes.
+    `"/health" in "https://x/api/health"` is true, and so is
+    `"https://x/api/health".endswith("/health")`, so either matcher hands the
+    /api/health request the answer registered for /health. Every assertion below
+    about WHICH route replied would then pass while testing something else: the
+    `endswith` version reported a MATCH on the first request and never made the
+    second one the test was written to observe.
+    """
+
+    def __init__(self, responses: dict[str, tuple[bytes | None, str]]):
+        self.responses = responses
+        self.calls: list[str] = []
+
+    def __call__(self, url: str, timeout: float) -> tuple[bytes | None, str]:
+        self.calls.append(url)
+        path = urllib.parse.urlsplit(url).path
+        for route, result in self.responses.items():
+            if path == route:
+                return result
+        return None, "HTTP 404"
+
+
+def _health(version):
+    payload = {"status": "ok", "service": "yangble5-gateway", "version": version}
+    return json.dumps(payload).encode("utf-8"), ""
+
+
+def test_the_shipped_version_is_readable_from_the_real_package():
+    """Anti-vacuity. If the AST walk quietly stopped finding __version__, every
+    run would report "inconclusive" -- which is not a failure, so a permanently
+    blind build check would look exactly like a deployment nobody can ask."""
+    independent = re.search(
+        r'^__version__ = "([^"]+)"$',
+        (ROOT / "gateway" / "__init__.py").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert independent is not None, "gateway/__init__.py no longer states a literal version"
+    assert dc.repo_gateway_version() == independent.group(1)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '__version__ = "1.0.0"\n__version__ = "2.0.0"\n',  # which one would /health render?
+        "__version__ = 2\n",
+        '__version__ = "" \n',
+        "__version__ = os.environ['V']\n",
+        "VERSION = '1.0.0'\n",
+        "def __version__():\n    return '1.0.0'\n",
+        "__version__ = (\n",  # not parseable
+    ],
+)
+def test_a_version_that_cannot_be_read_literally_is_not_guessed(tmp_path, source):
+    package = tmp_path / "__init__.py"
+    package.write_text(source, encoding="utf-8")
+    assert dc.repo_gateway_version(package) is None
+
+
+def test_a_package_that_is_not_there_is_not_a_version(tmp_path):
+    assert dc.repo_gateway_version(tmp_path / "absent" / "__init__.py") is None
+
+
+def test_a_gateway_on_the_shipped_version_is_not_a_finding(monkeypatch):
+    monkeypatch.setattr(dc, "fetch", FakeRoutes({"/health": _health("0.2.0")}))
+    status, message = dc.live_build("https://x", 1.0, "0.2.0")
+    assert status == dc.BUILD_MATCH
+    assert "0.2.0" in message
+
+
+def test_a_gateway_behind_the_release_is_drift_and_names_both_versions(monkeypatch):
+    monkeypatch.setattr(dc, "fetch", FakeRoutes({"/health": _health("0.1.0")}))
+    status, message = dc.live_build("https://x", 1.0, "0.2.0")
+    assert status == dc.BUILD_DRIFT
+    assert "0.1.0" in message and "0.2.0" in message, message
+
+
+def test_the_first_route_that_names_a_build_wins(monkeypatch):
+    """The widget's order, and no request after an answer: a later route could be
+    a different service, and asking it would invite a second, contradictory
+    version into a report that has room for one."""
+    edge = FakeRoutes({"/health": _health("0.2.0"), "/healthz": _health("9.9.9")})
+    monkeypatch.setattr(dc, "fetch", edge)
+    status, _ = dc.live_build("https://x", 1.0, "0.2.0")
+    assert status == dc.BUILD_MATCH
+    assert edge.calls == ["https://x/api/health", "https://x/health"], edge.calls
+
+
+def test_a_200_that_is_not_a_health_payload_does_not_end_the_search(monkeypatch):
+    """An edge that answers /api/health with the SPA shell, or with JSON that is
+    a list, has not told us the build. Treating that as the answer would report
+    "inconclusive" with /healthz sitting one line below naming it."""
+    for decoy in (b"<!doctype html><title>404</title>", b"[]", b"\xff\xfe not utf-8"):
+        edge = FakeRoutes({"/api/health": (decoy, ""), "/healthz": _health("0.1.0")})
+        monkeypatch.setattr(dc, "fetch", edge)
+        status, message = dc.live_build("https://x", 1.0, "0.2.0")
+        assert status == dc.BUILD_DRIFT, (decoy, message)
+        assert len(edge.calls) == 3, edge.calls
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"status": "ok"}',
+        b'{"version": 2}',
+        b'{"version": ""}',
+        b'{"version": true}',
+        b'{"version": ["0.2.0"]}',
+    ],
+)
+def test_a_health_response_without_a_usable_version_never_becomes_a_match(monkeypatch, payload):
+    """`True == 1` in Python and a coerced `str(2)` would both be compared against
+    the expected string. A value that is not a version must not be turned into
+    one -- the same rule the write-side accounting follows for a missing count."""
+    monkeypatch.setattr(dc, "fetch", FakeRoutes({"/health": (payload, "")}))
+    status, message = dc.live_build("https://x", 1.0, "0.2.0")
+    assert status == dc.BUILD_UNKNOWN, message
+
+
+def test_no_gateway_at_all_is_unknown_and_says_what_it_asked(monkeypatch):
+    """A static-only deployment has nothing to ask. That is an absent answer, not
+    a passing one, and the message has to show every route it tried or the reader
+    cannot tell "no gateway" from "the tool forgot to look"."""
+    monkeypatch.setattr(dc, "fetch", FakeRoutes({}))
+    status, message = dc.live_build("https://x", 1.0, "0.2.0")
+    assert status == dc.BUILD_UNKNOWN
+    for route in dc.HEALTH_ROUTES:
+        assert route in message, message
+
+
+def test_an_inconclusive_build_check_does_not_fail_the_run_but_is_still_printed(
+    monkeypatch, one_published, capsys
+):
+    body = one_published.read_bytes()
+    monkeypatch.setattr(dc, "fetch", FakeRoutes({"/llms.txt": (body, "")}))
+    assert dc.main(["--quiet"]) == 0
+    assert "build check inconclusive" in capsys.readouterr().err
+
+
+def test_a_stale_gateway_fails_the_run_without_blaming_the_site_deploy(
+    monkeypatch, one_published, capsys
+):
+    """The whole point of the separate report block. The site here is byte-perfect;
+    telling the operator to publish it again would be the cached-404 mistake in a
+    new costume -- a real finding with the wrong remedy attached."""
+    body = one_published.read_bytes()
+    monkeypatch.setattr(
+        dc,
+        "fetch",
+        FakeRoutes({"/llms.txt": (body, ""), "/health": _health("0.0.1-old")}),
+    )
+    monkeypatch.setattr(dc, "repo_gateway_version", lambda *_a, **_k: "0.2.0")
+
+    assert dc.main(["--quiet"]) == 1
+    err = capsys.readouterr().err
+    assert "not the build this repo ships" in err
+    assert "0.0.1-old" in err and "0.2.0" in err
+    assert "rebuilt and restarted" in err
+    assert "the deploy did not happen" not in err, err
+    assert "served copy differs" not in err, err

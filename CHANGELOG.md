@@ -19,6 +19,20 @@ Two conventions specific to this repository, because they change how the entries
 
 ### Added
 
+- **`tools/drift_check.py` now also asks whether the live gateway is the build this repository
+  ships.** Everything it did before compared *files*; nothing here had an opinion about the
+  *service*, and the two are deployed by different acts. Measured on 2026-07-30:
+  `https://yangble5.com/health` answered `"version": "0.1.0"` with an uptime of 571,391 seconds
+  — a container started before the 0.2.0 release — while all 18 published files matched this
+  repository to the byte. Every gateway fix released in 0.2.0 was therefore absent from the
+  running service, and no check in this project could have said so. The tool asks the three
+  routes the status widget uses (`/api/health`, `/health`, `/healthz`, in that order) and
+  compares against `gateway/__init__.py`, which is what `/health` renders. Three outcomes, kept
+  apart on purpose: match, drift (fails the run, in its own report block — republishing `site/`
+  would not fix it), and inconclusive, which is *not* a failure because a static-only or
+  self-hosted deployment has no gateway to ask. An absent answer is never reported as a passing
+  one, and a value that is not a version — missing, numeric, boolean, empty — is never coerced
+  into one.
 - **`tools/cache_stats_sidecar.py` now captures `cache_creation_input_tokens`** (stats schema
   2 → 3; an older `stats.json` restarts fresh rather than accumulating a misleading partial
   total). The released 749K trace carries `null` on every row precisely because the sidecar
