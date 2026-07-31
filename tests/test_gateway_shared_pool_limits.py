@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -510,13 +511,25 @@ def test_a_byok_failure_does_not_mark_the_shared_pool_down(build):
 # ---------------------------------------------------------------------------
 # FINDING 3 — Retry-After must follow the window that is actually binding
 # ---------------------------------------------------------------------------
-def test_reserve_retry_after_matches_a_month_window(build):
+def test_reserve_retry_after_matches_a_month_window(build, monkeypatch):
     """THE DEFECT: `reserve_verdict` hardcoded `_seconds_until_utc_midnight()`
     regardless of `pool.window`. With a month-windowed pool the header said
     "retry in a few hours" while `reset_at` in the same body said next month —
     so a client obeying the header retried nightly for up to four weeks and was
     refused every time.
+
+    The clock is FROZEN mid-month. The discriminator below is "> 25 h, which
+    seconds-until-midnight can never produce" — but on the last day of a real
+    month the CORRECT month-window answer is also under 25 h, so on the wall
+    clock this test red-lit the whole matrix every month-end (first observed:
+    the 2026-07-31 scheduled run, 10.8 h before the 1st) while testing nothing.
+    Both module clocks must move together: `gateway.app` binds the NAME at
+    import, and the charge below must land in the same month bucket that the
+    reserve check later reads, or the 429 this test depends on never happens.
     """
+    frozen = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("gateway.app.utcnow", lambda: frozen)
+    monkeypatch.setattr("gateway.storage.utcnow", lambda: frozen)
     gw = build(GLOBAL_MONTHLY_USD_BUDGET=10.0, OPERATOR_RESERVE_FRACTION=0.5,
                DAILY_TOKEN_BUDGET=NO_KEY_LIMIT, RATE_LIMIT_RPM=0)
     whale = gw.storage.issue_key(email="whale@b.com", scheme="pbkdf2")
