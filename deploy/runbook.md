@@ -657,16 +657,51 @@ is what moves.
 
 ## 11. Upgrade the stack
 
+One paste, from a FRESH shell. The old version of this section assumed
+`$YANGBLE5_DOMAIN` and `$ACME_EMAIL` were still exported from the day the
+stack was installed; in a new SSH session they are empty and `install.sh`
+dies at `--domain is required`. Both values already live in the deployed
+`.env`, so read them from there:
+
 ```sh
 cd /opt/yangble5/app
+DOMAIN=$(grep -E '^YANGBLE5_DOMAIN=' deploy/.env | cut -d= -f2-)
+EMAIL=$(grep -E '^ACME_EMAIL=' deploy/.env | cut -d= -f2-)
 sudo git -C ~/yangble5-oss pull                    # your checkout
-sudo bash ~/yangble5-oss/deploy/install.sh \
-     --domain "$YANGBLE5_DOMAIN" --email "$ACME_EMAIL"
+sudo bash ~/yangble5-oss/deploy/install.sh --domain "$DOMAIN" --email "$EMAIL"
 ```
 
 `install.sh` is idempotent: it re-copies the code, adds any new `.env` keys
 introduced by the release, and leaves every existing value — including every
 secret — alone.
+
+**Verify the upgrade actually happened** — the deploy that motivated this
+paragraph left the site current and the gateway eight days stale, and nothing
+said so. Files and container move by different acts; check the container:
+
+```sh
+curl -fsS https://localhost/health -k | grep -o '"version":"[^"]*"'
+```
+
+The version must name the release you just pulled (compare
+`grep __version__ ~/yangble5-oss/gateway/__init__.py`). Then, from a machine
+that is **not** the origin, run the full check —
+`python tools/drift_check.py` — because resolving the name to the origin
+skips the edge, and the edge is part of what is being verified.
+
+**Rollback** — same mechanism, older tree. `install.sh` takes whatever the
+checkout holds, so point the checkout at the previous release and rerun:
+
+```sh
+sudo git -C ~/yangble5-oss checkout v0.1.0-rc1     # or the tag you are backing to
+sudo bash ~/yangble5-oss/deploy/install.sh --domain "$DOMAIN" --email "$EMAIL"
+sudo git -C ~/yangble5-oss checkout main           # leave the checkout on main
+```
+
+Data is safe across both directions: the SQLite volume and `.env` are never
+rewritten by `install.sh`, only code moves. A downgraded gateway reading a
+newer database is the one combination to treat with care — downgrade only
+past releases whose CHANGELOG entry does not mention a schema change.
 
 Caddy config changes do not need a restart:
 
