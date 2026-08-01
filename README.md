@@ -710,8 +710,12 @@ yangble5/
 │  │                             compares against the repo copy with known edge transforms applied
 │  └─ retired_check.py           derives retired site paths from Git history and requires 404
 ├─ evidence/
-│  └─ run-749k-20260721.jsonl    the recorded run the headline figure is computed from;
-│                                replay it through cache_bench.py with no API key
+│  ├─ run-749k-20260721.jsonl    the recorded run the headline figure is computed from;
+│  │                             replay it through cache_bench.py with no API key
+│  └─ ab-pool-rotation-20260801/ the rotation-vs-affinity A/B that did NOT clear its own
+│     ├─ PROTOCOL-AND-RESULTS.md   pre-registered threshold; protocol, stop rules, verdict
+│     ├─ armA-20260801-065314.jsonl  affinity arm, one line per round
+│     └─ armB-20260801-065657.jsonl  rotation arm, same
 ├─ examples/
 │  └─ cache_guard/               a good prompt and a cache-breaking one, and the cost
 │                                difference between them
