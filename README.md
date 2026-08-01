@@ -41,7 +41,16 @@ for it. This is the layer that keeps a session on the account where its cache al
 Concretely it is a configuration of a third-party proxy plus a measurement harness, sitting
 between your coding agent (Claude Code, Codex) and third-party model providers
 (Gemini / Grok / GPT). It exists because of one specific discovery: a plausible-looking
-model-pool config in the underlying proxy **silently destroys upstream prompt caching**.
+model-pool config in the underlying proxy **silently splits upstream prompt caching across
+pool members** — a mechanism-level finding, verified in source and binary
+([FINDINGS](docs/FINDINGS.md)).
+
+How much that mechanism costs end to end depends on scale, and the one controlled A/B run
+so far says so with numbers: at a ~17K-token prefix, rotation never achieved a full-prefix
+cache read where affinity did, yet the warm hit-rate gap was **10.7 pp — below the
+pre-registered 30 pp threshold**, because at that size the provider cache is unstable even
+with affinity. The ≥100K-prefix regime is unmeasured. Protocol, stop rules and verbatim
+results: [evidence/ab-pool-rotation-20260801](evidence/ab-pool-rotation-20260801/PROTOCOL-AND-RESULTS.md).
 
 That framing names the problem it solves. It is **not** a performance claim — the measured
 numbers are above, and cache hits did not reliably make requests faster.

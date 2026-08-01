@@ -129,13 +129,20 @@ strict alternation:
   one, and you do it forever.
 
 > **The ~50% figure is a ceiling argument, not a measurement.** With a two-member rotation, at
-> most every other request can read the cache entry its predecessor wrote. We did **not** run a
-> controlled A/B of pool-vs-direct hit rate: by the time we understood the mechanism the pool
-> config was already known-broken for an unrelated reason (below), and rebuilding a known-broken
-> configuration to benchmark it was not worth the upstream spend. What we measured is the
-> *after* state: [99.53% warm](#finding-2-9953-token-weighted-prompt-cache-hit-rate-on-warm-rounds).
-> If you want the *before* number, the tooling to produce it ships in this repo - we would
-> genuinely like to see it.
+> most every other request can read the cache entry its predecessor wrote. What we measured
+> first is the *after* state:
+> [99.53% warm](#finding-2-9953-token-weighted-prompt-cache-hit-rate-on-warm-rounds).
+>
+> **Update 2026-08-01 — a controlled A/B now exists, and it did not clear its own bar.**
+> Pre-registered protocol (fixed threshold, stop rules, no early stopping), rotation vs
+> affinity on a 5-account pool at a ~17K-token prefix: rotation never achieved a full-prefix
+> cache read where affinity did, but the warm token-weighted gap was **10.7 pp — below the
+> registered 30 pp threshold**, because at that prefix size the provider cache is unstable
+> even with affinity (1 full hit in 7 warm affinity rounds). The mechanism above is about
+> WHERE cache entries live; that run measured the end-to-end effect at ONE small scale, and
+> the ≥100K-prefix regime — where this section's ceiling argument has real teeth — remains
+> unmeasured. Full protocol and raw per-round records:
+> [evidence/ab-pool-rotation-20260801](../evidence/ab-pool-rotation-20260801/PROTOCOL-AND-RESULTS.md).
 
 ### Two aggravating factors specific to our deployment
 

@@ -1,0 +1,10 @@
+{"kind": "arm_header", "arm": "A", "model": "grok-4.5", "claimed_strategy": "fill-first+affinity", "rounds": 8, "prefix_chars": 100000, "ts": "20260801-065314"}
+{"latency_ms": 3887, "model": "grok-4.3", "input_tokens": 17182, "cache_read_input_tokens": 128, "cache_creation_input_tokens": null, "output_tokens": 217, "kind": "round", "round": 1, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 2545, "model": "grok-4.3", "input_tokens": 17182, "cache_read_input_tokens": 128, "cache_creation_input_tokens": null, "output_tokens": 176, "kind": "round", "round": 2, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 2784, "model": "grok-4.3", "input_tokens": 17182, "cache_read_input_tokens": 128, "cache_creation_input_tokens": null, "output_tokens": 207, "kind": "round", "round": 3, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 3578, "model": "grok-4.3", "input_tokens": 15838, "cache_read_input_tokens": 1472, "cache_creation_input_tokens": null, "output_tokens": 283, "kind": "round", "round": 4, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 3295, "model": "grok-4.3", "input_tokens": 17118, "cache_read_input_tokens": 192, "cache_creation_input_tokens": null, "output_tokens": 226, "kind": "round", "round": 5, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 2883, "model": "grok-4.3", "input_tokens": 15838, "cache_read_input_tokens": 1472, "cache_creation_input_tokens": null, "output_tokens": 245, "kind": "round", "round": 6, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 2470, "model": "grok-4.3", "input_tokens": 30, "cache_read_input_tokens": 17280, "cache_creation_input_tokens": null, "output_tokens": 222, "kind": "round", "round": 7, "session": "yb5-ab-20260801-065314-armA"}
+{"latency_ms": 2903, "model": "grok-4.3", "input_tokens": 17182, "cache_read_input_tokens": 128, "cache_creation_input_tokens": null, "output_tokens": 245, "kind": "round", "round": 8, "session": "yb5-ab-20260801-065314-armA"}
+{"kind": "arm_summary", "arm": "A", "warm_rounds": 7, "warm_token_weighted_read_ratio": 0.1717, "warm_cache_read_tokens": 20800, "warm_fresh_input_tokens": 100370, "total_cache_write_tokens": 0}
