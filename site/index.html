@@ -1061,7 +1061,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
         <code>openAICompatModelPoolKey</code> 這些符號我們在<b>實際跑的那個執行檔</b>裡確認存在，你可以自己驗：<code>strings cli-proxy-api.exe | grep nextModelPoolOffset</code>。
       </p>
       <p style="margin-bottom:0">
-        <b>「命中率被壓在約 50%」是「推論」，不是量測。</b>兩個成員嚴格輪替，最多只有每隔一個請求能讀到前一個同池請求寫下的內容 —— 這是上限推導。我們<b>沒有</b>做 pool 對 direct 的 A/B 實驗，這個 repo 裡也沒有那一組數據。我們量到的是<b>修好之後</b>的狀態。想看「修好之前」的數字？工具就在 repo 裡，我們是真心想看到有人量出來。
+        <b>「命中率被壓在約 50%」是「推論」，不是量測。</b>兩個成員嚴格輪替，最多只有每隔一個請求能讀到前一個同池請求寫下的內容 —— 這是上限推導。端到端的效應量我們後來做了一次<b>預先註冊的對照 A/B</b>（輪替 vs 黏著、門檻與停止條件先寫死才跑）——<b>結果沒有過自己設的門檻</b>：在小前綴尺寸下，供應商快取連黏著都不穩定，差距遠小於預期。協議、判定與逐輪原始紀錄都在 repo 的 <code>evidence/ab-pool-rotation-20260801/</code>。機制與效應量是兩個不同的主張：前者已在原始碼驗證，後者在大前綴區間仍未量測。
       </p>
     </div>
   </div>
@@ -1206,8 +1206,8 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
           <tr>
             <th scope="row">兩成員輪替時「約 50% 的天花板」</th>
             <td class="nm">上限推導</td>
-            <td class="nm">推論，未量測</td>
-            <td class="nm">沒有 pool 對 direct 的 A/B 執行紀錄</td>
+            <td class="nm">推論；小前綴 A/B 未過門檻</td>
+            <td class="nm">A/B 紀錄在 evidence/ab-pool-rotation-20260801（大前綴區間仍未測）</td>
           </tr>
           <tr>
             <th scope="row">Claude Code 請求格式通過 shim→引擎(不含閘道)</th>
@@ -1263,7 +1263,7 @@ curl -fsSL https://yangble5.com/install.sh | sh -s -- --api https://not-us.examp
         <li><b>99.53% 是這個 harness 的上限，不是典型值。</b>它每輪只新增 <b>15</b> 個 token (748,918 → 748,933 → 748,948 → 748,963)，這是最有利於快取的對話形狀。真正的 agent 每一輪會塞進工具輸出、檔案內容、測試日誌，那些都是未快取的 token，會把比例往下拉。</li>
         <li><b>命中率跟前綴大小有關。</b>未快取的殘量大致是固定的，所以前綴越大、比例越好看。方向我們觀察到了；其他前綴大小的<b>數值</b>不在這次公開的證據集裡，要就自己跑一次 <code>--prefix-tokens</code>。</li>
         <li><b>延遲不是勝利。</b>三個暖輪裡有兩輪比冷輪還慢。TTFT 沒有量過。快取穩定省下的是<b>成本</b>，不是<b>時間</b>。</li>
-        <li><b>「約 50% 天花板」是讀原始碼推論出來的</b>，不是 A/B 實測。機制已驗證，數字沒有。</li>
+        <li><b>「約 50% 天花板」是讀原始碼推論出來的</b>。後來做的預先註冊 A/B <b>沒有過自己設的門檻</b>（小前綴下供應商快取連黏著都不穩），逐輪紀錄在 <code>evidence/ab-pool-rotation-20260801/</code>；機制已驗證，效應量在大前綴區間仍未量測。</li>
         <li><b>上游會變。</b>供應商隨時會改快取粒度、配額與路由。
           2026 年 7 月量到的數字，8 月不一定還在。</li>
       </ul>

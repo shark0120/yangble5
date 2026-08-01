@@ -95,11 +95,13 @@ prompt, which was ingested with no truncation. Raw per-round numbers, not averag
 *Now the parts that will get me correctly beaten up, stated before you have to ask:*
 
 **The "~50%" is not a measurement.** It is a ceiling argument: with a two-member rotation, at best
-every other request can read what its predecessor wrote. I did not run a controlled pool-vs-direct
-A/B. By the time I understood the mechanism, the pool config was already known-broken for a second
-reason (one of its two members was never registered by the provider, so it 502'd), and rebuilding
-a known-broken config to benchmark it wasn't worth the upstream spend. What is measured is the
-*after* state only.
+every other request can read what its predecessor wrote. A controlled rotation-vs-affinity A/B now
+exists in the repo (`evidence/ab-pool-rotation-20260801/`, pre-registered threshold and stop
+rules) — and it did **not** clear its own 30 pp bar: at a ~17K-token prefix the warm gap was
+10.7 pp, because at that size the provider cache is unstable even with affinity. Rotation never
+achieved a full-prefix read where affinity did, so the mechanism's direction shows, but the
+effect size at small prefixes is small, and the ≥100K regime is unmeasured. What is measured
+end-to-end at scale is the *after* state only.
 
 **99.53% is warm-only, prefix-size dependent, and an upper bound.** Round 1 is a cold write and
 is 0% by construction; every session pays exactly one. Fold it in and this run is 74.6% — a
@@ -190,12 +192,15 @@ described everywhere in the repo as a structural ceiling reasoned from source, n
 measurement, including in the paragraph immediately under the table. I should not have needed you
 to ask, and if the framing still reads as a before/after, that's a writing failure on my part.
 
-Why I didn't measure it: the pool config had a second, unrelated fault — one of the two members
-didn't exist on that provider build, so ~half of all requests 502'd. Any A/B I ran would have been
-measuring that fault, not the rotation. Rebuilding a correct-but-pooled config purely to benchmark
-it means paying for several million upstream tokens to confirm an argument I can already read in
-the source. If someone does run it, I'll put their number in the README with their name on it and
-delete mine.
+Why it wasn't measured at first: the pool config had a second, unrelated fault — one of the two
+members didn't exist on that provider build, so ~half of all requests 502'd, and any A/B would
+have measured that fault instead. I later ran a clean, pre-registered rotation-vs-affinity A/B
+on a working 5-account pool (`evidence/ab-pool-rotation-20260801/`): it did not clear its own
+30 pp threshold at a ~17K prefix — the provider cache is unstable there even with affinity —
+so the ceiling argument stands as an argument, with a measured small-prefix data point against
+treating it as an end-to-end number. The large-prefix regime it actually targets costs millions
+of tokens to test properly; if someone runs that, I'll put their number in the README with
+their name on it and delete mine.
 
 ### 5. "Isn't this ToS-violating free-tier laundering with extra steps?"
 

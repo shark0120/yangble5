@@ -113,9 +113,13 @@ rounds at a 748,918-token prompt, ingested with no truncation.
   proportional, so the ratio rises as the prefix grows. Direction observed; I'm not publishing a
   magnitude for other prefix sizes because the released evidence is one run at 748,918 tokens.
   The 30K default won't hit 99%. Don't quote 99.53% as a universal number.
-- **The "~50% ceiling" from the pool bug is reasoned from source, not measured.** I never ran a
-  clean pool-vs-direct A/B — by the time I understood it, the pool config was broken for a second
-  unrelated reason, so any A/B would have measured that instead.
+- **The "~50% ceiling" from the pool bug is reasoned from source, not measured — and the one
+  controlled A/B I ran later did NOT clear its own bar.** Pre-registered (30 pp threshold, stop
+  rules fixed before running), rotation vs affinity on a 5-account pool, ~17K-token prefix:
+  rotation never got a full-prefix cache read where affinity did, but the warm gap was 10.7 pp,
+  because at that size the provider cache is unstable even with affinity. Raw per-round records:
+  `evidence/ab-pool-rotation-20260801/` in the repo. The ≥100K regime — where the ceiling
+  argument would actually bite — is unmeasured.
 - **n=1**, one machine, one afternoon, no error bars, no cross-provider comparison.
 - **Latency did not improve predictably — there is no speed claim here.** Round 2 was 2x faster than cold; rounds 3 and 4 were *slower*
   than cold while reading 99.5% from cache. Caching cuts cost predictably, not wall-clock.
