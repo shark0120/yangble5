@@ -58,7 +58,7 @@ dev = [
   # Pinned exactly: CI installs this fresh on every run, so a floating bound
   # means a new ruff release can turn main red overnight with rules nobody
   # opted into (RUF036 did exactly that on 0.16.0). Bump deliberately.
-  "ruff==0.16.0",
+  "ruff==0.16.1",
   # TEST-ONLY. byok/setup.py assembles its engine config by templating and has no
   # YAML parser of its own (nothing under byok/ or tools/ may take a dependency).
   # The tests parse the rendered config with a real YAML implementation, because
